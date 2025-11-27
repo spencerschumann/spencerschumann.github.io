@@ -11,6 +11,8 @@ class BankGame {
         this.playersWhoCanRoll = [];
         this.playersWhoBanked = [];
         this.gameStarted = false;
+        this.lastRoundEndPlayerIndex = 0; // Track who ended the last round
+        this.history = []; // For undo functionality
 
         this.initEventListeners();
         this.loadFromStorage();
@@ -51,6 +53,9 @@ class BankGame {
 
         // New game button
         document.getElementById('new-game-btn').addEventListener('click', () => this.confirmNewGame());
+
+        // Undo button
+        document.getElementById('undo-btn').addEventListener('click', () => this.undo());
     }
 
     // Player Management
@@ -120,13 +125,30 @@ class BankGame {
     resetRound() {
         this.rollCount = 0;
         this.bankTotal = 0;
-        this.currentPlayerIndex = 0;
         this.playersWhoCanRoll = [...Array(this.players.length).keys()];
         this.playersWhoBanked = [];
+        this.history = []; // Clear history for new round
+        
+        // Start with the player after the one who ended the last round
+        // lastRoundEndPlayerIndex is an index into the players array
+        // At round start, playersWhoCanRoll contains all player indices [0, 1, 2, ...]
+        // so we can use the player index directly as the index into playersWhoCanRoll
+        if (this.currentRound === 1) {
+            this.currentPlayerIndex = 0;
+        } else {
+            // Calculate which player should start (next after the one who ended the round)
+            const startingPlayerId = (this.lastRoundEndPlayerIndex + 1) % this.players.length;
+            // Since playersWhoCanRoll = [0, 1, 2, ...] at round start, 
+            // the player's ID equals their index in playersWhoCanRoll
+            this.currentPlayerIndex = startingPlayerId;
+        }
     }
 
     handleDiceRoll(value) {
         if (!this.gameStarted) return;
+
+        // Save state for undo before making changes
+        this.saveStateForUndo();
 
         this.rollCount++;
 
@@ -154,6 +176,9 @@ class BankGame {
     }
 
     handleDoubles() {
+        // Save state for undo before making changes
+        this.saveStateForUndo();
+
         this.rollCount++;
 
         // All doubles double the cumulative score
@@ -170,6 +195,39 @@ class BankGame {
         // Move to next player who can still roll
         let nextIndex = (this.currentPlayerIndex + 1) % this.playersWhoCanRoll.length;
         this.currentPlayerIndex = nextIndex;
+    }
+
+    // Undo functionality
+    saveStateForUndo() {
+        const state = {
+            rollCount: this.rollCount,
+            bankTotal: this.bankTotal,
+            currentPlayerIndex: this.currentPlayerIndex,
+            playersWhoCanRoll: [...this.playersWhoCanRoll],
+            playersWhoBanked: [...this.playersWhoBanked],
+            players: this.players.map(p => ({ ...p }))
+        };
+        this.history.push(state);
+        
+        // Limit history to prevent memory issues
+        if (this.history.length > 50) {
+            this.history.shift();
+        }
+    }
+
+    undo() {
+        if (this.history.length === 0) return;
+
+        const previousState = this.history.pop();
+        this.rollCount = previousState.rollCount;
+        this.bankTotal = previousState.bankTotal;
+        this.currentPlayerIndex = previousState.currentPlayerIndex;
+        this.playersWhoCanRoll = previousState.playersWhoCanRoll;
+        this.playersWhoBanked = previousState.playersWhoBanked;
+        this.players = previousState.players;
+
+        this.updateGameUI();
+        this.saveToStorage();
     }
 
     // Banking
@@ -198,6 +256,9 @@ class BankGame {
 
     playerBank(playerIndex) {
         if (this.playersWhoBanked.includes(playerIndex)) return;
+
+        // Save state for undo before making changes
+        this.saveStateForUndo();
 
         // Add bank total to player's score
         this.players[playerIndex].score += this.bankTotal;
@@ -228,6 +289,11 @@ class BankGame {
     }
 
     endRound(reason) {
+        // Remember who was current when round ended (for next round's starting player)
+        if (this.playersWhoCanRoll.length > 0) {
+            this.lastRoundEndPlayerIndex = this.playersWhoCanRoll[this.currentPlayerIndex];
+        }
+
         const modal = document.getElementById('round-end-modal');
         const title = document.getElementById('round-end-title');
         const message = document.getElementById('round-end-message');
@@ -302,6 +368,8 @@ class BankGame {
         // Reset game state
         this.gameStarted = false;
         this.currentRound = 1;
+        this.lastRoundEndPlayerIndex = 0;
+        this.history = [];
         this.resetRound();
 
         // Reset player scores but keep players
@@ -340,12 +408,15 @@ class BankGame {
             turnInfo.textContent = '';
         }
 
-        // Update players list
+        // Update players list (sorted by score, highest first)
         const list = document.getElementById('players-game-list');
-        list.innerHTML = this.players.map((player, index) => {
+        const playersWithIndex = this.players.map((player, index) => ({ player, originalIndex: index }));
+        playersWithIndex.sort((a, b) => b.player.score - a.player.score);
+        
+        list.innerHTML = playersWithIndex.map(({ player, originalIndex }) => {
             const isCurrent = this.playersWhoCanRoll.length > 0 && 
-                              this.playersWhoCanRoll[this.currentPlayerIndex] === index;
-            const hasBanked = this.playersWhoBanked.includes(index);
+                              this.playersWhoCanRoll[this.currentPlayerIndex] === originalIndex;
+            const hasBanked = this.playersWhoBanked.includes(originalIndex);
 
             return `
                 <div class="player-card ${isCurrent ? 'current' : ''} ${hasBanked ? 'banked' : ''}">
@@ -355,6 +426,10 @@ class BankGame {
                 </div>
             `;
         }).join('');
+
+        // Update undo button state
+        const undoBtn = document.getElementById('undo-btn');
+        undoBtn.disabled = this.history.length === 0;
     }
 
     // Local Storage
@@ -368,7 +443,9 @@ class BankGame {
             currentPlayerIndex: this.currentPlayerIndex,
             playersWhoCanRoll: this.playersWhoCanRoll,
             playersWhoBanked: this.playersWhoBanked,
-            gameStarted: this.gameStarted
+            gameStarted: this.gameStarted,
+            lastRoundEndPlayerIndex: this.lastRoundEndPlayerIndex,
+            history: this.history
         };
         localStorage.setItem('bankGame', JSON.stringify(state));
     }
@@ -387,6 +464,8 @@ class BankGame {
                 this.playersWhoCanRoll = state.playersWhoCanRoll || [];
                 this.playersWhoBanked = state.playersWhoBanked || [];
                 this.gameStarted = state.gameStarted || false;
+                this.lastRoundEndPlayerIndex = state.lastRoundEndPlayerIndex || 0;
+                this.history = state.history || [];
 
                 if (this.gameStarted) {
                     document.getElementById('setup-screen').classList.remove('active');

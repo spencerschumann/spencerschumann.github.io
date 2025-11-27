@@ -338,7 +338,14 @@ body {
 }
 
 .game-actions {
-    text-align: center;
+    display: flex;
+    gap: 10px;
+    justify-content: center;
+}
+
+.game-actions .btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
 }
 
 /* Modals */
