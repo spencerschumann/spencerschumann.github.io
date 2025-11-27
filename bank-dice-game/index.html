@@ -48,15 +48,17 @@
                     <span>Round <span id="current-round">1</span>/<span id="total-rounds">20</span></span>
                 </div>
                 <div class="roll-info">
-                    Roll #<span id="roll-count">1</span>
+                    <span>Roll #<span id="roll-count">1</span></span>
+                </div>
+                <div class="player-info">
                     <span id="current-player-turn" class="current-turn"></span>
                 </div>
             </div>
 
-            <div class="bank-display">
-                <div class="bank-label">BANK</div>
-                <div id="bank-total" class="bank-total">0</div>
-            </div>
+            <button id="bank-btn" class="btn btn-bank">
+                <span class="bank-action">Bank!</span>
+                <span id="bank-total" class="bank-total">0</span>
+            </button>
 
             <div class="score-pad">
                 <div class="dice-grid">
@@ -71,11 +73,9 @@
                     <button class="dice-btn" data-value="10">10</button>
                     <button class="dice-btn" data-value="11">11</button>
                     <button class="dice-btn" data-value="12">12</button>
+                    <button id="doubles-btn" class="dice-btn btn-doubles"><span>DOUBLES</span></button>
                 </div>
-                <button id="doubles-btn" class="btn btn-doubles">DOUBLES</button>
             </div>
-
-            <button id="bank-btn" class="btn btn-bank">BANK!</button>
 
             <div class="players-status">
                 <h3>Players</h3>
@@ -93,7 +93,10 @@
             <div class="modal-content">
                 <h2>Who's Banking?</h2>
                 <div id="bank-player-list" class="bank-player-list"></div>
-                <button id="cancel-bank-btn" class="btn btn-secondary">Cancel</button>
+                <div class="modal-buttons">
+                    <button id="cancel-bank-btn" class="btn btn-secondary">Cancel</button>
+                    <button id="confirm-bank-btn" class="btn btn-primary">OK</button>
+                </div>
             </div>
         </div>
 

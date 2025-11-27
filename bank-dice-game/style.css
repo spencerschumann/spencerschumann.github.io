@@ -187,17 +187,26 @@ body {
 .round-info {
     font-size: 1.1rem;
     font-weight: bold;
+    flex: 1;
 }
 
 .roll-info {
-    font-size: 0.9rem;
+    font-size: 1.2rem;
     color: var(--warning-color);
+    font-weight: bold;
+    flex: 1;
+    text-align: center;
+}
+
+.player-info {
+    flex: 1;
+    text-align: right;
 }
 
 .current-turn {
-    display: block;
-    font-size: 0.8rem;
+    font-size: 1.1rem;
     color: var(--primary-color);
+    font-weight: bold;
 }
 
 .bank-display {
@@ -237,7 +246,7 @@ body {
 }
 
 .dice-btn {
-    aspect-ratio: 1;
+    aspect-ratio: 1 / 0.85;
     font-size: 1.5rem;
     font-weight: bold;
     background: var(--bg-dark);
@@ -259,21 +268,41 @@ body {
 }
 
 .btn-doubles {
-    width: 100%;
-    padding: 15px;
-    font-size: 1.2rem;
     background: linear-gradient(135deg, var(--warning-color), #e67e22);
-    color: white;
+}
+
+.btn-doubles span {
+    display: inline-block;
+    transform: rotate(-30deg);
+    font-size: 0.85rem;
+}
+
+.btn-doubles:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+    background: #555;
 }
 
 .btn-bank {
     width: 100%;
-    padding: 20px;
+    padding: 20px 30px;
     font-size: 1.5rem;
     background: linear-gradient(135deg, var(--success-color), #2ecc71);
     color: white;
     margin-bottom: 15px;
     animation: pulse 2s infinite;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.btn-bank .bank-total {
+    font-size: 2rem;
+    font-weight: bold;
+}
+
+.btn-bank .bank-action {
+    font-size: 1.5rem;
 }
 
 @keyframes pulse {
@@ -388,6 +417,39 @@ body {
     flex-direction: column;
     gap: 10px;
     margin-bottom: 20px;
+}
+
+.bank-player-checkbox {
+    display: flex;
+    align-items: center;
+    padding: 15px;
+    font-size: 1.1rem;
+    background: var(--bg-dark);
+    color: var(--text-light);
+    border: 2px solid var(--primary-color);
+    border-radius: var(--border-radius);
+    cursor: pointer;
+    transition: all 0.2s ease;
+    gap: 12px;
+}
+
+.bank-player-checkbox:has(input:checked) {
+    background: var(--primary-color);
+}
+
+.bank-player-checkbox input[type="checkbox"] {
+    width: 20px;
+    height: 20px;
+    cursor: pointer;
+    accent-color: var(--primary-color);
+}
+
+.bank-player-checkbox input[type="checkbox"]:disabled {
+    cursor: not-allowed;
+}
+
+.bank-player-checkbox span {
+    flex: 1;
 }
 
 .bank-player-btn {

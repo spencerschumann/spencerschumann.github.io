@@ -32,7 +32,7 @@ class BankGame {
         });
 
         // Game screen - dice buttons
-        document.querySelectorAll('.dice-btn').forEach(btn => {
+        document.querySelectorAll('.dice-btn[data-value]').forEach(btn => {
             btn.addEventListener('click', (e) => this.handleDiceRoll(parseInt(e.target.dataset.value)));
         });
 
@@ -44,6 +44,7 @@ class BankGame {
 
         // Bank modal
         document.getElementById('cancel-bank-btn').addEventListener('click', () => this.hideBankModal());
+        document.getElementById('confirm-bank-btn').addEventListener('click', () => this.confirmBank());
 
         // Round end modal
         document.getElementById('next-round-btn').addEventListener('click', () => this.startNextRound());
@@ -184,6 +185,7 @@ class BankGame {
 
         // All doubles double the cumulative score
         this.bankTotal *= 2;
+        console.log('Doubles rolled! Bank total doubled to', this.bankTotal);
 
         this.advanceToNextPlayer();
         this.updateGameUI();
@@ -200,9 +202,11 @@ class BankGame {
 
     // Undo functionality
     saveStateForUndo() {
+        // Ensure bankTotal is a valid number
+        const bankTotal = Number(this.bankTotal);
         const state = {
             rollCount: this.rollCount,
-            bankTotal: this.bankTotal,
+            bankTotal: isNaN(bankTotal) ? 0 : bankTotal,
             currentPlayerIndex: this.currentPlayerIndex,
             playersWhoCanRoll: [...this.playersWhoCanRoll],
             playersWhoBanked: [...this.playersWhoBanked],
@@ -221,7 +225,8 @@ class BankGame {
 
         const previousState = this.history.pop();
         this.rollCount = previousState.rollCount;
-        this.bankTotal = previousState.bankTotal;
+        const restoredBankTotal = Number(previousState.bankTotal);
+        this.bankTotal = isNaN(restoredBankTotal) ? 0 : restoredBankTotal;
         this.currentPlayerIndex = previousState.currentPlayerIndex;
         this.playersWhoCanRoll = previousState.playersWhoCanRoll;
         this.playersWhoBanked = previousState.playersWhoBanked;
@@ -250,11 +255,12 @@ class BankGame {
         list.innerHTML = this.players.map((player, index) => {
             const hasBanked = this.playersWhoBanked.includes(index);
             return `
-                <button class="bank-player-btn" 
-                        onclick="game.playerBank(${index})" 
-                        ${hasBanked ? 'disabled' : ''}>
-                    ${player.name} ${hasBanked ? '(Already Banked)' : ''}
-                </button>
+                <label class="bank-player-checkbox" ${hasBanked ? 'style="opacity: 0.5;"' : ''}>
+                    <input type="checkbox" 
+                           data-player-index="${index}" 
+                           ${hasBanked ? 'disabled' : ''}>
+                    <span>${player.name} ${hasBanked ? '(Already Banked)' : ''}</span>
+                </label>
             `;
         }).join('');
 
@@ -265,29 +271,41 @@ class BankGame {
         document.getElementById('bank-modal').classList.remove('active');
     }
 
-    playerBank(playerIndex) {
-        if (this.playersWhoBanked.includes(playerIndex)) return;
+    confirmBank() {
+        // Get all checked checkboxes
+        const checkboxes = document.querySelectorAll('#bank-player-list input[type="checkbox"]:checked');
+        const playerIndices = Array.from(checkboxes).map(cb => parseInt(cb.dataset.playerIndex));
+
+        if (playerIndices.length === 0) {
+            this.hideBankModal();
+            return;
+        }
 
         // Save state for undo before making changes
         this.saveStateForUndo();
 
-        // Add bank total to player's score
-        this.players[playerIndex].score += this.bankTotal;
-        this.playersWhoBanked.push(playerIndex);
+        // Process all selected players
+        playerIndices.forEach(playerIndex => {
+            if (this.playersWhoBanked.includes(playerIndex)) return;
 
-        // Remove from players who can roll
-        const rollIndex = this.playersWhoCanRoll.indexOf(playerIndex);
-        if (rollIndex > -1) {
-            this.playersWhoCanRoll.splice(rollIndex, 1);
+            // Add bank total to player's score
+            this.players[playerIndex].score += this.bankTotal;
+            this.playersWhoBanked.push(playerIndex);
 
-            // Adjust current player index if needed
-            if (this.playersWhoCanRoll.length > 0) {
-                if (rollIndex <= this.currentPlayerIndex) {
-                    this.currentPlayerIndex = Math.max(0, this.currentPlayerIndex - 1);
+            // Remove from players who can roll
+            const rollIndex = this.playersWhoCanRoll.indexOf(playerIndex);
+            if (rollIndex > -1) {
+                this.playersWhoCanRoll.splice(rollIndex, 1);
+
+                // Adjust current player index if needed
+                if (this.playersWhoCanRoll.length > 0) {
+                    if (rollIndex <= this.currentPlayerIndex) {
+                        this.currentPlayerIndex = Math.max(0, this.currentPlayerIndex - 1);
+                    }
+                    this.currentPlayerIndex = this.currentPlayerIndex % this.playersWhoCanRoll.length;
                 }
-                this.currentPlayerIndex = this.currentPlayerIndex % this.playersWhoCanRoll.length;
             }
-        }
+        });
 
         this.hideBankModal();
         this.updateGameUI();
@@ -413,6 +431,10 @@ class BankGame {
         } else {
             sevenBtn.classList.remove('dice-seven-danger');
         }
+
+        // Update doubles button - only enabled after 3rd roll
+        const doublesBtn = document.getElementById('doubles-btn');
+        doublesBtn.disabled = this.rollCount < 3;
 
         // Update current player turn
         const turnInfo = document.getElementById('current-player-turn');
