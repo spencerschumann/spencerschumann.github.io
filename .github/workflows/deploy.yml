@@ -27,10 +27,61 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Enable Pages via API
+        id: enable_pages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "Checking if GitHub Pages is enabled..."
+          
+          # First, try to get the Pages site
+          get_response=$(curl -s -w "\n%{http_code}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${{ github.repository }}/pages")
+          
+          get_http_code=$(echo "$get_response" | tail -n1)
+          
+          if [ "$get_http_code" = "200" ]; then
+            echo "GitHub Pages is already enabled"
+            exit 0
+          fi
+          
+          echo "GitHub Pages not found. Attempting to enable..."
+          
+          # Try to create the Pages site
+          create_response=$(curl -s -w "\n%{http_code}" \
+            -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${{ github.repository }}/pages" \
+            -d '{"build_type":"workflow"}')
+          
+          create_http_code=$(echo "$create_response" | tail -n1)
+          create_body=$(echo "$create_response" | sed '$d')
+          
+          if [ "$create_http_code" = "201" ]; then
+            echo "GitHub Pages enabled successfully!"
+            exit 0
+          elif [ "$create_http_code" = "409" ]; then
+            echo "GitHub Pages already exists (conflict)"
+            exit 0
+          else
+            echo "::error::Failed to enable GitHub Pages. HTTP $create_http_code"
+            echo "$create_body"
+            echo ""
+            echo "Please enable GitHub Pages manually:"
+            echo "1. Go to repository Settings > Pages"
+            echo "2. Under 'Build and deployment', select 'Source: GitHub Actions'"
+            echo "3. Save and re-run this workflow"
+            exit 1
+          fi
+
       - name: Setup Pages
+        id: pages
         uses: actions/configure-pages@v5
-        with:
-          enablement: true
 
       - name: Prepare deployment files
         run: |
