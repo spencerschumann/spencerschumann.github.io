@@ -58,6 +58,9 @@ class BankGame {
 
         // Undo button
         document.getElementById('undo-btn').addEventListener('click', () => this.undo());
+
+        // Drag and drop handlers
+        this.draggedPlayerIndex = null;
     }
 
     // Player Management
@@ -90,13 +93,61 @@ class BankGame {
     updatePlayerList() {
         const list = document.getElementById('player-list');
         list.innerHTML = this.players.map((player, index) => `
-            <li>
+            <li draggable="true" data-index="${index}">
+                <span class="drag-handle">☰</span>
                 <span>${player.name}</span>
                 <button class="remove-btn" onclick="game.removePlayer(${index})">×</button>
             </li>
         `).join('');
 
+        // Add drag and drop event listeners
+        const items = list.querySelectorAll('li');
+        items.forEach(item => {
+            item.addEventListener('dragstart', (e) => this.handleDragStart(e));
+            item.addEventListener('dragover', (e) => this.handleDragOver(e));
+            item.addEventListener('drop', (e) => this.handleDrop(e));
+            item.addEventListener('dragend', (e) => this.handleDragEnd(e));
+        });
+
         document.getElementById('start-game-btn').disabled = this.players.length < 2;
+    }
+
+    handleDragStart(e) {
+        this.draggedPlayerIndex = parseInt(e.target.dataset.index);
+        e.target.style.opacity = '0.4';
+        e.dataTransfer.effectAllowed = 'move';
+    }
+
+    handleDragOver(e) {
+        if (e.preventDefault) {
+            e.preventDefault();
+        }
+        e.dataTransfer.dropEffect = 'move';
+        return false;
+    }
+
+    handleDrop(e) {
+        if (e.stopPropagation) {
+            e.stopPropagation();
+        }
+
+        const dropIndex = parseInt(e.target.closest('li').dataset.index);
+        
+        if (this.draggedPlayerIndex !== dropIndex) {
+            // Reorder the players array
+            const draggedPlayer = this.players[this.draggedPlayerIndex];
+            this.players.splice(this.draggedPlayerIndex, 1);
+            this.players.splice(dropIndex, 0, draggedPlayer);
+            
+            this.updatePlayerList();
+            this.saveToStorage();
+        }
+
+        return false;
+    }
+
+    handleDragEnd(e) {
+        e.target.style.opacity = '1';
     }
 
     selectRounds(btn) {

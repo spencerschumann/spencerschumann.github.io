@@ -137,6 +137,26 @@ body {
     background: var(--bg-dark);
     border-radius: 8px;
     margin-bottom: 8px;
+    cursor: move;
+    transition: opacity 0.2s ease;
+}
+
+.player-list li:hover {
+    background: var(--bg-card);
+}
+
+.player-list li.dragging {
+    opacity: 0.4;
+}
+
+.drag-handle {
+    color: var(--secondary-color);
+    margin-right: 10px;
+    cursor: grab;
+}
+
+.drag-handle:active {
+    cursor: grabbing;
 }
 
 .player-list .remove-btn {
