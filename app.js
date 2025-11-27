@@ -176,7 +176,7 @@ class BankGame {
             this.bankTotal += faceValue;
         } else {
             // After first 3 rolls: doubles double the cumulative score
-            this.bankTotal = this.bankTotal * 2;
+            this.bankTotal *= 2;
         }
 
         this.advanceToNextPlayer();
