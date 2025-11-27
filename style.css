@@ -253,7 +253,7 @@ body {
     transform: scale(0.95);
 }
 
-.dice-seven {
+.dice-seven-danger {
     background: linear-gradient(135deg, var(--danger-color), #c0392b);
     border-color: var(--danger-color);
 }
@@ -404,27 +404,6 @@ body {
     border-color: #555;
 }
 
-.doubles-grid {
-    display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    gap: 10px;
-    margin-bottom: 20px;
-}
-
-.doubles-value-btn {
-    padding: 20px 10px;
-    font-size: 1rem;
-    background: var(--bg-dark);
-    color: var(--text-light);
-    border: 2px solid var(--warning-color);
-    border-radius: var(--border-radius);
-    cursor: pointer;
-}
-
-.doubles-value-btn:active {
-    background: var(--warning-color);
-}
-
 .round-scores {
     margin: 15px 0;
 }
@@ -466,8 +445,7 @@ body {
     margin-right: 10px;
 }
 
-#cancel-bank-btn,
-#cancel-doubles-btn {
+#cancel-bank-btn {
     width: 100%;
 }
 

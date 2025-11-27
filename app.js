@@ -35,19 +35,13 @@ class BankGame {
         });
 
         // Doubles button
-        document.getElementById('doubles-btn').addEventListener('click', () => this.showDoublesModal());
+        document.getElementById('doubles-btn').addEventListener('click', () => this.handleDoubles());
 
         // Bank button
         document.getElementById('bank-btn').addEventListener('click', () => this.showBankModal());
 
         // Bank modal
         document.getElementById('cancel-bank-btn').addEventListener('click', () => this.hideBankModal());
-
-        // Doubles modal
-        document.querySelectorAll('.doubles-value-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => this.handleDoubles(parseInt(e.target.dataset.value)));
-        });
-        document.getElementById('cancel-doubles-btn').addEventListener('click', () => this.hideDoublesModal());
 
         // Round end modal
         document.getElementById('next-round-btn').addEventListener('click', () => this.startNextRound());
@@ -159,25 +153,11 @@ class BankGame {
         }
     }
 
-    showDoublesModal() {
-        document.getElementById('doubles-modal').classList.add('active');
-    }
-
-    hideDoublesModal() {
-        document.getElementById('doubles-modal').classList.remove('active');
-    }
-
-    handleDoubles(faceValue) {
-        this.hideDoublesModal();
+    handleDoubles() {
         this.rollCount++;
 
-        // First 3 rolls: doubles are face value only
-        if (this.rollCount <= 3) {
-            this.bankTotal += faceValue;
-        } else {
-            // After first 3 rolls: doubles double the cumulative score
-            this.bankTotal *= 2;
-        }
+        // All doubles double the cumulative score
+        this.bankTotal *= 2;
 
         this.advanceToNextPlayer();
         this.updateGameUI();
@@ -342,6 +322,14 @@ class BankGame {
 
         // Update bank total
         document.getElementById('bank-total').textContent = this.bankTotal;
+
+        // Update 7 button styling - only show as dangerous after 3rd roll
+        const sevenBtn = document.querySelector('.dice-btn[data-value="7"]');
+        if (this.rollCount >= 3) {
+            sevenBtn.classList.add('dice-seven-danger');
+        } else {
+            sevenBtn.classList.remove('dice-seven-danger');
+        }
 
         // Update current player turn
         const turnInfo = document.getElementById('current-player-turn');
