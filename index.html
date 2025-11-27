@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <meta name="theme-color" content="#2c3e50">
+    <meta name="description" content="Bank - A fun dice game for groups">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Bank">
+    <link rel="manifest" href="manifest.json">
+    <link rel="apple-touch-icon" href="icons/icon-192.png">
+    <title>Bank - Dice Game</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="app">
+        <!-- Setup Screen -->
+        <div id="setup-screen" class="screen active">
+            <h1>🎲 BANK 🎲</h1>
+            <div class="setup-container">
+                <div class="player-input-section">
+                    <h2>Add Players</h2>
+                    <div class="input-group">
+                        <input type="text" id="player-name-input" placeholder="Enter player name" maxlength="20">
+                        <button id="add-player-btn" class="btn btn-primary">Add</button>
+                    </div>
+                    <ul id="player-list" class="player-list"></ul>
+                </div>
+                
+                <div class="rounds-section">
+                    <h2>Number of Rounds</h2>
+                    <div class="rounds-buttons">
+                        <button class="btn round-btn" data-rounds="10">10</button>
+                        <button class="btn round-btn active" data-rounds="20">20</button>
+                        <button class="btn round-btn" data-rounds="15">15</button>
+                    </div>
+                </div>
+                
+                <button id="start-game-btn" class="btn btn-start" disabled>Start Game</button>
+            </div>
+        </div>
+
+        <!-- Game Screen -->
+        <div id="game-screen" class="screen">
+            <div class="game-header">
+                <div class="round-info">
+                    <span>Round <span id="current-round">1</span>/<span id="total-rounds">20</span></span>
+                </div>
+                <div class="roll-info">
+                    Roll #<span id="roll-count">1</span>
+                    <span id="current-player-turn" class="current-turn"></span>
+                </div>
+            </div>
+
+            <div class="bank-display">
+                <div class="bank-label">BANK</div>
+                <div id="bank-total" class="bank-total">0</div>
+            </div>
+
+            <div class="score-pad">
+                <div class="dice-grid">
+                    <button class="dice-btn" data-value="2">2</button>
+                    <button class="dice-btn" data-value="3">3</button>
+                    <button class="dice-btn" data-value="4">4</button>
+                    <button class="dice-btn" data-value="5">5</button>
+                    <button class="dice-btn" data-value="6">6</button>
+                    <button class="dice-btn dice-seven" data-value="7">7</button>
+                    <button class="dice-btn" data-value="8">8</button>
+                    <button class="dice-btn" data-value="9">9</button>
+                    <button class="dice-btn" data-value="10">10</button>
+                    <button class="dice-btn" data-value="11">11</button>
+                    <button class="dice-btn" data-value="12">12</button>
+                </div>
+                <button id="doubles-btn" class="btn btn-doubles">DOUBLES</button>
+            </div>
+
+            <button id="bank-btn" class="btn btn-bank">BANK!</button>
+
+            <div class="players-status">
+                <h3>Players</h3>
+                <div id="players-game-list" class="players-game-grid"></div>
+            </div>
+
+            <div class="game-actions">
+                <button id="new-game-btn" class="btn btn-secondary">New Game</button>
+            </div>
+        </div>
+
+        <!-- Bank Selection Modal -->
+        <div id="bank-modal" class="modal">
+            <div class="modal-content">
+                <h2>Who's Banking?</h2>
+                <div id="bank-player-list" class="bank-player-list"></div>
+                <button id="cancel-bank-btn" class="btn btn-secondary">Cancel</button>
+            </div>
+        </div>
+
+        <!-- Doubles Modal -->
+        <div id="doubles-modal" class="modal">
+            <div class="modal-content">
+                <h2>Doubles! Select Value</h2>
+                <div class="doubles-grid">
+                    <button class="doubles-value-btn" data-value="2">⚀⚀ (2)</button>
+                    <button class="doubles-value-btn" data-value="4">⚁⚁ (4)</button>
+                    <button class="doubles-value-btn" data-value="6">⚂⚂ (6)</button>
+                    <button class="doubles-value-btn" data-value="8">⚃⚃ (8)</button>
+                    <button class="doubles-value-btn" data-value="10">⚄⚄ (10)</button>
+                    <button class="doubles-value-btn" data-value="12">⚅⚅ (12)</button>
+                </div>
+                <button id="cancel-doubles-btn" class="btn btn-secondary">Cancel</button>
+            </div>
+        </div>
+
+        <!-- Round End Modal -->
+        <div id="round-end-modal" class="modal">
+            <div class="modal-content">
+                <h2 id="round-end-title">Round Over!</h2>
+                <p id="round-end-message"></p>
+                <div id="round-scores" class="round-scores"></div>
+                <button id="next-round-btn" class="btn btn-primary">Next Round</button>
+            </div>
+        </div>
+
+        <!-- Game Over Modal -->
+        <div id="game-over-modal" class="modal">
+            <div class="modal-content game-over-content">
+                <h2>🏆 Game Over! 🏆</h2>
+                <div id="final-scores" class="final-scores"></div>
+                <button id="play-again-btn" class="btn btn-primary">Play Again</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
