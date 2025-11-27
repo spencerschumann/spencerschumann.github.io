@@ -47,6 +47,7 @@ class BankGame {
 
         // Round end modal
         document.getElementById('next-round-btn').addEventListener('click', () => this.startNextRound());
+        document.getElementById('modal-undo-btn').addEventListener('click', () => this.undoFromModal());
 
         // Game over modal
         document.getElementById('play-again-btn').addEventListener('click', () => this.resetGame());
@@ -171,7 +172,7 @@ class BankGame {
             this.updateGameUI();
         } else {
             // After first 3 rolls: 7 ends the round
-            this.endRound('A 7 was rolled!');
+            this.endRound('');
         }
     }
 
@@ -228,6 +229,16 @@ class BankGame {
 
         this.updateGameUI();
         this.saveToStorage();
+    }
+
+    undoFromModal() {
+        if (this.history.length === 0) return;
+
+        // Close the modal first
+        document.getElementById('round-end-modal').classList.remove('active');
+        
+        // Perform the undo
+        this.undo();
     }
 
     // Banking
@@ -298,9 +309,13 @@ class BankGame {
         const title = document.getElementById('round-end-title');
         const message = document.getElementById('round-end-message');
         const scoresDiv = document.getElementById('round-scores');
+        const modalUndoBtn = document.getElementById('modal-undo-btn');
 
         title.textContent = `Round ${this.currentRound} Over!`;
         message.textContent = reason;
+
+        // Enable/disable undo button based on history
+        modalUndoBtn.disabled = this.history.length === 0;
 
         // Show round scores
         const sortedPlayers = [...this.players].sort((a, b) => b.score - a.score);
