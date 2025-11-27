@@ -130,12 +130,17 @@ class BankGame {
         this.history = []; // Clear history for new round
         
         // Start with the player after the one who ended the last round
-        // For the first round, lastRoundEndPlayerIndex is 0, so we start at 0
-        // For subsequent rounds, start with the player after the last one
+        // lastRoundEndPlayerIndex is an index into the players array
+        // At round start, playersWhoCanRoll contains all player indices [0, 1, 2, ...]
+        // so we can use the player index directly as the index into playersWhoCanRoll
         if (this.currentRound === 1) {
             this.currentPlayerIndex = 0;
         } else {
-            this.currentPlayerIndex = (this.lastRoundEndPlayerIndex + 1) % this.players.length;
+            // Calculate which player should start (next after the one who ended the round)
+            const startingPlayerId = (this.lastRoundEndPlayerIndex + 1) % this.players.length;
+            // Since playersWhoCanRoll = [0, 1, 2, ...] at round start, 
+            // the player's ID equals their index in playersWhoCanRoll
+            this.currentPlayerIndex = startingPlayerId;
         }
     }
 
