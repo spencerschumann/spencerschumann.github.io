@@ -484,8 +484,17 @@ class BankGame {
         // Save state for undo before making changes
         this.saveStateForUndo();
 
+        // Sort player indices to remove them in reverse order to maintain correct indexing
+        const sortedIndices = playerIndices.sort((a, b) => {
+            return this.playersWhoCanRoll.indexOf(b) - this.playersWhoCanRoll.indexOf(a);
+        });
+
+        // Track if current player is banking
+        const currentPlayerId = this.playersWhoCanRoll[this.currentPlayerIndex];
+        const currentPlayerBanking = playerIndices.includes(currentPlayerId);
+
         // Process all selected players
-        playerIndices.forEach(playerIndex => {
+        sortedIndices.forEach(playerIndex => {
             if (this.playersWhoBanked.includes(playerIndex)) return;
 
             // Add bank total to player's score
@@ -497,15 +506,25 @@ class BankGame {
             if (rollIndex > -1) {
                 this.playersWhoCanRoll.splice(rollIndex, 1);
 
-                // Adjust current player index if needed
+                // Adjust current player index
                 if (this.playersWhoCanRoll.length > 0) {
-                    if (rollIndex <= this.currentPlayerIndex) {
-                        this.currentPlayerIndex = Math.max(0, this.currentPlayerIndex - 1);
+                    // If we removed someone before the current player, shift index back
+                    if (rollIndex < this.currentPlayerIndex) {
+                        this.currentPlayerIndex--;
                     }
-                    this.currentPlayerIndex = this.currentPlayerIndex % this.playersWhoCanRoll.length;
                 }
             }
         });
+
+        // If the current player banked, advance to the next player
+        if (currentPlayerBanking && this.playersWhoCanRoll.length > 0) {
+            // currentPlayerIndex now points to the next player (because current was removed)
+            // Just make sure it's within bounds
+            this.currentPlayerIndex = this.currentPlayerIndex % this.playersWhoCanRoll.length;
+        } else if (this.playersWhoCanRoll.length > 0) {
+            // Make sure index is within bounds
+            this.currentPlayerIndex = this.currentPlayerIndex % this.playersWhoCanRoll.length;
+        }
 
         this.hideBankModal();
         this.updateGameUI();
@@ -571,13 +590,30 @@ class BankGame {
             .map((p, i) => ({ ...p, originalIndex: i }))
             .sort((a, b) => b.score - a.score);
 
-        const winner = sortedPlayers[0];
+        // Check for ties at first place
+        const topScore = sortedPlayers[0].score;
+        const winners = sortedPlayers.filter(p => p.score === topScore);
+        const isTie = winners.length > 1;
+
+        // Calculate places with tie handling for display
+        let place = 1;
+        const playersWithPlace = [];
+        for (let i = 0; i < sortedPlayers.length; i++) {
+            if (i > 0 && sortedPlayers[i].score !== sortedPlayers[i - 1].score) {
+                place = i + 1;
+            }
+            playersWithPlace.push({ ...sortedPlayers[i], place });
+        }
+
+        const winnerMessage = isTie 
+            ? `🎉 We have a tie! 🎉<br>${winners.map(w => w.name).join(', ')}`
+            : `🎉 ${winners[0].name} Wins! 🎉`;
 
         scoresDiv.innerHTML = `
-            <div class="winner">🎉 ${winner.name} Wins! 🎉</div>
-            ${sortedPlayers.map((player, index) => `
-                <div class="score-item ${index === 0 ? 'first' : ''}">
-                    <span><span class="rank">#${index + 1}</span> ${player.name}</span>
+            <div class="winner">${winnerMessage}</div>
+            ${playersWithPlace.map((player) => `
+                <div class="score-item ${player.place === 1 ? 'first' : ''}">
+                    <span><span class="rank">#${player.place}</span> ${player.name}</span>
                     <span>${player.score} pts</span>
                 </div>
             `).join('')}
@@ -650,16 +686,27 @@ class BankGame {
         const playersWithIndex = this.players.map((player, index) => ({ player, originalIndex: index }));
         playersWithIndex.sort((a, b) => b.player.score - a.player.score);
         
-        list.innerHTML = playersWithIndex.map(({ player, originalIndex }) => {
+        // Calculate places with tie handling
+        let place = 1;
+        for (let i = 0; i < playersWithIndex.length; i++) {
+            if (i > 0 && playersWithIndex[i].player.score !== playersWithIndex[i - 1].player.score) {
+                place = i + 1;
+            }
+            playersWithIndex[i].place = place;
+        }
+        
+        list.innerHTML = playersWithIndex.map(({ player, originalIndex, place }) => {
             const isCurrent = this.playersWhoCanRoll.length > 0 && 
                               this.playersWhoCanRoll[this.currentPlayerIndex] === originalIndex;
             const hasBanked = this.playersWhoBanked.includes(originalIndex);
+            const showPlace = player.score > 0;
 
             return `
                 <div class="player-card ${isCurrent ? 'current' : ''} ${hasBanked ? 'banked' : ''}">
+                    ${showPlace ? `<div class="place">#${place}</div>` : '<div class="place"></div>'}
                     <div class="name">${player.name}</div>
-                    <div class="score">${player.score}</div>
                     ${hasBanked ? '<div class="banked-label">BANKED</div>' : ''}
+                    <div class="score">${player.score}</div>
                 </div>
             `;
         }).join('');

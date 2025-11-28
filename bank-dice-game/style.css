@@ -278,7 +278,7 @@ body {
 }
 
 .dice-btn {
-    aspect-ratio: 1 / 0.85;
+    aspect-ratio: 1 / 0.75;
     font-size: 1.5rem;
     font-weight: bold;
     background: var(--bg-dark);
@@ -305,7 +305,7 @@ body {
 
 .btn-doubles span {
     display: inline-block;
-    transform: rotate(-30deg);
+    transform: rotate(-25deg);
     font-size: 0.85rem;
 }
 
@@ -356,17 +356,19 @@ body {
 }
 
 .players-game-grid {
-    display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    gap: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
 }
 
 .player-card {
     background: var(--bg-dark);
     border-radius: 8px;
-    padding: 10px;
-    text-align: center;
+    padding: 10px 15px;
     border: 2px solid transparent;
+    display: flex;
+    align-items: center;
+    gap: 10px;
 }
 
 .player-card.current {
@@ -378,10 +380,17 @@ body {
     border-color: var(--success-color);
 }
 
+.player-card .place {
+    font-size: 0.9rem;
+    font-weight: bold;
+    color: var(--text-light);
+    min-width: 30px;
+}
+
 .player-card .name {
     font-weight: bold;
     font-size: 0.9rem;
-    margin-bottom: 5px;
+    flex: 1;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -390,12 +399,16 @@ body {
 .player-card .score {
     font-size: 1.2rem;
     color: var(--success-color);
+    font-weight: bold;
+    margin-left: auto;
 }
 
 .player-card .banked-label {
     font-size: 0.7rem;
-    color: var(--success-color);
-    margin-top: 2px;
+    background: var(--success-color);
+    color: white;
+    padding: 2px 8px;
+    border-radius: 3px;
 }
 
 .game-actions {
