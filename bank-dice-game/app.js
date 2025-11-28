@@ -103,51 +103,196 @@ class BankGame {
         // Add drag and drop event listeners
         const items = list.querySelectorAll('li');
         items.forEach(item => {
+            // Mouse events
             item.addEventListener('dragstart', (e) => this.handleDragStart(e));
             item.addEventListener('dragover', (e) => this.handleDragOver(e));
             item.addEventListener('drop', (e) => this.handleDrop(e));
             item.addEventListener('dragend', (e) => this.handleDragEnd(e));
+            
+            // Touch events for mobile
+            item.addEventListener('touchstart', (e) => this.handleTouchStart(e), { passive: false });
+            item.addEventListener('touchmove', (e) => this.handleTouchMove(e), { passive: false });
+            item.addEventListener('touchend', (e) => this.handleTouchEnd(e), { passive: false });
         });
 
         document.getElementById('start-game-btn').disabled = this.players.length < 2;
     }
 
     handleDragStart(e) {
+        this.draggedElement = e.target;
         this.draggedPlayerIndex = parseInt(e.target.dataset.index);
-        e.target.style.opacity = '0.4';
+        
+        setTimeout(() => {
+            e.target.classList.add('dragging');
+        }, 0);
+        
         e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/html', e.target.innerHTML);
     }
 
     handleDragOver(e) {
-        if (e.preventDefault) {
-            e.preventDefault();
-        }
+        e.preventDefault();
         e.dataTransfer.dropEffect = 'move';
-        return false;
+        
+        const afterElement = this.getDragAfterElement(e.clientY);
+        const draggable = this.draggedElement;
+        const list = document.getElementById('player-list');
+        
+        // Store current positions before moving
+        const items = [...list.querySelectorAll('li:not(.dragging)')];
+        const positions = items.map(item => ({
+            element: item,
+            rect: item.getBoundingClientRect()
+        }));
+        
+        // Move the element
+        if (afterElement == null) {
+            list.appendChild(draggable);
+        } else {
+            list.insertBefore(draggable, afterElement);
+        }
+        
+        // Animate the repositioned elements
+        positions.forEach(({ element, rect }) => {
+            const newRect = element.getBoundingClientRect();
+            const deltaY = rect.top - newRect.top;
+            
+            if (deltaY !== 0) {
+                // Set initial position
+                element.style.transform = `translateY(${deltaY}px)`;
+                element.style.transition = 'none';
+                
+                // Force reflow
+                element.offsetHeight;
+                
+                // Animate to final position
+                element.style.transition = 'transform 0.2s ease';
+                element.style.transform = 'translateY(0)';
+            }
+        });
+    }
+
+    getDragAfterElement(y) {
+        const list = document.getElementById('player-list');
+        const draggableElements = [...list.querySelectorAll('li:not(.dragging)')];
+        
+        return draggableElements.reduce((closest, child) => {
+            const box = child.getBoundingClientRect();
+            const offset = y - box.top - box.height / 2;
+            
+            if (offset < 0 && offset > closest.offset) {
+                return { offset: offset, element: child };
+            } else {
+                return closest;
+            }
+        }, { offset: Number.NEGATIVE_INFINITY }).element;
     }
 
     handleDrop(e) {
-        if (e.stopPropagation) {
-            e.stopPropagation();
-        }
-
-        const dropIndex = parseInt(e.target.closest('li').dataset.index);
+        e.preventDefault();
+        e.stopPropagation();
         
-        if (this.draggedPlayerIndex !== dropIndex) {
-            // Reorder the players array
-            const draggedPlayer = this.players[this.draggedPlayerIndex];
-            this.players.splice(this.draggedPlayerIndex, 1);
-            this.players.splice(dropIndex, 0, draggedPlayer);
-            
-            this.updatePlayerList();
-            this.saveToStorage();
-        }
-
+        // Get the new order from the DOM
+        const list = document.getElementById('player-list');
+        const items = list.querySelectorAll('li');
+        const newOrder = [];
+        
+        items.forEach(item => {
+            const index = parseInt(item.dataset.index);
+            newOrder.push(this.players[index]);
+        });
+        
+        this.players = newOrder;
+        this.updatePlayerList();
+        this.saveToStorage();
+        
         return false;
     }
 
     handleDragEnd(e) {
-        e.target.style.opacity = '1';
+        e.target.classList.remove('dragging');
+        this.draggedElement = null;
+        this.draggedPlayerIndex = null;
+    }
+
+    // Touch event handlers for mobile
+    handleTouchStart(e) {
+        const item = e.target.closest('li');
+        if (!item) return;
+        
+        this.draggedElement = item;
+        this.draggedPlayerIndex = parseInt(item.dataset.index);
+        this.touchStartY = e.touches[0].clientY;
+        
+        setTimeout(() => {
+            item.classList.add('dragging');
+        }, 0);
+    }
+
+    handleTouchMove(e) {
+        if (!this.draggedElement) return;
+        e.preventDefault();
+        
+        const touch = e.touches[0];
+        const afterElement = this.getDragAfterElement(touch.clientY);
+        const list = document.getElementById('player-list');
+        
+        // Store current positions before moving
+        const items = [...list.querySelectorAll('li:not(.dragging)')];
+        const positions = items.map(item => ({
+            element: item,
+            rect: item.getBoundingClientRect()
+        }));
+        
+        // Move the element
+        if (afterElement == null) {
+            list.appendChild(this.draggedElement);
+        } else {
+            list.insertBefore(this.draggedElement, afterElement);
+        }
+        
+        // Animate the repositioned elements
+        positions.forEach(({ element, rect }) => {
+            const newRect = element.getBoundingClientRect();
+            const deltaY = rect.top - newRect.top;
+            
+            if (deltaY !== 0) {
+                // Set initial position
+                element.style.transform = `translateY(${deltaY}px)`;
+                element.style.transition = 'none';
+                
+                // Force reflow
+                element.offsetHeight;
+                
+                // Animate to final position
+                element.style.transition = 'transform 0.2s ease';
+                element.style.transform = 'translateY(0)';
+            }
+        });
+    }
+
+    handleTouchEnd(e) {
+        if (!this.draggedElement) return;
+        e.preventDefault();
+        
+        this.draggedElement.classList.remove('dragging');
+        
+        // Get the new order from the DOM
+        const list = document.getElementById('player-list');
+        const items = list.querySelectorAll('li');
+        const newOrder = [];
+        
+        items.forEach(item => {
+            const index = parseInt(item.dataset.index);
+            newOrder.push(this.players[index]);
+        });
+        
+        this.players = newOrder;
+        this.updatePlayerList();
+        this.saveToStorage();
+        
+        this.draggedElement = null;
+        this.draggedPlayerIndex = null;
     }
 
     selectRounds(btn) {

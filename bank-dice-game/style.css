@@ -126,6 +126,7 @@ body {
     list-style: none;
     max-height: 200px;
     overflow-y: auto;
+    overflow-x: hidden;
     margin-bottom: 20px;
 }
 
@@ -138,21 +139,29 @@ body {
     border-radius: 8px;
     margin-bottom: 8px;
     cursor: move;
-    transition: opacity 0.2s ease;
+    transition: transform 0.2s ease, opacity 0.2s ease, background 0.2s ease, border-color 0.2s ease;
+    border: 2px solid transparent;
 }
 
 .player-list li:hover {
     background: var(--bg-card);
+    border-color: var(--secondary-color);
 }
 
 .player-list li.dragging {
     opacity: 0.4;
+    background: var(--primary-color);
+    transition: opacity 0.2s ease, background 0.2s ease;
 }
 
 .drag-handle {
     color: var(--secondary-color);
     margin-right: 10px;
     cursor: grab;
+    font-size: 1.2rem;
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: none;
 }
 
 .drag-handle:active {
