@@ -93,34 +93,38 @@ class BankGame {
     updatePlayerList() {
         const list = document.getElementById('player-list');
         list.innerHTML = this.players.map((player, index) => `
-            <li draggable="true" data-index="${index}">
-                <span class="drag-handle">☰</span>
+            <li data-index="${index}">
+                <span class="drag-handle" draggable="true">☰</span>
                 <span>${player.name}</span>
                 <button class="remove-btn" onclick="game.removePlayer(${index})">×</button>
             </li>
         `).join('');
 
-        // Add drag and drop event listeners
+        // Add drag and drop event listeners only to drag handles
         const items = list.querySelectorAll('li');
         items.forEach(item => {
-            // Mouse events
-            item.addEventListener('dragstart', (e) => this.handleDragStart(e));
+            const dragHandle = item.querySelector('.drag-handle');
+            
+            // Mouse events on drag handle
+            dragHandle.addEventListener('dragstart', (e) => this.handleDragStart(e));
+            dragHandle.addEventListener('dragend', (e) => this.handleDragEnd(e));
+            
+            // Touch events on drag handle only
+            dragHandle.addEventListener('touchstart', (e) => this.handleTouchStart(e), { passive: false });
+            dragHandle.addEventListener('touchmove', (e) => this.handleTouchMove(e), { passive: false });
+            dragHandle.addEventListener('touchend', (e) => this.handleTouchEnd(e), { passive: false });
+            
+            // Dragover and drop on list items
             item.addEventListener('dragover', (e) => this.handleDragOver(e));
             item.addEventListener('drop', (e) => this.handleDrop(e));
-            item.addEventListener('dragend', (e) => this.handleDragEnd(e));
-            
-            // Touch events for mobile
-            item.addEventListener('touchstart', (e) => this.handleTouchStart(e), { passive: false });
-            item.addEventListener('touchmove', (e) => this.handleTouchMove(e), { passive: false });
-            item.addEventListener('touchend', (e) => this.handleTouchEnd(e), { passive: false });
         });
 
         document.getElementById('start-game-btn').disabled = this.players.length < 2;
     }
 
     handleDragStart(e) {
-        this.draggedElement = e.target;
-        this.draggedPlayerIndex = parseInt(e.target.dataset.index);
+        this.draggedElement = e.target.closest('li');
+        this.draggedPlayerIndex = parseInt(this.draggedElement.dataset.index);
         
         setTimeout(() => {
             e.target.classList.add('dragging');

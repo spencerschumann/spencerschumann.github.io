@@ -124,9 +124,6 @@ body {
 
 .player-list {
     list-style: none;
-    max-height: 200px;
-    overflow-y: auto;
-    overflow-x: hidden;
     margin-bottom: 20px;
 }
 
@@ -138,7 +135,7 @@ body {
     background: var(--bg-dark);
     border-radius: 8px;
     margin-bottom: 8px;
-    cursor: move;
+    cursor: default;
     transition: transform 0.2s ease, opacity 0.2s ease, background 0.2s ease, border-color 0.2s ease;
     border: 2px solid transparent;
 }
@@ -162,10 +159,16 @@ body {
     user-select: none;
     -webkit-user-select: none;
     touch-action: none;
+    padding: 5px;
+    margin: -5px 5px -5px -5px;
 }
 
 .drag-handle:active {
     cursor: grabbing;
+}
+
+.drag-handle:hover {
+    color: var(--primary-color);
 }
 
 .player-list .remove-btn {
