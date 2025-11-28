@@ -3,6 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
     <meta name="theme-color" content="#2c3e50">
     <meta name="description" content="Bank - A fun dice game for groups">
     <meta name="apple-mobile-web-app-capable" content="yes">
@@ -11,7 +14,7 @@
     <link rel="manifest" href="manifest.json">
     <link rel="apple-touch-icon" href="icons/icon-192.png">
     <title>Bank - Dice Game</title>
-    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="style.css?v=2.0.0">
 </head>
 <body>
     <div id="app">
@@ -123,6 +126,42 @@
         </div>
     </div>
 
-    <script src="app.js"></script>
+    <script src="app.js?v=2.0.0"></script>
+    <script>
+        // Register service worker with update detection
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('./sw.js')
+                    .then(registration => {
+                        console.log('ServiceWorker registered:', registration);
+
+                        // Check for updates every 30 seconds
+                        setInterval(() => {
+                            registration.update();
+                        }, 30000);
+
+                        // Detect when new service worker is waiting
+                        registration.addEventListener('updatefound', () => {
+                            const newWorker = registration.installing;
+                            newWorker.addEventListener('statechange', () => {
+                                if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+                                    // New service worker available, prompt user or auto-update
+                                    if (confirm('New version available! Reload to update?')) {
+                                        newWorker.postMessage('skipWaiting');
+                                        window.location.reload();
+                                    }
+                                }
+                            });
+                        });
+                    })
+                    .catch(err => console.log('ServiceWorker registration failed:', err));
+
+                // Handle controller change (new service worker activated)
+                navigator.serviceWorker.addEventListener('controllerchange', () => {
+                    window.location.reload();
+                });
+            });
+        }
+    </script>
 </body>
 </html>
