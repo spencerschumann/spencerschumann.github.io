@@ -1,5 +1,5 @@
 // Update this version number whenever you make changes
-const CACHE_VERSION = 'v2.0.2';
+const CACHE_VERSION = 'v2.1.0';
 const CACHE_NAME = `bank-game-${CACHE_VERSION}`;
 
 const urlsToCache = [
@@ -8,6 +8,14 @@ const urlsToCache = [
     './style.css',
     './app.js',
     './manifest.json',
+    './scoreboard.html',
+    './scoreboard.css',
+    './scoreboard.js',
+    './roller.html',
+    './roller.css',
+    './roller.js',
+    './firebase-config.js',
+    './multiplayer.js',
     './icons/icon-72.png',
     './icons/icon-96.png',
     './icons/icon-128.png',
