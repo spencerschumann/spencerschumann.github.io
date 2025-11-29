@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
+    <meta name="theme-color" content="#2c3e50">
+    <meta name="description" content="Bank - Roller for Multiplayer">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Bank Roller">
+    <link rel="manifest" href="manifest.json">
+    <link rel="apple-touch-icon" href="icons/icon-192.png">
+    <title>Bank - Roller</title>
+    <link rel="stylesheet" href="style.css?v=2.0.0">
+    <link rel="stylesheet" href="roller.css?v=1.0.0">
+</head>
+<body class="roller-body">
+    <div id="app" class="roller-app">
+        <!-- Join Screen -->
+        <div id="join-screen" class="screen active">
+            <h1>🎲 BANK 🎲</h1>
+            <h2 class="subtitle">Join Game</h2>
+            
+            <div class="join-container">
+                <div class="input-section">
+                    <label for="room-code-input">Room Code</label>
+                    <input type="text" id="room-code-input" placeholder="XXXX" maxlength="4" autocomplete="off" autocapitalize="characters">
+                </div>
+                
+                <div class="input-section">
+                    <label for="player-name-input">Your Name</label>
+                    <input type="text" id="player-name-input" placeholder="Enter your name" maxlength="20">
+                </div>
+                
+                <button id="join-btn" class="btn btn-start" disabled>Join Game</button>
+                
+                <div id="join-error" class="error-message"></div>
+                
+                <div class="back-link">
+                    <a href="index.html">← Back to Solo Mode</a>
+                </div>
+            </div>
+        </div>
+
+        <!-- Waiting Screen -->
+        <div id="waiting-screen" class="screen">
+            <div class="waiting-container">
+                <div class="waiting-icon">⏳</div>
+                <h2>Connected!</h2>
+                <p>Waiting for game to start...</p>
+                <p class="room-info">Room: <span id="connected-room-code">----</span></p>
+                <button id="leave-btn" class="btn btn-secondary">Leave Room</button>
+            </div>
+        </div>
+
+        <!-- Roller Screen -->
+        <div id="roller-screen" class="screen">
+            <!-- Game Status Header -->
+            <div class="roller-header">
+                <div class="round-info">
+                    <span>Round <span id="current-round">1</span>/<span id="total-rounds">20</span></span>
+                </div>
+                <div class="roll-info">
+                    <span>Roll #<span id="roll-count">1</span></span>
+                </div>
+            </div>
+
+            <!-- Bank Display -->
+            <div class="bank-display-roller">
+                <span class="label">BANK</span>
+                <span id="bank-total" class="value">0</span>
+            </div>
+
+            <!-- Current Turn -->
+            <div class="turn-display">
+                <span id="current-turn">Waiting...</span>
+            </div>
+
+            <!-- Dice Pad -->
+            <div class="dice-pad">
+                <div class="dice-grid-roller">
+                    <button class="dice-btn-roller" data-value="2">2</button>
+                    <button class="dice-btn-roller" data-value="3">3</button>
+                    <button class="dice-btn-roller" data-value="4">4</button>
+                    <button class="dice-btn-roller" data-value="5">5</button>
+                    <button class="dice-btn-roller" data-value="6">6</button>
+                    <button class="dice-btn-roller" data-value="7">7</button>
+                    <button class="dice-btn-roller" data-value="8">8</button>
+                    <button class="dice-btn-roller" data-value="9">9</button>
+                    <button class="dice-btn-roller" data-value="10">10</button>
+                    <button class="dice-btn-roller" data-value="11">11</button>
+                    <button class="dice-btn-roller" data-value="12">12</button>
+                    <button id="doubles-btn" class="dice-btn-roller btn-doubles-roller" disabled>
+                        <span>DOUBLES</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Bank Button -->
+            <button id="bank-btn" class="btn btn-bank-roller">
+                <span class="bank-label">🏦 BANK!</span>
+            </button>
+
+            <!-- Player's Score -->
+            <div class="my-score">
+                <span class="label">My Score</span>
+                <span id="my-score-value" class="value">0</span>
+            </div>
+
+            <!-- Leave Button -->
+            <button id="leave-game-btn" class="btn btn-secondary leave-btn">Leave Game</button>
+        </div>
+
+        <!-- Disconnected Screen -->
+        <div id="disconnected-screen" class="screen">
+            <div class="disconnected-container">
+                <div class="disconnected-icon">❌</div>
+                <h2>Disconnected</h2>
+                <p>The game has ended or you were disconnected.</p>
+                <button id="rejoin-btn" class="btn btn-primary">Join Another Game</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Firebase SDK -->
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+    
+    <!-- Game Scripts -->
+    <script src="firebase-config.js?v=1.0.0"></script>
+    <script src="multiplayer.js?v=1.0.0"></script>
+    <script src="roller.js?v=1.0.0"></script>
+</body>
+</html>

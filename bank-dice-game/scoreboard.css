@@ -1,0 +1,367 @@
+/* Scoreboard Specific Styles - Optimized for Tablet Display */
+
+.scoreboard-body {
+    background: linear-gradient(135deg, #1a1a2e 0%, #0f0f23 100%);
+}
+
+.scoreboard-app {
+    max-width: 100%;
+    padding: 15px;
+}
+
+/* Setup Screen Subtitle */
+.subtitle {
+    text-align: center;
+    color: var(--primary-color);
+    font-size: 1.2rem;
+    margin-bottom: 20px;
+}
+
+/* Room Code Banner */
+.room-code-banner {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 15px;
+    padding: 15px 20px;
+    background: linear-gradient(135deg, var(--primary-color), #2980b9);
+    border-radius: var(--border-radius);
+    margin-bottom: 15px;
+    flex-wrap: wrap;
+}
+
+.room-label {
+    font-size: 1.2rem;
+    font-weight: bold;
+}
+
+.room-code {
+    font-size: 2.5rem;
+    font-weight: bold;
+    letter-spacing: 8px;
+    font-family: 'Courier New', monospace;
+    background: rgba(0, 0, 0, 0.3);
+    padding: 5px 20px;
+    border-radius: 8px;
+}
+
+.connected-count {
+    font-size: 1rem;
+    opacity: 0.9;
+    background: rgba(0, 0, 0, 0.2);
+    padding: 5px 15px;
+    border-radius: 20px;
+}
+
+/* Main Scoreboard Display */
+.scoreboard-main {
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+}
+
+.scoreboard-header {
+    display: grid;
+    grid-template-columns: 1fr 2fr 1fr;
+    gap: 15px;
+    align-items: center;
+}
+
+.round-display,
+.roll-display {
+    background: var(--bg-card);
+    border-radius: var(--border-radius);
+    padding: 15px 20px;
+    text-align: center;
+}
+
+.round-display .label,
+.roll-display .label,
+.bank-display-large .label {
+    display: block;
+    font-size: 0.9rem;
+    color: var(--primary-color);
+    font-weight: bold;
+    margin-bottom: 5px;
+    letter-spacing: 2px;
+}
+
+.round-display .value,
+.roll-display .value {
+    font-size: 2rem;
+    font-weight: bold;
+}
+
+.bank-display-large {
+    background: linear-gradient(135deg, var(--bank-color), #8e44ad);
+    border-radius: var(--border-radius);
+    padding: 20px 30px;
+    text-align: center;
+    box-shadow: 0 4px 20px rgba(155, 89, 182, 0.4);
+}
+
+.bank-display-large .bank-value {
+    font-size: 4rem;
+    font-weight: bold;
+    text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
+}
+
+/* Current Turn Display */
+.current-turn-display {
+    background: var(--bg-card);
+    border-radius: var(--border-radius);
+    padding: 15px 25px;
+    text-align: center;
+    font-size: 1.5rem;
+    font-weight: bold;
+    color: var(--warning-color);
+    border: 2px solid var(--warning-color);
+}
+
+/* Players Grid */
+.players-scoreboard-grid {
+    background: var(--bg-card);
+    border-radius: var(--border-radius);
+    padding: 15px;
+    flex: 1;
+    min-height: 200px;
+}
+
+.players-grid-content {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 12px;
+}
+
+.player-card-large {
+    background: var(--bg-dark);
+    border-radius: var(--border-radius);
+    padding: 15px;
+    text-align: center;
+    border: 3px solid transparent;
+    transition: all 0.3s ease;
+}
+
+.player-card-large.current {
+    border-color: var(--warning-color);
+    box-shadow: 0 0 20px rgba(243, 156, 18, 0.3);
+    transform: scale(1.02);
+}
+
+.player-card-large.banked {
+    background: rgba(39, 174, 96, 0.2);
+    border-color: var(--success-color);
+}
+
+.player-card-large .place {
+    font-size: 0.9rem;
+    color: var(--primary-color);
+    font-weight: bold;
+    margin-bottom: 5px;
+}
+
+.player-card-large .name {
+    font-size: 1.2rem;
+    font-weight: bold;
+    margin-bottom: 5px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.player-card-large .score {
+    font-size: 2rem;
+    color: var(--success-color);
+    font-weight: bold;
+}
+
+.player-card-large .banked-label {
+    display: inline-block;
+    font-size: 0.75rem;
+    background: var(--success-color);
+    color: white;
+    padding: 3px 10px;
+    border-radius: 4px;
+    margin-top: 5px;
+}
+
+/* Activity Feed */
+.activity-feed {
+    background: var(--bg-card);
+    border-radius: var(--border-radius);
+    padding: 15px;
+    max-height: 120px;
+}
+
+.activity-feed h3 {
+    font-size: 0.9rem;
+    color: var(--primary-color);
+    margin-bottom: 10px;
+}
+
+.activity-list {
+    max-height: 80px;
+    overflow-y: auto;
+}
+
+.activity-item {
+    padding: 5px 10px;
+    background: var(--bg-dark);
+    border-radius: 6px;
+    margin-bottom: 5px;
+    font-size: 0.9rem;
+    animation: fadeIn 0.3s ease;
+}
+
+.activity-item.roll {
+    border-left: 3px solid var(--primary-color);
+}
+
+.activity-item.bank {
+    border-left: 3px solid var(--success-color);
+}
+
+.activity-item.system {
+    border-left: 3px solid var(--warning-color);
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(-10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+/* Host Controls - Compact at bottom */
+.host-controls {
+    display: flex;
+    gap: 15px;
+    align-items: center;
+    padding: 15px;
+    background: var(--bg-card);
+    border-radius: var(--border-radius);
+    margin-top: 15px;
+}
+
+.btn-bank-small {
+    padding: 15px 20px;
+    font-size: 1rem;
+    background: linear-gradient(135deg, var(--success-color), #2ecc71);
+    color: white;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 5px;
+    min-width: 80px;
+}
+
+.bank-total-small {
+    font-size: 1.5rem;
+    font-weight: bold;
+}
+
+.dice-controls {
+    flex: 1;
+}
+
+.dice-grid-compact {
+    display: grid;
+    grid-template-columns: repeat(12, 1fr);
+    gap: 5px;
+}
+
+.dice-btn-small {
+    padding: 10px 5px;
+    font-size: 0.9rem;
+    font-weight: bold;
+    background: var(--bg-dark);
+    color: var(--text-light);
+    border: 2px solid var(--secondary-color);
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.dice-btn-small:active {
+    background: var(--primary-color);
+    transform: scale(0.95);
+}
+
+.dice-btn-small.dice-seven-danger {
+    background: linear-gradient(135deg, var(--danger-color), #c0392b);
+    border-color: var(--danger-color);
+}
+
+.btn-doubles-small {
+    background: linear-gradient(135deg, var(--warning-color), #e67e22);
+}
+
+.btn-doubles-small:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+    background: #555;
+}
+
+.control-buttons {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+
+.btn-secondary-small {
+    padding: 8px 15px;
+    font-size: 0.85rem;
+    background: var(--secondary-color);
+    color: white;
+}
+
+.btn-secondary-small:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* Responsive for landscape tablets */
+@media (min-width: 768px) and (orientation: landscape) {
+    .scoreboard-app {
+        display: flex;
+        flex-direction: column;
+        height: 100vh;
+    }
+    
+    .scoreboard-main {
+        flex: 1;
+    }
+    
+    .bank-display-large .bank-value {
+        font-size: 5rem;
+    }
+    
+    .current-turn-display {
+        font-size: 2rem;
+    }
+    
+    .players-grid-content {
+        grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    }
+    
+    .player-card-large .score {
+        font-size: 2.5rem;
+    }
+}
+
+/* Large tablets / small desktops */
+@media (min-width: 1024px) {
+    .scoreboard-header {
+        grid-template-columns: 1fr 3fr 1fr;
+    }
+    
+    .bank-display-large .bank-value {
+        font-size: 6rem;
+    }
+    
+    .room-code {
+        font-size: 3rem;
+    }
+    
+    .players-grid-content {
+        grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    }
+}

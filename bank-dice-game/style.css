@@ -606,3 +606,98 @@ body {
         font-size: 1.2rem;
     }
 }
+
+/* Mode Selector for Multiplayer */
+.mode-selector {
+    display: flex;
+    gap: 15px;
+    margin: 15px 0;
+    justify-content: center;
+    flex-wrap: wrap;
+}
+
+.mode-link {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 15px 20px;
+    background: var(--bg-card);
+    border: 2px solid var(--secondary-color);
+    border-radius: var(--border-radius);
+    text-decoration: none;
+    color: var(--text-light);
+    transition: all 0.2s ease;
+    min-width: 140px;
+}
+
+.mode-link:hover {
+    border-color: var(--primary-color);
+    transform: translateY(-2px);
+}
+
+.mode-link .mode-icon {
+    font-size: 2rem;
+    margin-bottom: 8px;
+}
+
+.mode-link .mode-text {
+    font-weight: bold;
+    font-size: 1rem;
+    margin-bottom: 4px;
+}
+
+.mode-link .mode-desc {
+    font-size: 0.8rem;
+    opacity: 0.7;
+    text-align: center;
+}
+
+.mode-scoreboard {
+    border-color: var(--bank-color);
+}
+
+.mode-scoreboard:hover {
+    background: rgba(155, 89, 182, 0.2);
+    border-color: var(--bank-color);
+}
+
+.mode-roller {
+    border-color: var(--success-color);
+}
+
+.mode-roller:hover {
+    background: rgba(39, 174, 96, 0.2);
+    border-color: var(--success-color);
+}
+
+.mode-divider {
+    text-align: center;
+    margin: 20px 0;
+    position: relative;
+}
+
+.mode-divider::before,
+.mode-divider::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    width: 30%;
+    height: 1px;
+    background: var(--secondary-color);
+}
+
+.mode-divider::before {
+    left: 5%;
+}
+
+.mode-divider::after {
+    right: 5%;
+}
+
+.mode-divider span {
+    background: var(--bg-dark);
+    padding: 0 15px;
+    color: var(--text-light);
+    opacity: 0.7;
+    font-size: 0.9rem;
+}

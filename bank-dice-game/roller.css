@@ -1,0 +1,334 @@
+/* Roller Specific Styles - Optimized for Phone Display */
+
+.roller-body {
+    background: linear-gradient(135deg, #1a1a2e 0%, #0f0f23 100%);
+}
+
+.roller-app {
+    max-width: 500px;
+    margin: 0 auto;
+    padding: 15px;
+    min-height: 100vh;
+}
+
+/* Override screen display for roller - must be more specific */
+#join-screen,
+#waiting-screen,
+#roller-screen,
+#disconnected-screen {
+    display: none !important;
+}
+
+#join-screen.active,
+#waiting-screen.active,
+#roller-screen.active,
+#disconnected-screen.active {
+    display: flex !important;
+    flex-direction: column;
+}
+
+/* Join Screen */
+.subtitle {
+    text-align: center;
+    color: var(--primary-color);
+    font-size: 1.2rem;
+    margin-bottom: 20px;
+}
+
+.join-container {
+    background: var(--bg-card);
+    border-radius: var(--border-radius);
+    padding: 25px;
+}
+
+.input-section {
+    margin-bottom: 20px;
+}
+
+.input-section label {
+    display: block;
+    font-size: 1rem;
+    color: var(--primary-color);
+    margin-bottom: 8px;
+    font-weight: bold;
+}
+
+.input-section input {
+    width: 100%;
+    padding: 15px;
+    font-size: 1.2rem;
+    border: 2px solid var(--secondary-color);
+    border-radius: var(--border-radius);
+    background: var(--bg-dark);
+    color: var(--text-light);
+    outline: none;
+    text-align: center;
+}
+
+#room-code-input {
+    font-size: 2rem;
+    letter-spacing: 10px;
+    text-transform: uppercase;
+    font-family: 'Courier New', monospace;
+}
+
+.input-section input:focus {
+    border-color: var(--primary-color);
+}
+
+.error-message {
+    color: var(--danger-color);
+    text-align: center;
+    margin-top: 15px;
+    min-height: 20px;
+}
+
+.back-link {
+    text-align: center;
+    margin-top: 25px;
+}
+
+.back-link a {
+    color: var(--primary-color);
+    text-decoration: none;
+    font-size: 0.9rem;
+}
+
+.back-link a:hover {
+    text-decoration: underline;
+}
+
+/* Waiting Screen */
+.waiting-container {
+    text-align: center;
+    padding: 50px 20px;
+}
+
+.waiting-icon {
+    font-size: 4rem;
+    margin-bottom: 20px;
+    animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.1); }
+}
+
+.waiting-container h2 {
+    color: var(--success-color);
+    margin-bottom: 10px;
+}
+
+.room-info {
+    margin-top: 20px;
+    font-size: 1.2rem;
+    color: var(--primary-color);
+}
+
+/* Roller Screen */
+#roller-screen {
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+    flex: 1;
+}
+
+.roller-header {
+    display: flex;
+    justify-content: space-between;
+    padding: 12px 20px;
+    background: var(--bg-card);
+    border-radius: var(--border-radius);
+}
+
+.roller-header .round-info,
+.roller-header .roll-info {
+    font-size: 1.1rem;
+    font-weight: bold;
+}
+
+.roller-header .roll-info {
+    color: var(--warning-color);
+}
+
+/* Bank Display */
+.bank-display-roller {
+    background: linear-gradient(135deg, var(--bank-color), #8e44ad);
+    border-radius: var(--border-radius);
+    padding: 20px;
+    text-align: center;
+    box-shadow: 0 4px 15px rgba(155, 89, 182, 0.3);
+}
+
+.bank-display-roller .label {
+    display: block;
+    font-size: 1rem;
+    letter-spacing: 3px;
+    margin-bottom: 5px;
+}
+
+.bank-display-roller .value {
+    font-size: 3.5rem;
+    font-weight: bold;
+}
+
+/* Turn Display */
+.turn-display {
+    background: var(--bg-card);
+    border-radius: var(--border-radius);
+    padding: 15px;
+    text-align: center;
+    font-size: 1.3rem;
+    font-weight: bold;
+    color: var(--warning-color);
+    border: 2px solid var(--warning-color);
+}
+
+.turn-display.my-turn {
+    background: rgba(243, 156, 18, 0.2);
+    animation: myTurnPulse 1s infinite;
+}
+
+@keyframes myTurnPulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(243, 156, 18, 0.4); }
+    50% { box-shadow: 0 0 20px 5px rgba(243, 156, 18, 0.2); }
+}
+
+/* Dice Pad */
+.dice-pad {
+    background: var(--bg-card);
+    border-radius: var(--border-radius);
+    padding: 15px;
+    flex: 1;
+    display: flex;
+    align-items: center;
+}
+
+.dice-grid-roller {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+    width: 100%;
+}
+
+.dice-btn-roller {
+    aspect-ratio: 1 / 0.8;
+    font-size: 1.8rem;
+    font-weight: bold;
+    background: var(--bg-dark);
+    color: var(--text-light);
+    border: 3px solid var(--secondary-color);
+    border-radius: var(--border-radius);
+    cursor: pointer;
+    transition: all 0.15s ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.dice-btn-roller:active {
+    background: var(--primary-color);
+    transform: scale(0.95);
+}
+
+.dice-btn-roller.dice-seven-danger {
+    background: linear-gradient(135deg, var(--danger-color), #c0392b);
+    border-color: var(--danger-color);
+}
+
+.btn-doubles-roller {
+    background: linear-gradient(135deg, var(--warning-color), #e67e22);
+    border-color: var(--warning-color);
+}
+
+.btn-doubles-roller span {
+    font-size: 0.9rem;
+    transform: rotate(-15deg);
+}
+
+.btn-doubles-roller:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+    background: #555;
+    border-color: #555;
+}
+
+/* Bank Button */
+.btn-bank-roller {
+    padding: 20px;
+    font-size: 1.5rem;
+    background: linear-gradient(135deg, var(--success-color), #2ecc71);
+    color: white;
+    animation: bankPulse 2s infinite;
+}
+
+@keyframes bankPulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(39, 174, 96, 0.4); }
+    50% { box-shadow: 0 0 15px 5px rgba(39, 174, 96, 0); }
+}
+
+/* My Score */
+.my-score {
+    background: var(--bg-card);
+    border-radius: var(--border-radius);
+    padding: 15px;
+    text-align: center;
+    border: 2px solid var(--success-color);
+}
+
+.my-score .label {
+    display: block;
+    font-size: 0.9rem;
+    color: var(--success-color);
+    margin-bottom: 5px;
+}
+
+.my-score .value {
+    font-size: 2rem;
+    font-weight: bold;
+    color: var(--success-color);
+}
+
+.leave-btn {
+    margin-top: auto;
+}
+
+/* Disconnected Screen */
+.disconnected-container {
+    text-align: center;
+    padding: 50px 20px;
+}
+
+.disconnected-icon {
+    font-size: 4rem;
+    margin-bottom: 20px;
+}
+
+.disconnected-container h2 {
+    color: var(--danger-color);
+    margin-bottom: 10px;
+}
+
+.disconnected-container p {
+    margin-bottom: 30px;
+    color: var(--text-light);
+    opacity: 0.8;
+}
+
+/* Responsive */
+@media (max-width: 360px) {
+    .dice-btn-roller {
+        font-size: 1.4rem;
+    }
+    
+    .bank-display-roller .value {
+        font-size: 2.5rem;
+    }
+}
+
+@media (min-height: 700px) {
+    .dice-btn-roller {
+        aspect-ratio: 1 / 0.9;
+    }
+}
