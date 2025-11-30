@@ -56,7 +56,8 @@ body {
 }
 
 .player-input-section h2,
-.rounds-section h2 {
+.rounds-section h2,
+.starting-player-section h2 {
     font-size: 1.2rem;
     margin-bottom: 15px;
     color: var(--primary-color);
@@ -202,6 +203,28 @@ body {
 
 .round-btn.active {
     background: var(--primary-color);
+    border-color: var(--primary-color);
+}
+
+/* Starting Player Section */
+.starting-player-section {
+    margin-top: 20px;
+}
+
+.starting-player-select {
+    width: 100%;
+    padding: 12px;
+    font-size: 1rem;
+    background: var(--bg-dark);
+    color: var(--text-light);
+    border: 2px solid var(--secondary-color);
+    border-radius: var(--border-radius);
+    cursor: pointer;
+    font-family: inherit;
+}
+
+.starting-player-select:focus {
+    outline: none;
     border-color: var(--primary-color);
 }
 

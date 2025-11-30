@@ -12,6 +12,7 @@ class BankGame {
         this.playersWhoBanked = [];
         this.gameStarted = false;
         this.lastRoundEndPlayerIndex = 0; // Track who ended the last round
+        this.startingPlayerIndex = 0; // Track who starts each new game
         this.history = []; // For undo functionality
 
         this.initEventListeners();
@@ -120,6 +121,22 @@ class BankGame {
         });
 
         document.getElementById('start-game-btn').disabled = this.players.length < 2;
+        
+        // Update starting player dropdown
+        const select = document.getElementById('starting-player-select');
+        const currentValue = this.startingPlayerIndex;
+        select.innerHTML = this.players.map((player, index) => 
+                `<option value="${index}" ${index === currentValue ? 'selected' : ''}>${player.name}</option>`
+            ).join('');
+        
+        // If current starting player is invalid, reset to first player
+        if (this.startingPlayerIndex >= this.players.length || this.startingPlayerIndex < 0) {
+            this.startingPlayerIndex = 0;
+            if (this.players.length > 0) {
+                select.value = this.startingPlayerIndex;
+                this.saveToStorage();
+            }
+        }
     }
 
     handleDragStart(e) {
@@ -303,6 +320,7 @@ class BankGame {
         document.querySelectorAll('.round-btn').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
         this.totalRounds = parseInt(btn.dataset.rounds);
+        this.saveToStorage();
     }
 
     // Game Flow
@@ -311,6 +329,7 @@ class BankGame {
 
         this.gameStarted = true;
         this.currentRound = 1;
+        this.lastRoundEndPlayerIndex = this.startingPlayerIndex;
         this.resetRound();
 
         // Reset all player scores
@@ -336,7 +355,8 @@ class BankGame {
         // At round start, playersWhoCanRoll contains all player indices [0, 1, 2, ...]
         // so we can use the player index directly as the index into playersWhoCanRoll
         if (this.currentRound === 1) {
-            this.currentPlayerIndex = 0;
+            // First round starts with the chosen starting player
+            this.currentPlayerIndex = this.startingPlayerIndex;
         } else {
             // Calculate which player should start (next after the one who ended the round)
             const startingPlayerId = (this.lastRoundEndPlayerIndex + 1) % this.players.length;
@@ -351,6 +371,9 @@ class BankGame {
 
         // Save state for undo before making changes
         this.saveStateForUndo();
+
+        // Track who is rolling (for determining next round's starting player)
+        this.lastRoundEndPlayerIndex = this.playersWhoCanRoll[this.currentPlayerIndex];
 
         this.rollCount++;
 
@@ -381,6 +404,9 @@ class BankGame {
         // Save state for undo before making changes
         this.saveStateForUndo();
 
+        // Track who is rolling (for determining next round's starting player)
+        this.lastRoundEndPlayerIndex = this.playersWhoCanRoll[this.currentPlayerIndex];
+
         this.rollCount++;
 
         // All doubles double the cumulative score
@@ -410,7 +436,8 @@ class BankGame {
             currentPlayerIndex: this.currentPlayerIndex,
             playersWhoCanRoll: [...this.playersWhoCanRoll],
             playersWhoBanked: [...this.playersWhoBanked],
-            players: this.players.map(p => ({ ...p }))
+            players: this.players.map(p => ({ ...p })),
+            lastRoundEndPlayerIndex: this.lastRoundEndPlayerIndex
         };
         this.history.push(state);
         
@@ -431,6 +458,7 @@ class BankGame {
         this.playersWhoCanRoll = previousState.playersWhoCanRoll;
         this.playersWhoBanked = previousState.playersWhoBanked;
         this.players = previousState.players;
+        this.lastRoundEndPlayerIndex = previousState.lastRoundEndPlayerIndex;
 
         this.updateGameUI();
         this.saveToStorage();
@@ -537,10 +565,8 @@ class BankGame {
     }
 
     endRound(reason) {
-        // Remember who was current when round ended (for next round's starting player)
-        if (this.playersWhoCanRoll.length > 0) {
-            this.lastRoundEndPlayerIndex = this.playersWhoCanRoll[this.currentPlayerIndex];
-        }
+        // lastRoundEndPlayerIndex is already set by the last dice roll
+        // No need to set it here
 
         const modal = document.getElementById('round-end-modal');
         const title = document.getElementById('round-end-title');
@@ -639,6 +665,9 @@ class BankGame {
         this.currentRound = 1;
         this.lastRoundEndPlayerIndex = 0;
         this.history = [];
+        
+        // Rotate starting player to next person for new game
+        this.startingPlayerIndex = (this.startingPlayerIndex + 1) % this.players.length;
         this.resetRound();
 
         // Reset player scores but keep players
@@ -649,7 +678,7 @@ class BankGame {
         document.getElementById('setup-screen').classList.add('active');
 
         this.updatePlayerList();
-        this.clearStorage();
+        this.saveToStorage();
     }
 
     updateGameUI() {
@@ -729,6 +758,7 @@ class BankGame {
             playersWhoBanked: this.playersWhoBanked,
             gameStarted: this.gameStarted,
             lastRoundEndPlayerIndex: this.lastRoundEndPlayerIndex,
+            startingPlayerIndex: this.startingPlayerIndex,
             history: this.history
         };
         localStorage.setItem('bankGame', JSON.stringify(state));
@@ -749,6 +779,7 @@ class BankGame {
                 this.playersWhoBanked = state.playersWhoBanked || [];
                 this.gameStarted = state.gameStarted || false;
                 this.lastRoundEndPlayerIndex = state.lastRoundEndPlayerIndex || 0;
+                this.startingPlayerIndex = state.startingPlayerIndex !== undefined ? state.startingPlayerIndex : 0;
                 this.history = state.history || [];
 
                 if (this.gameStarted) {
