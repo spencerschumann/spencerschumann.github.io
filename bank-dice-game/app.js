@@ -53,6 +53,7 @@ class BankGame {
 
         // Game over modal
         document.getElementById('play-again-btn').addEventListener('click', () => this.resetGame());
+        document.getElementById('game-over-undo-btn').addEventListener('click', () => this.undoFromGameOver());
 
         // New game button
         document.getElementById('new-game-btn').addEventListener('click', () => this.confirmNewGame());
@@ -474,6 +475,20 @@ class BankGame {
         this.undo();
     }
 
+    undoFromGameOver() {
+        if (this.history.length === 0) return;
+
+        // Close the modal first
+        document.getElementById('game-over-modal').classList.remove('active');
+        
+        // Restore game state
+        this.gameStarted = true;
+        this.currentRound--; // Go back to the last round
+        
+        // Perform the undo
+        this.undo();
+    }
+
     // Banking
     showBankModal() {
         const modal = document.getElementById('bank-modal');
@@ -568,6 +583,13 @@ class BankGame {
         // lastRoundEndPlayerIndex is already set by the last dice roll
         // No need to set it here
 
+        // Check if this is the last round - if so, skip round end modal and go straight to game over
+        if (this.currentRound >= this.totalRounds) {
+            this.currentRound++;
+            this.endGame();
+            return;
+        }
+
         const modal = document.getElementById('round-end-modal');
         const title = document.getElementById('round-end-title');
         const message = document.getElementById('round-end-message');
@@ -645,6 +667,10 @@ class BankGame {
             `).join('')}
         `;
 
+        // Enable/disable undo button based on history
+        const undoBtn = document.getElementById('game-over-undo-btn');
+        undoBtn.disabled = this.history.length === 0;
+
         modal.classList.add('active');
         this.gameStarted = false;
         this.clearStorage();
@@ -700,6 +726,17 @@ class BankGame {
         // Update doubles button - only enabled after 3rd roll
         const doublesBtn = document.getElementById('doubles-btn');
         doublesBtn.disabled = this.rollCount < 3;
+
+        // Disable 2 and 12 buttons after 3rd roll (doubles only)
+        const twoBtn = document.querySelector('.dice-btn[data-value="2"]');
+        const twelveBtn = document.querySelector('.dice-btn[data-value="12"]');
+        if (this.rollCount >= 3) {
+            twoBtn.disabled = true;
+            twelveBtn.disabled = true;
+        } else {
+            twoBtn.disabled = false;
+            twelveBtn.disabled = false;
+        }
 
         // Update current player turn
         const turnInfo = document.getElementById('current-player-turn');

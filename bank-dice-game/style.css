@@ -317,6 +317,16 @@ body {
     transform: scale(0.95);
 }
 
+.dice-btn:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+    border-color: #555;
+}
+
+.dice-btn:disabled:active {
+    transform: none;
+}
+
 .dice-seven-danger {
     background: linear-gradient(135deg, var(--danger-color), #c0392b);
     border-color: var(--danger-color);

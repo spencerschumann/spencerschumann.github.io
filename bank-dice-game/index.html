@@ -14,7 +14,7 @@
     <link rel="manifest" href="manifest.json">
     <link rel="apple-touch-icon" href="icons/icon-192.png">
     <title>Bank - Dice Game</title>
-    <link rel="stylesheet" href="style.css?v=2.0.0">
+    <link rel="stylesheet" href="style.css?v=v2.0.4">
 </head>
 <body>
     <div id="app">
@@ -127,12 +127,15 @@
             <div class="modal-content game-over-content">
                 <h2>🏆 Game Over! 🏆</h2>
                 <div id="final-scores" class="final-scores"></div>
-                <button id="play-again-btn" class="btn btn-primary">Play Again</button>
+                <div class="modal-buttons">
+                    <button id="game-over-undo-btn" class="btn btn-secondary">Undo</button>
+                    <button id="play-again-btn" class="btn btn-primary">Play Again</button>
+                </div>
             </div>
         </div>
     </div>
 
-    <script src="app.js?v=2.0.0"></script>
+    <script src="app.js?v=v2.0.4"></script>
     <script>
         // Register service worker with update detection
         if ('serviceWorker' in navigator) {

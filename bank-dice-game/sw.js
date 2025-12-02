@@ -1,5 +1,5 @@
 // Update this version number whenever you make changes
-const CACHE_VERSION = 'v2.0.2';
+const CACHE_VERSION = 'v2.0.4';
 const CACHE_NAME = `bank-game-${CACHE_VERSION}`;
 
 const urlsToCache = [
