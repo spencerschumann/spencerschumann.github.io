@@ -8,6 +8,13 @@
     <link rel="manifest" href="manifest.json">
 </head>
 <body>
+    <div id="file-protocol-warning" style="display: none; background-color: #ffdddd; border: 1px solid #f44336; color: black; padding: 15px; text-align: center; font-family: sans-serif;">
+        <strong>Warning:</strong> This application may not work correctly when opened directly as a file.
+        Please run it on a local web server. You can do this easily with Python:
+        <pre style="background-color: #eee; padding: 10px; border-radius: 5px; margin-top: 10px; text-align: left; display: inline-block;"><code>cd neural-net-logic-gates
+python3 -m http.server</code></pre>
+        Then, open <a href="http://localhost:8000">http://localhost:8000</a> in your browser.
+    </div>
     <div id="app-container">
         <h1>Neural Net Logic Gates</h1>
         <div id="challenge-status">
@@ -47,6 +54,14 @@
                 </div>
                 <div class="control-group">
                     <button id="debug-btn">Debug</button>
+                </div>
+                <div class="control-group">
+                    <h3>Test Your Network</h3>
+                    <div id="custom-inputs-container">
+                        <!-- Custom inputs will be generated here by JS -->
+                    </div>
+                    <button id="test-custom-inputs-btn">Test</button>
+                    <p>Output: <span id="custom-output">-</span></p>
                 </div>
             </div>
             <div id="visualization">
@@ -89,6 +104,10 @@
                     console.log('ServiceWorker registration failed: ', err);
                 });
             });
+        }
+
+        if (window.location.protocol === 'file:') {
+            document.getElementById('file-protocol-warning').style.display = 'block';
         }
     </script>
 </body>

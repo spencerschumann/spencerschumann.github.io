@@ -22,7 +22,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function getRandomWeight() {
-        return (Math.random() * 2) - 1; // Random weight between -1 and 1
+        return (Math.random() * 4) - 2; // Random weight between -2 and 2
     }
 
     // --- NETWORK INITIALIZATION ---
@@ -100,8 +100,8 @@ document.addEventListener('DOMContentLoaded', () => {
     let currentChallengeIndex = 0;
 
     function updateTruthTable() {
-        const gate = challenges[currentChallengeIndex];
-        document.getElementById('gate-select').value = gate; // Sync the dropdown
+        const gateSelect = document.getElementById('gate-select');
+        const gate = gateSelect.value;
         document.getElementById('challenge-name').textContent = gate.toUpperCase();
 
         const tableData = getTruthTableData(gate);
@@ -129,7 +129,8 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function checkChallengeCompletion() {
-        const gate = challenges[currentChallengeIndex];
+        const gateSelect = document.getElementById('gate-select');
+        const gate = gateSelect.value;
         const tableData = getTruthTableData(gate);
         let allCorrect = true;
 
@@ -143,12 +144,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
         if (allCorrect) {
             document.getElementById('challenge-message').textContent = 'Success! Challenge complete!';
+            const currentIndex = challenges.indexOf(gate);
             // Unlock next challenge after a delay
             setTimeout(() => {
-                if (currentChallengeIndex < challenges.length - 1) {
-                    currentChallengeIndex++;
+                if (currentIndex < challenges.length - 1) {
+                    const nextChallenge = challenges[currentIndex + 1];
+                    gateSelect.value = nextChallenge;
                     document.getElementById('challenge-message').textContent = 'Configure the network to solve the challenge!';
-                    updateTruthTable();
                     rebuildAndRerunNetwork();
                 } else {
                     document.getElementById('challenge-message').textContent = 'Congratulations! You have completed all challenges!';
@@ -235,7 +237,7 @@ document.addEventListener('DOMContentLoaded', () => {
         allLayers.forEach((layer, layerIndex) => {
             const layerPositions = [];
             const layerX = layerPadding + layerIndex * layerSpacing;
-            const neuronCount = layer.neurons.length;
+            const neuronCount = layer.neurons ? layer.neurons.length : layer.length;
 
             for (let i = 0; i < neuronCount; i++) {
                 const y = (height / (neuronCount + 1)) * (i + 1);
@@ -394,6 +396,44 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             });
         });
+
+        // Custom inputs
+        const testCustomInputsBtn = document.getElementById('test-custom-inputs-btn');
+        testCustomInputsBtn.addEventListener('click', () => {
+            const gate = document.getElementById('gate-select').value;
+            const tableData = getTruthTableData(gate);
+            const inputCount = tableData.length > 0 ? tableData[0].inputs.length : 1;
+            const inputs = [];
+            for (let i = 0; i < inputCount; i++) {
+                const inputElement = document.getElementById(`custom-input-${i}`);
+                inputs.push(parseFloat(inputElement.value));
+            }
+            const output = feedForward(inputs);
+            document.getElementById('custom-output').textContent = output.toFixed(3);
+            drawNetwork(ctx);
+        });
+    }
+
+    function updateCustomInputControls() {
+        const gate = document.getElementById('gate-select').value;
+        const tableData = getTruthTableData(gate);
+        const inputCount = tableData.length > 0 ? tableData[0].inputs.length : 1;
+        const container = document.getElementById('custom-inputs-container');
+        container.innerHTML = '';
+
+        for (let i = 0; i < inputCount; i++) {
+            const label = document.createElement('label');
+            label.textContent = `Input ${i + 1}:`;
+            const input = document.createElement('input');
+            input.type = 'number';
+            input.id = `custom-input-${i}`;
+            input.min = '0';
+            input.max = '1';
+            input.step = '1';
+            input.value = '0';
+            container.appendChild(label);
+            container.appendChild(input);
+        }
     }
 
     function updateHiddenLayerNeuronControls() {
@@ -441,6 +481,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         initializeNetwork(inputCount, hiddenLayerCounts);
         updateTruthTable(); // This is needed to reset the output column
+        updateCustomInputControls();
         runNetwork();
     }
 
@@ -458,6 +499,7 @@ document.addEventListener('DOMContentLoaded', () => {
             initializeNetwork(initialInputCount);
             setupEventListeners();
             updateTruthTable();
+            updateCustomInputControls();
             runNetwork();
 
             window.addEventListener('resize', resizeCanvas);
