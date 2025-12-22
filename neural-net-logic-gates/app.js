@@ -218,20 +218,19 @@ document.addEventListener('DOMContentLoaded', () => {
         const { width, height } = ctx.canvas;
         ctx.clearRect(0, 0, width, height);
 
-        if (!network.layers || network.layers.length === 0) {
-             return;
+        if (!network.layers || network.layers.length === 0 || !network.layers[0][0]) {
+            return;
         }
 
         const neuronRadius = 20;
         const layerPadding = 100;
-        const totalLayers = network.layers.length + 1;
-        const layerSpacing = (totalLayers > 1) ? (width - 2 * layerPadding) / (totalLayers - 1) : 0;
 
-        // This array will hold the positions of all neurons for click detection
-        const allLayers = [{ neurons: Array(network.layers[0][0].weights.length) }, ...network.layers];
+        const inputCount = network.layers[0][0].weights.length;
+        const allLayers = [{ neurons: Array(inputCount) }, ...network.layers];
         const totalLayers = allLayers.length;
         const layerSpacing = (totalLayers > 1) ? (width - 2 * layerPadding) / (totalLayers - 1) : 0;
-        const neuronPositions = [];
+
+        network.neuronPositions = [];
 
         allLayers.forEach((layer, layerIndex) => {
             const layerPositions = [];
@@ -245,47 +244,10 @@ document.addEventListener('DOMContentLoaded', () => {
             network.neuronPositions.push(layerPositions);
         });
 
-        // Now that positions are calculated, draw everything
-        network.neuronPositions.forEach((layer, layerIndex) => {
-            if (layerIndex > 0) { // Connections are from previous to current layer
-                const prevLayerPositions = network.neuronPositions[layerIndex - 1];
-                const currentLayer = network.layers[layerIndex - 1];
-                layer.forEach((neuronPos, neuronIndex) => {
-                    const neuron = currentLayer[neuronIndex];
-                    neuron.weights.forEach((weight, weightIndex) => {
-                        const prevNeuronPos = prevLayerPositions[weightIndex];
-                        drawConnection(ctx, prevNeuronPos.x, prevNeuronPos.y, neuronPos.x, neuronPos.y, weight);
-                    });
-                });
-            }
-        });
-
-        network.neuronPositions = neuronPositions; // Store for click detection
-        console.log("Neuron positions stored:", JSON.stringify(network.neuronPositions));
-
-        neuronPositions.forEach((layer, layerIndex) => {
-            layer.forEach((pos, neuronIndex) => {
-                if (layerIndex === 0) {
-                    drawNeuron(ctx, pos.x, pos.y, neuronRadius, `I${neuronIndex + 1}`, 0);
-                } else {
-                    const neuron = network.layers[layerIndex - 1][neuronIndex];
-                    const label = `N${layerIndex - 1}-${neuronIndex}`;
-                    drawNeuron(ctx, pos.x, pos.y, neuronRadius, label, neuron.output);
-                }
-            });
-        });
-    }
-            const currentLayerX = layerPadding + (layerIndex + 1) * layerSpacing;
-            const currentLayerPositions = [];
-            layer.forEach((neuron, neuronIndex) => {
-                const y = (height / (layer.length + 1)) * (neuronIndex + 1);
-                currentLayerPositions.push({ x: currentLayerX, y: y });
-            });
-            layerPositions.push(currentLayerPositions);
-        });
+        // Draw connections
         network.layers.forEach((layer, layerIndex) => {
-            const prevLayerPositions = layerPositions[layerIndex];
-            const currentLayerPositions = layerPositions[layerIndex + 1];
+            const prevLayerPositions = network.neuronPositions[layerIndex];
+            const currentLayerPositions = network.neuronPositions[layerIndex + 1];
             layer.forEach((neuron, neuronIndex) => {
                 neuron.weights.forEach((weight, weightIndex) => {
                     const prevNeuronPos = prevLayerPositions[weightIndex];
@@ -294,20 +256,17 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
             });
         });
-        const inputPositionsArr = layerPositions[0];
-        inputPositionsArr.forEach((pos, neuronIndex) => {
-            drawNeuron(ctx, pos.x, pos.y, neuronRadius, `I${neuronIndex + 1}`, 0);
-        });
 
-        // Store neuron positions for click detection
-        const allNeuronPositions = [inputPositions, ...layerPositions.slice(1)];
-        network.neuronPositions = allNeuronPositions;
-
-        network.layers.forEach((layer, layerIndex) => {
-            const currentLayerPositions = layerPositions[layerIndex + 1];
-            layer.forEach((neuron, neuronIndex) => {
-                const label = `N${layerIndex}-${neuronIndex}`;
-                drawNeuron(ctx, currentLayerPositions[neuronIndex].x, currentLayerPositions[neuronIndex].y, neuronRadius, label, neuron.output);
+        // Draw neurons
+        network.neuronPositions.forEach((layer, layerIndex) => {
+            layer.forEach((pos, neuronIndex) => {
+                if (layerIndex === 0) {
+                    drawNeuron(ctx, pos.x, pos.y, neuronRadius, `I${neuronIndex + 1}`, 0);
+                } else {
+                    const neuron = network.layers[layerIndex - 1][neuronIndex];
+                    const label = `N${layerIndex - 1}-${neuronIndex}`;
+                    drawNeuron(ctx, pos.x, pos.y, neuronRadius, label, neuron.output);
+                }
             });
         });
     }
@@ -421,14 +380,18 @@ document.addEventListener('DOMContentLoaded', () => {
             const x = event.clientX - rect.left;
             const y = event.clientY - rect.top;
 
+            if (!network.neuronPositions) return;
+
             // Simple click detection
             network.neuronPositions.forEach((layer, layerIndex) => {
-                layer.forEach((pos, neuronIndex) => {
-                    const distance = Math.sqrt((x - pos.x)**2 + (y - pos.y)**2);
-                    if (distance < 20) { // 20 is the neuron radius
-                        openEditModal(layerIndex, neuronIndex);
-                    }
-                });
+                if(layerIndex > 0) { // Can't edit input neurons
+                    layer.forEach((pos, neuronIndex) => {
+                        const distance = Math.sqrt((x - pos.x)**2 + (y - pos.y)**2);
+                        if (distance < 20) { // 20 is the neuron radius
+                            openEditModal(layerIndex - 1, neuronIndex);
+                        }
+                    });
+                }
             });
         });
     }
@@ -461,7 +424,11 @@ document.addEventListener('DOMContentLoaded', () => {
         const counts = [];
         for (let i = 0; i < numHiddenLayers; i++) {
             const input = document.getElementById(`neurons-layer-${i}`);
-            counts.push(parseInt(input.value, 10));
+            if(input) {
+                counts.push(parseInt(input.value, 10));
+            } else {
+                counts.push(2); // Default if input not found yet
+            }
         }
         return counts;
     }
