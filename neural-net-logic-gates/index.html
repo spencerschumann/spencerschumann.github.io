@@ -8,10 +8,94 @@
     <link rel="manifest" href="manifest.json">
 </head>
 <body>
-    <h1>Neural Net Logic Gates</h1>
+    <div id="file-protocol-warning" style="display: none; background-color: #ffdddd; border: 1px solid #f44336; color: black; padding: 15px; text-align: center; font-family: sans-serif;">
+        <strong>Warning:</strong> This application may not work correctly when opened directly as a file.
+        Please run it on a local web server. You can do this easily with Python:
+        <pre style="background-color: #eee; padding: 10px; border-radius: 5px; margin-top: 10px; text-align: left; display: inline-block;"><code>cd neural-net-logic-gates
+python3 -m http.server</code></pre>
+        Then, open <a href="http://localhost:8000">http://localhost:8000</a> in your browser.
+    </div>
+    <div id="app-container">
+        <h1>Neural Net Logic Gates</h1>
+        <div id="challenge-status">
+            <h2>Challenge: <span id="challenge-name">NOT</span></h2>
+            <p id="challenge-message">Configure the network to solve the challenge!</p>
+        </div>
+        <div id="main-content">
+            <div id="controls">
+                <h2>Controls</h2>
+                <div class="control-group">
+                    <label for="gate-select">Logic Gate:</label>
+                    <select id="gate-select">
+                        <option value="not">NOT</option>
+                        <option value="or">OR</option>
+                        <option value="and">AND</option>
+                        <option value="xor">XOR</option>
+                    </select>
+                </div>
+                <div class="control-group">
+                    <h3>Network Structure</h3>
+                    <label for="hidden-layers">Hidden Layers:</label>
+                    <input type="number" id="hidden-layers" min="0" max="2" value="0">
+                    <div id="hidden-layer-neurons">
+                        <!-- Neuron count inputs will be added here by JS -->
+                    </div>
+                </div>
+                <div class="control-group">
+                    <label for="activation-select">Activation Function:</label>
+                    <select id="activation-select">
+                        <option value="sigmoid">Sigmoid</option>
+                        <option value="relu">ReLU</option>
+                        <option value="tanh">Tanh</option>
+                    </select>
+                </div>
+                <div class="control-group">
+                    <button id="reset-weights">Reset Weights</button>
+                </div>
+                <div class="control-group">
+                    <button id="debug-btn">Debug</button>
+                </div>
+                <div class="control-group">
+                    <h3>Test Your Network</h3>
+                    <div id="custom-inputs-container">
+                        <!-- Custom inputs will be generated here by JS -->
+                    </div>
+                    <button id="test-custom-inputs-btn">Test</button>
+                    <p>Output: <span id="custom-output">-</span></p>
+                </div>
+            </div>
+            <div id="visualization">
+                <canvas id="nn-canvas"></canvas>
+            </div>
+            <div id="output">
+                <h2>Output</h2>
+                <table id="truth-table">
+                    <!-- Truth table will be generated here by JS -->
+                </table>
+                <pre id="debug-output" style="display:none;"></pre>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal for editing neuron weights and bias -->
+    <div id="edit-neuron-modal" class="modal" style="display:none;">
+        <div class="modal-content">
+            <span class="close-btn">&times;</span>
+            <h3 id="modal-title">Edit Neuron</h3>
+            <div id="modal-body">
+                <!-- Inputs for weights and bias will be generated here -->
+            </div>
+            <button id="save-neuron-btn">Save</button>
+        </div>
+    </div>
 
     <script src="app.js"></script>
     <script>
+        window.onerror = function(message, source, lineno, colno, error) {
+            console.log("An error occurred: ", message);
+            return false;
+        };
+
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', () => {
                 navigator.serviceWorker.register('./sw.js').then(registration => {
@@ -20,6 +104,10 @@
                     console.log('ServiceWorker registration failed: ', err);
                 });
             });
+        }
+
+        if (window.location.protocol === 'file:') {
+            document.getElementById('file-protocol-warning').style.display = 'block';
         }
     </script>
 </body>
