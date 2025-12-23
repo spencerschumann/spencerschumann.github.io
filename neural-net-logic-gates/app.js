@@ -1,5 +1,7 @@
 window.network = {}; // Make network globally accessible for debugging and testing
 let network = window.network;
+// error history for charting
+network.errorHistory = network.errorHistory || [];
 
 document.addEventListener('DOMContentLoaded', () => {
     const canvas = document.getElementById('nn-canvas');
@@ -403,7 +405,212 @@ document.addEventListener('DOMContentLoaded', () => {
         checkChallengeCompletion();
     }
 
-    function drawNetwork(ctx) {
+    // Compute sum-squared error for the currently selected challenge over its truth table
+    function computeTotalError() {
+        try {
+            const gate = document.getElementById('gate-select').value;
+            const table = getTruthTableData(gate);
+            let total = 0;
+            for (const row of table) {
+                const outputs = feedForward(row.inputs);
+                const expected = row.expected;
+                if (Array.isArray(expected)) {
+                    for (let i = 0; i < expected.length; i++) {
+                        const diff = (expected[i] - (outputs[i] || 0));
+                        total += diff * diff;
+                    }
+                } else {
+                    const diff = (expected - (outputs && outputs[0] ? outputs[0] : 0));
+                    total += diff * diff;
+                }
+            }
+            return total;
+        } catch (e) {
+            return Infinity;
+        }
+    }
+
+    // Perform a learn step that mutates a random number of parameters (weights/biases).
+    function performLearnStep(opts = {}) {
+        opts = opts || {};
+        return new Promise((resolve) => {
+            if (!network.layers || network.layers.length === 0) return resolve();
+            const oldError = computeTotalError();
+
+            // Build list of mutable parameters
+            const params = [];
+            for (let li = 0; li < network.layers.length; li++) {
+                const layer = network.layers[li];
+                for (let ni = 0; ni < layer.length; ni++) {
+                    // bias
+                    params.push({ type: 'bias', layerIndex: li, neuronIndex: ni });
+                    // weights
+                    for (let wi = 0; wi < layer[ni].weights.length; wi++) {
+                        params.push({ type: 'weight', layerIndex: li, neuronIndex: ni, weightIndex: wi });
+                    }
+                }
+            }
+            if (params.length === 0) return resolve();
+
+            // pick k random distinct params (1..min(6, params.length))
+            const maxPick = Math.min(6, params.length);
+            const k = 1 + Math.floor(Math.random() * maxPick);
+            // sample without replacement
+            const picks = [];
+            const indices = Array.from({ length: params.length }, (_, i) => i);
+            for (let i = 0; i < k; i++) {
+                const ridx = Math.floor(Math.random() * indices.length);
+                const chosen = indices.splice(ridx, 1)[0];
+                picks.push(params[chosen]);
+            }
+
+            const maxDelta = 0.35;
+            const mutated = [];
+            // apply mutations
+            for (const p of picks) {
+                if (p.type === 'bias') {
+                    const oldV = network.layers[p.layerIndex][p.neuronIndex].bias;
+                    const delta = (Math.random() * 2 - 1) * maxDelta;
+                    const newV = oldV + delta;
+                    network.layers[p.layerIndex][p.neuronIndex].bias = newV;
+                    mutated.push({ ...p, oldValue: oldV, newValue: newV });
+                } else {
+                    const oldV = network.layers[p.layerIndex][p.neuronIndex].weights[p.weightIndex];
+                    const delta = (Math.random() * 2 - 1) * maxDelta;
+                    const newV = oldV + delta;
+                    network.layers[p.layerIndex][p.neuronIndex].weights[p.weightIndex] = newV;
+                    mutated.push({ ...p, oldValue: oldV, newValue: newV });
+                }
+            }
+
+            // Prepare a highlight for visuals (show the first mutated param)
+            const first = mutated[0];
+            const highlight = first ? { type: first.type, layerIndex: first.layerIndex, neuronIndex: first.neuronIndex, weightIndex: first.weightIndex || null, oldValue: first.oldValue, newValue: first.newValue, status: 'testing' } : null;
+
+            network.learnLog = network.learnLog || [];
+
+            function finalizeAfterEval(newError, improved) {
+                // logging: summarize
+                if (!opts.suppressLog) {
+                    const errDelta = newError - oldError;
+                    const avgChange = mutated.reduce((s, m) => s + (m.newValue - m.oldValue), 0) / mutated.length;
+                    const keptMark = improved ? ' (kept)' : '';
+                    const entry = `${mutated.length} params  Δerr${errDelta >= 0 ? '+' : ''}${errDelta.toFixed(3)}  Δval${avgChange >= 0 ? '+' : ''}${avgChange.toFixed(3)}${keptMark}`;
+                    network.learnLog.push(entry);
+                    updateLearnTooltip();
+                }
+                // update error history and chart only when improvement occurred
+                if (improved) {
+                    network.errorHistory = network.errorHistory || [];
+                    network.errorHistory.push(newError);
+                    if (network.errorHistory.length > 500) network.errorHistory.shift();
+                    drawErrorChart();
+                }
+            }
+
+            if (!opts.suppressVisuals && highlight) {
+                network.learnHighlight = highlight;
+                runNetwork();
+                setTimeout(() => {
+                    const newError = computeTotalError();
+                    const improved = newError < oldError;
+                    network.learnHighlight.status = improved ? 'improved' : 'worse';
+                    if (!improved) {
+                        // revert all
+                        for (const m of mutated) {
+                            if (m.type === 'bias') network.layers[m.layerIndex][m.neuronIndex].bias = m.oldValue;
+                            else network.layers[m.layerIndex][m.neuronIndex].weights[m.weightIndex] = m.oldValue;
+                        }
+                    } else {
+                        saveNetworkWeights();
+                    }
+                    // finalize visuals then clear
+                    setTimeout(() => {
+                        network.learnHighlight = null;
+                        runNetwork();
+                        finalizeAfterEval(newError, improved);
+                        resolve({ improved, beforeErr: oldError, afterErr: newError });
+                    }, 600);
+                }, 400);
+            } else {
+                // fast path: evaluate immediately
+                const newError = computeTotalError();
+                const improved = newError < oldError;
+                if (!improved) {
+                    for (const m of mutated) {
+                        if (m.type === 'bias') network.layers[m.layerIndex][m.neuronIndex].bias = m.oldValue;
+                        else network.layers[m.layerIndex][m.neuronIndex].weights[m.weightIndex] = m.oldValue;
+                    }
+                } else {
+                    saveNetworkWeights();
+                }
+                finalizeAfterEval(newError, improved);
+                runNetwork();
+                return resolve({ improved, beforeErr: oldError, afterErr: newError });
+            }
+        });
+    }
+
+    // Global helper to render the last 3 learn log lines into the tooltip and show scrollbar
+    function updateLearnTooltip() {
+        const tooltip = document.getElementById('learn-tooltip');
+        const linesDiv = document.getElementById('learn-log-lines');
+        if (!tooltip || !linesDiv) return;
+        tooltip.style.display = 'block';
+        try {
+            const rect = canvas.getBoundingClientRect();
+            const sx = (window.scrollX || window.pageXOffset || 0);
+            const sy = (window.scrollY || window.pageYOffset || 0);
+            tooltip.style.left = (Math.max(8, rect.left + 8) + sx) + 'px';
+            tooltip.style.top = (Math.max(8, rect.top + 8) + sy) + 'px';
+        } catch (e) {}
+        const log = network.learnLog || [];
+        const lastThree = log.slice(-3);
+        linesDiv.innerHTML = lastThree.map(s => String(s)).join('<br>');
+        // keep scrollbar scrolled to bottom
+        linesDiv.scrollTop = linesDiv.scrollHeight;
+    }
+
+    // Draw a small error-over-time chart into the #error-chart canvas
+    function drawErrorChart() {
+        try {
+            const el = document.getElementById('error-chart');
+            if (!el) return;
+            const ctx2 = el.getContext('2d');
+            const ratio = window.devicePixelRatio || 1;
+            const w = el.clientWidth || 300;
+            const h = el.clientHeight || 80;
+            el.width = Math.max(1, Math.floor(w * ratio));
+            el.height = Math.max(1, Math.floor(h * ratio));
+            ctx2.setTransform(ratio,0,0,ratio,0,0);
+            ctx2.clearRect(0,0,w,h);
+            const history = network.errorHistory || [];
+            if (history.length < 2) return;
+            const maxErr = Math.max(...history);
+            const minErr = Math.min(...history);
+            const pad = 6;
+            ctx2.beginPath();
+            ctx2.moveTo(pad, h - pad - ((history[0] - minErr) / (maxErr - minErr || 1)) * (h - pad*2));
+            for (let i = 1; i < history.length; i++) {
+                const x = pad + (i / (history.length - 1)) * (w - pad*2);
+                const y = h - pad - ((history[i] - minErr) / (maxErr - minErr || 1)) * (h - pad*2);
+                ctx2.lineTo(x, y);
+            }
+            ctx2.strokeStyle = '#007bff';
+            ctx2.lineWidth = 2;
+            ctx2.stroke();
+            ctx2.closePath();
+            // draw axes/labels minimal
+            ctx2.fillStyle = '#333';
+            ctx2.font = '10px Arial';
+            ctx2.textAlign = 'right';
+            ctx2.fillText(maxErr.toFixed(3), w - pad, pad + 8);
+            ctx2.textAlign = 'right';
+            ctx2.fillText(minErr.toFixed(3), w - pad, h - pad - 2);
+        } catch (e) {}
+    }
+
+    function drawNetworkInternal(ctx) {
         // Use CSS pixel dimensions for layout when canvas is scaled for DPR
         const ratio = window.devicePixelRatio || 1;
         const width = ctx.canvas.width / ratio;
@@ -474,6 +681,25 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
             });
         });
+
+        // If a learn highlight is active for a weight, draw an overlay on that connection
+        if (network.learnHighlight && network.learnHighlight.type === 'weight' && network.connectionPositions) {
+            const hl = network.learnHighlight;
+            for (const conn of network.connectionPositions) {
+                if (conn.layerIndex === hl.layerIndex && conn.toNeuronIndex === hl.neuronIndex && conn.fromNeuronIndex === hl.weightIndex) {
+                    ctx.beginPath();
+                    ctx.moveTo(conn.x1, conn.y1);
+                    ctx.lineTo(conn.x2, conn.y2);
+                    ctx.lineWidth = 6;
+                    if (hl.status === 'testing') ctx.strokeStyle = 'rgba(255,193,7,0.95)';
+                    else if (hl.status === 'improved') ctx.strokeStyle = 'rgba(40,167,69,0.95)';
+                    else ctx.strokeStyle = 'rgba(220,53,69,0.95)';
+                    ctx.stroke();
+                    ctx.closePath();
+                    break;
+                }
+            }
+        }
 
         // Draw neurons and bias icons (with hit data)
         network.biasPositions = [];
@@ -613,6 +839,25 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         });
 
+        // If a learn highlight is active for a bias, draw an emphasized rectangle around it
+        if (network.learnHighlight && network.learnHighlight.type === 'bias' && network.biasPositions) {
+            const hl = network.learnHighlight;
+            for (const b of network.biasPositions) {
+                if (b.layerIndex === hl.layerIndex && b.neuronIndex === hl.neuronIndex) {
+                    const r = b.size + 6;
+                    ctx.beginPath();
+                    ctx.rect(b.x - r/2, b.y - r/2, r, r);
+                    if (hl.status === 'testing') ctx.strokeStyle = 'rgba(255,193,7,0.95)';
+                    else if (hl.status === 'improved') ctx.strokeStyle = 'rgba(40,167,69,0.95)';
+                    else ctx.strokeStyle = 'rgba(220,53,69,0.95)';
+                    ctx.lineWidth = 2.5;
+                    ctx.stroke();
+                    ctx.closePath();
+                    break;
+                }
+            }
+        }
+
         // Draw one or more output indicators to the right, labeled with function names.
         try {
             const outLayerIdx = network.layers.length - 1;
@@ -699,6 +944,11 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch (e) {
             // ignore drawing errors
         }
+    }
+
+    // Wrapper to allow calling drawNetwork() without passing the ctx; uses module-scoped `ctx` when absent.
+    function drawNetwork(ctxParam) {
+        return drawNetworkInternal(ctxParam || ctx);
     }
 
     let selectedNeuron = null; // To track which neuron is being edited
@@ -796,11 +1046,119 @@ document.addEventListener('DOMContentLoaded', () => {
         // Activation is fixed to ReLU; no DOM control to listen for.
 
         const resetWeightsBtn = document.getElementById('reset-weights');
-        resetWeightsBtn.addEventListener('click', () => {
-            // Mark next rebuild to skip saving (clears saved layers)
-            network._skipSaveOnNextRebuild = true;
-            rebuildAndRerunNetwork(); // This will re-initialize with the current settings
-        });
+        // Triple-tap (3 clicks within 1s) reveals the hidden learn button
+        (function() {
+            const taps = [];
+            resetWeightsBtn.addEventListener('click', () => {
+                const now = Date.now();
+                taps.push(now);
+                // keep only last 3 timestamps
+                while (taps.length > 3) taps.shift();
+                // if 3 taps within 1 second, reveal learn button
+                if (taps.length === 3 && (taps[2] - taps[0]) <= 1000) {
+                    const learnBtn = document.getElementById('learn-step-btn');
+                    if (learnBtn) {
+                        learnBtn.classList.add('visible');
+                        learnBtn.style.display = 'block';
+                        // brief pulse to indicate unlock
+                        learnBtn.animate([{ transform: 'scale(1)' }, { transform: 'scale(1.05)' }, { transform: 'scale(1)' }], { duration: 300 });
+                    }
+                    // reveal bulk buttons as well
+                    revealBulkLearnButtons();
+                    taps.length = 0;
+                } else {
+                    // Normal reset behavior if not unlocking
+                    network._skipSaveOnNextRebuild = true;
+                    rebuildAndRerunNetwork();
+                }
+            });
+        })();
+
+        // Learn button wired to perform a single learn step with animation
+        const learnBtn = document.getElementById('learn-step-btn');
+        if (learnBtn) {
+            learnBtn.addEventListener('click', (ev) => {
+                ev.preventDefault();
+                learnBtn.disabled = true;
+                performLearnStep();
+                // Re-enable after a short delay so user can trigger again
+                setTimeout(() => { learnBtn.disabled = false; }, 1400);
+            });
+        }
+
+        const learn10 = document.getElementById('learn-10-btn');
+        const learn100 = document.getElementById('learn-100-btn');
+        const learnClear = document.getElementById('learn-log-clear');
+        function revealBulkLearnButtons() {
+            if (learn10) learn10.style.display = 'inline-block';
+            if (learn100) learn100.style.display = 'inline-block';
+            // Reveal the error chart container when learn controls are unlocked
+            try {
+                const ec = document.getElementById('error-chart-container');
+                if (ec) ec.style.display = 'block';
+            } catch (e) {}
+            // Seed error history with current error if not present
+            try {
+                network.errorHistory = network.errorHistory || [];
+                if ((network.errorHistory || []).length === 0) {
+                    const cur = computeTotalError();
+                    network.errorHistory.push(cur);
+                    drawErrorChart();
+                }
+            } catch (e) {}
+        }
+
+        // When learn button is revealed, also reveal bulk buttons
+        if (learnBtn) learnBtn.addEventListener('animationend', revealBulkLearnButtons);
+
+        if (learn10) {
+            learn10.addEventListener('click', async (ev) => {
+                ev.preventDefault();
+                if (learn10.disabled) return;
+                learn10.disabled = true;
+                // Hide persistent log while running
+                const learnTooltip = document.getElementById('learn-tooltip');
+                if (learnTooltip) learnTooltip.style.display = 'none';
+                for (let i = 0; i < 10; i++) {
+                    await performLearnStep({ suppressLog: true, suppressVisuals: true });
+                }
+                // Keep the log hidden after bulk run (do not auto-show)
+                if (learnTooltip) learnTooltip.style.display = 'none';
+                // final redraw and chart update
+                drawNetwork();
+                drawErrorChart();
+                learn10.disabled = false;
+            });
+        }
+
+        if (learn100) {
+            learn100.addEventListener('click', async (ev) => {
+                ev.preventDefault();
+                if (learn100.disabled) return;
+                learn100.disabled = true;
+                const learnTooltip = document.getElementById('learn-tooltip');
+                if (learnTooltip) learnTooltip.style.display = 'none';
+                for (let i = 0; i < 100; i++) {
+                    await performLearnStep({ suppressLog: true, suppressVisuals: true });
+                }
+                // Keep the log hidden after bulk run (do not auto-show)
+                if (learnTooltip) learnTooltip.style.display = 'none';
+                drawNetwork();
+                drawErrorChart();
+                learn100.disabled = false;
+            });
+        }
+
+        if (learnClear) {
+            learnClear.addEventListener('click', (ev) => {
+                ev.preventDefault();
+                network.learnLog = [];
+                const learnTooltip = document.getElementById('learn-tooltip');
+                const linesDiv = document.getElementById('learn-log-lines');
+                if (linesDiv) linesDiv.innerHTML = '';
+                if (learnTooltip) learnTooltip.style.display = 'none';
+            });
+        }
 
         // Modal event listeners
         document.querySelector('.close-btn').addEventListener('click', closeEditModal);
@@ -897,7 +1255,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     startValue: network.layers[hitConn.layerIndex][hitConn.toNeuronIndex].weights[hitConn.fromNeuronIndex]
                 };
                 canvas.style.cursor = 'ns-resize';
-                if (tooltip) {
+                    if (tooltip) {
                     const sx = (window.scrollX || window.pageXOffset || 0);
                     const sy = (window.scrollY || window.pageYOffset || 0);
                     const top = (isTouch) ? (clientPageY - TOUCH_TIP_OFFSET_Y + sy) : (clientPageY + TIP_OFFSET_Y + sy);

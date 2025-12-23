@@ -53,7 +53,18 @@ python3 -m http.server</code></pre>
                 <div class="control-group">
                     <button id="reset-weights">Reset Weights</button>
                 </div>
+                <div class="control-group">
+                    <button id="learn-step-btn" style="display:none; width:100%; padding:8px; font-size:14px; background:#28a745;">Learn Step</button>
+                </div>
+                <div class="control-group">
+                    <button id="learn-10-btn" style="display:none; width:48%; padding:6px; font-size:13px;">Learn ×10</button>
+                    <button id="learn-100-btn" style="display:none; width:48%; padding:6px; font-size:13px; float:right;">Learn ×100</button>
+                </div>
                 <!-- Debug and Test UI removed -->
+                <div id="error-chart-container" style="margin-top:12px; display:none;">
+                    <div style="font-size:13px; color:#222; margin-bottom:6px;">Error Over Time</div>
+                    <canvas id="error-chart" width="320" height="80" style="width:100%; max-width:320px; height:80px; border:1px solid #ddd; background:#fff; border-radius:6px;"></canvas>
+                </div>
             </div>
             <div id="visualization">
                 <canvas id="nn-canvas"></canvas>
@@ -81,7 +92,15 @@ python3 -m http.server</code></pre>
     </div>
 
     <!-- Tooltip for drag adjustments -->
-    <div id="drag-tooltip" style="display:none; position: absolute; pointer-events: none; z-index: 200; background: rgba(0,0,0,0.8); color: #fff; padding:6px 8px; border-radius:4px; font-family: sans-serif; font-size:12px;"></div>
+    <div id="drag-tooltip" style="display:none; position: absolute; pointer-events: none; z-index: 200; background: rgba(0,0,0,0.8); color: #fff; padding:6px 8px; border-radius:4px; font-family: sans-serif; font-size:12px; white-space: normal; max-width:260px;"></div>
+
+    <!-- Learn log tooltip (separate from drag tooltip) -->
+    <div id="learn-tooltip" style="display:none; position: absolute; pointer-events: auto; z-index: 210; background: rgba(0,0,0,0.9); color: #fff; padding:10px 12px; border-radius:6px; font-family: sans-serif; font-size:12px; white-space: normal; max-width:260px;">
+        <div id="learn-log-lines" style="max-height:4.2em; overflow-y:auto; font-size:12px; line-height:1.4; margin-bottom:6px;"></div>
+        <div style="text-align:right;">
+            <button id="learn-log-clear" style="font-size:12px; padding:4px 6px;">×</button>
+        </div>
+    </div>
 
     <script src="app.js"></script>
     <script>

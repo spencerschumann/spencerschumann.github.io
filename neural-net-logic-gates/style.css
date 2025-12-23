@@ -139,6 +139,20 @@ button:hover {
     background-color: #0056b3;
 }
 
+/* Tooltip / learn log box at top-left of canvas */
+#drag-tooltip { display:none; position: absolute; pointer-events: none; z-index: 200; background: rgba(0,0,0,0.8); color: #fff; padding:6px 8px; border-radius:4px; font-family: sans-serif; font-size:12px; white-space: normal; max-width:260px; }
+#learn-tooltip { display:none; position: absolute; pointer-events: auto; z-index: 210; background: rgba(0,0,0,0.9); color: #fff; padding:10px 12px; border-radius:6px; font-family: sans-serif; font-size:12px; white-space: normal; max-width:260px; }
+#learn-tooltip #learn-log-lines { max-height: 4.2em; overflow-y: auto; }
+#learn-tooltip button { background: rgba(255,255,255,0.06); color: #fff; border: none; padding: 4px 6px; border-radius:4px; cursor: pointer; }
+#learn-tooltip button:hover { background: rgba(255,255,255,0.12); }
+
+/* Error chart styling */
+#error-chart { display: block; margin: 0 auto; }
+
+/* Learn-step button (hidden by default until unlocked) */
+#learn-step-btn { display: none; background-color: #28a745; }
+#learn-step-btn.visible { display: block; }
+
 
 #nn-canvas {
     border: 1px solid #ccc;

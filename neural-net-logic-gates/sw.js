@@ -1,5 +1,5 @@
 // Update this version number whenever you make changes
-const CACHE_VERSION = 'v1.0.3';
+const CACHE_VERSION = 'v1.0.4';
 const CACHE_NAME = `neural-net-logic-gates-${CACHE_VERSION}`;
 
 const urlsToCache = [
