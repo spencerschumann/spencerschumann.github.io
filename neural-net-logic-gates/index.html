@@ -19,7 +19,10 @@ python3 -m http.server</code></pre>
         <h1>Neural Net Logic Gates</h1>
         <div id="challenge-status">
             <h2>Challenge: <span id="challenge-name">NOT</span></h2>
-            <p id="challenge-message">Configure the network to solve the challenge!</p>
+            <div class="status-row">
+                <p id="challenge-message">Configure the network to solve the challenge!</p>
+                <button id="next-challenge-btn">Next Challenge</button>
+            </div>
         </div>
         <div id="main-content">
             <div id="controls">
@@ -31,38 +34,21 @@ python3 -m http.server</code></pre>
                         <option value="or">OR</option>
                         <option value="and">AND</option>
                         <option value="xor">XOR</option>
+                        <option value="full-adder">Full Adder</option>
                     </select>
                 </div>
                 <div class="control-group">
                     <h3>Network Structure</h3>
-                    <label for="hidden-layers">Hidden Layers:</label>
-                    <input type="number" id="hidden-layers" min="0" max="2" value="0">
-                    <div id="hidden-layer-neurons">
-                        <!-- Neuron count inputs will be added here by JS -->
-                    </div>
+                    <label for="has-hidden">Hidden Layer:</label>
+                    <input type="checkbox" id="has-hidden">
+                    <label for="hidden-neurons" style="margin-left:8px;">Neurons:</label>
+                    <input type="number" id="hidden-neurons" min="1" max="10" value="2" style="width:72px; margin-left:6px;">
                 </div>
-                <div class="control-group">
-                    <label for="activation-select">Activation Function:</label>
-                    <select id="activation-select">
-                        <option value="sigmoid">Sigmoid</option>
-                        <option value="relu">ReLU</option>
-                        <option value="tanh">Tanh</option>
-                    </select>
-                </div>
+                <!-- Activation fixed to ReLU (no control) -->
                 <div class="control-group">
                     <button id="reset-weights">Reset Weights</button>
                 </div>
-                <div class="control-group">
-                    <button id="debug-btn">Debug</button>
-                </div>
-                <div class="control-group">
-                    <h3>Test Your Network</h3>
-                    <div id="custom-inputs-container">
-                        <!-- Custom inputs will be generated here by JS -->
-                    </div>
-                    <button id="test-custom-inputs-btn">Test</button>
-                    <p>Output: <span id="custom-output">-</span></p>
-                </div>
+                <!-- Debug and Test UI removed -->
             </div>
             <div id="visualization">
                 <canvas id="nn-canvas"></canvas>
@@ -88,6 +74,9 @@ python3 -m http.server</code></pre>
             <button id="save-neuron-btn">Save</button>
         </div>
     </div>
+
+    <!-- Tooltip for drag adjustments -->
+    <div id="drag-tooltip" style="display:none; position: absolute; pointer-events: none; z-index: 200; background: rgba(0,0,0,0.8); color: #fff; padding:6px 8px; border-radius:4px; font-family: sans-serif; font-size:12px;"></div>
 
     <script src="app.js"></script>
     <script>

@@ -28,6 +28,49 @@ h1, h2, h3 {
     gap: 20px;
 }
 
+/* Challenge status: keep message and button on one line to avoid layout shift */
+#challenge-status {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+}
+
+.status-row {
+    display: inline-flex;
+    align-items: center;
+    gap: 12px;
+}
+
+#challenge-status h2 {
+    margin: 0;
+}
+
+#challenge-status p {
+    margin: 0;
+    display: inline-block;
+}
+
+#next-challenge-btn {
+    /* Hidden by default but occupying layout space; JS toggles .visible */
+    visibility: hidden;
+    opacity: 0;
+    transition: opacity 250ms ease, visibility 250ms ease;
+    padding: 8px 12px;
+    font-size: 14px;
+}
+
+#next-challenge-btn.visible {
+    visibility: visible;
+    opacity: 1;
+}
+
+/* Make the status row take full width and space items */
+.status-row {
+    width: 100%;
+    justify-content: space-between;
+}
+
 #controls {
     flex: 1;
     min-width: 250px;
