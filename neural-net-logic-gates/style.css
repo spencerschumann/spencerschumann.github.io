@@ -8,6 +8,9 @@ body {
     justify-content: center;
 }
 
+/* Use border-box sizing everywhere to avoid unexpected overflow */
+*, *::before, *::after { box-sizing: border-box; }
+
 #app-container {
     width: 100%;
     max-width: 1200px;
@@ -72,8 +75,8 @@ h1, h2, h3 {
 }
 
 #controls {
-    flex: 1;
-    min-width: 250px;
+    flex: 1 1 220px;
+    min-width: 200px;
     background-color: #f9f9f9;
     padding: 20px;
     border-radius: 8px;
@@ -81,16 +84,16 @@ h1, h2, h3 {
 }
 
 #visualization {
-    flex: 2;
-    min-width: 400px;
+    flex: 2 1 320px;
+    min-width: 260px;
     display: flex;
     justify-content: center;
     align-items: center;
 }
 
 #output {
-    flex: 1;
-    min-width: 250px;
+    flex: 1 1 220px;
+    min-width: 200px;
     background-color: #f9f9f9;
     padding: 20px;
     border-radius: 8px;
@@ -100,6 +103,14 @@ h1, h2, h3 {
 .control-group {
     margin-bottom: 20px;
 }
+
+/* Inline radios for hidden neuron counts */
+.hidden-count-row {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+}
+.hidden-count-row label { font-weight: normal; }
 
 label {
     display: block;
@@ -162,6 +173,49 @@ button:hover {
     }
 }
 
+/* Mobile layout tweaks to remove left padding and allow full-viewport canvas */
+@media (max-width: 768px) {
+    /* Remove outer body padding so cards can use full viewport width
+       and disable flex centering (which was shifting the inner cards). */
+    html, body { padding: 0; margin: 0; display: block; width: 100%; }
+    /* Make the app container use full width (box-sizing keeps padding inside) */
+    #app-container { padding-left: 0; padding-right: 0; max-width: 100%; width: 100%; margin: 0; display: block; }
+    /* Remove visualization padding and let canvas span the container */
+    #visualization { padding-left: 0; padding-right: 0; }
+    /* Make the canvas occupy the full container width and avoid negative margins */
+    #nn-canvas { width: 100%; max-width: 100%; display: block; margin-left: 0; }
+    /* Prevent small rounding overflow by clamping body overflow */
+    html, body { overflow-x: hidden; }
+
+    /* Ensure inner cards never exceed the container width and are left-aligned */
+    #controls, #visualization, #output {
+        width: 100%;
+        max-width: 100%;
+        margin: 0; /* left-align inside the app container */
+        box-sizing: border-box;
+        padding-left: 12px;
+        padding-right: 12px;
+    }
+
+    /* Reduce internal card padding slightly so content fits without overflow */
+    #controls, #output { padding-top: 12px; padding-bottom: 12px; }
+
+    /* Visualization area shouldn't add extra horizontal padding */
+    #visualization { padding-left: 0; padding-right: 0; }
+
+    /* Tighter gaps on small screens to avoid combined overflow */
+    #main-content { gap: 12px; padding: 0; align-items: stretch; }
+
+    /* Hide any tiny overflow on the container so rounded background remains clean */
+    #app-container { overflow-x: hidden; }
+}
+
+/* Reduce horizontal overflow on medium screens */
+@media (max-width: 1024px) {
+    #controls, #output { flex-basis: 240px; }
+    #visualization { flex-basis: 360px; }
+}
+
 /* Modal styles */
 .modal {
     position: fixed;
@@ -205,3 +259,7 @@ button:hover {
 #modal-body .control-group {
     margin-bottom: 15px;
 }
+
+/* Debug helpers: enabled by adding `?debug_ui=1` to the URL (adds class `debug-overflow` to body) */
+/* Debug overlay layer (does not affect layout) */
+/* debug CSS removed */

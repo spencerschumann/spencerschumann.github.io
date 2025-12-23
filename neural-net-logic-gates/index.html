@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Neural Net Logic Gates</title>
     <link rel="stylesheet" href="style.css">
     <link rel="manifest" href="manifest.json">
@@ -39,10 +39,15 @@ python3 -m http.server</code></pre>
                 </div>
                 <div class="control-group">
                     <h3>Network Structure</h3>
-                    <label for="has-hidden">Hidden Layer:</label>
-                    <input type="checkbox" id="has-hidden">
-                    <label for="hidden-neurons" style="margin-left:8px;">Neurons:</label>
-                    <input type="number" id="hidden-neurons" min="1" max="10" value="2" style="width:72px; margin-left:6px;">
+                    <label>Hidden Neurons:</label>
+                    <div id="hidden-count-row" class="hidden-count-row" role="radiogroup" aria-label="Hidden neuron count">
+                        <label><input type="radio" name="hidden-count" value="0" checked> 0</label>
+                        <label><input type="radio" name="hidden-count" value="1"> 1</label>
+                        <label><input type="radio" name="hidden-count" value="2"> 2</label>
+                        <label><input type="radio" name="hidden-count" value="3"> 3</label>
+                        <label><input type="radio" name="hidden-count" value="4"> 4</label>
+                        <label><input type="radio" name="hidden-count" value="5"> 5</label>
+                    </div>
                 </div>
                 <!-- Activation fixed to ReLU (no control) -->
                 <div class="control-group">
@@ -99,5 +104,6 @@ python3 -m http.server</code></pre>
             document.getElementById('file-protocol-warning').style.display = 'block';
         }
     </script>
+    <!-- debug helper removed -->
 </body>
 </html>

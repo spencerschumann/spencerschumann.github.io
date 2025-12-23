@@ -153,12 +153,22 @@ document.addEventListener('DOMContentLoaded', () => {
         ctx.stroke();
         ctx.closePath();
 
-        // Label (static color) - place above the neuron
-        ctx.fillStyle = '#111';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'bottom';
-        ctx.font = '12px Arial';
-        ctx.fillText(label, x, y - radius - 6);
+        // Draw a compact, stronger static activation halo when neuron is 'on' (output >= 0.5)
+        try {
+            if (typeof output === 'number' && output >= 0.5) {
+                const haloRadius = radius + 6;
+                ctx.beginPath();
+                ctx.arc(x, y, haloRadius, 0, 2 * Math.PI);
+                ctx.strokeStyle = 'rgba(0,123,255,0.45)';
+                ctx.lineWidth = 6;
+                ctx.stroke();
+                ctx.closePath();
+            }
+        } catch (e) {
+            // non-fatal if drawing halo fails
+        }
+        // Labels removed — on-canvas text cluttered the UI and added little value.
+        // (Keep function signature compatible but do not draw the N#-# label.)
     }
 
     // --- TRUTH TABLE ---
@@ -186,6 +196,33 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    // Returns an array of output labels for the given gate
+    function getOutputLabels(gate) {
+        switch (gate) {
+            case 'full-adder': return ['SUM', 'CARRY'];
+            default: return [gate.toUpperCase()];
+        }
+    }
+
+    // Compute expected output(s) for a single input vector for the given gate
+    function expectedOutputFor(gate, inputs) {
+        switch (gate) {
+            case 'not': return 1 - (inputs[0] ? 1 : 0);
+            case 'or': return (inputs[0] || inputs[1]) ? 1 : 0;
+            case 'and': return (inputs[0] && inputs[1]) ? 1 : 0;
+            case 'xor': return (inputs[0] ^ inputs[1]) ? 1 : 0;
+            case 'full-adder': {
+                const a = inputs[0] ? 1 : 0;
+                const b = inputs[1] ? 1 : 0;
+                const c = inputs[2] ? 1 : 0;
+                const s = (a + b + c) % 2;
+                const carry = (a + b + c) >= 2 ? 1 : 0;
+                return [s, carry];
+            }
+            default: return 0;
+        }
+    }
+
     const challenges = ['not', 'or', 'and', 'xor'];
     let currentChallengeIndex = 0;
 
@@ -200,17 +237,19 @@ document.addEventListener('DOMContentLoaded', () => {
 
         if (tableData.length === 0) return;
 
-        // Create header showing inputs and one-or-more output columns
+        // Create header showing inputs and labeled NN output columns
         const headerRow = tableElement.insertRow();
         const inputCount = tableData[0].inputs.length;
         for (let i = 0; i < inputCount; i++) {
             headerRow.insertCell().textContent = `Input ${i + 1}`;
         }
-        // Determine output count from expected value shape
+        // Determine output count from expected value shape and use function labels
         const firstExpected = tableData[0].expected;
         const outputCount = Array.isArray(firstExpected) ? firstExpected.length : 1;
+        const outLabels = getOutputLabels(gateSelect.value || gateSelect);
         for (let o = 0; o < outputCount; o++) {
-            headerRow.insertCell().textContent = `NN Output ${o + 1}`;
+            const label = outLabels[o] || (`OUTPUT ${o + 1}`);
+            headerRow.insertCell().textContent = label;
         }
 
         // Create data rows
@@ -379,7 +418,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const neuronRadius = 30;
         const onColor = 'rgba(0,123,255,0.95)';
         const offColor = 'rgba(200,200,200,0.9)';
-        const layerPadding = 100;
+        let layerPadding = 100;
 
         const inputCount = network.layers[0][0].weights.length;
         const allLayers = [{ neurons: Array(inputCount) }, ...network.layers];
@@ -394,7 +433,10 @@ document.addEventListener('DOMContentLoaded', () => {
             const neuronCount = layer.neurons ? layer.neurons.length : layer.length;
 
             for (let i = 0; i < neuronCount; i++) {
-                const y = (height / (neuronCount + 1)) * (i + 1);
+                // Add a bit more vertical spacing when there are many neurons to avoid overlap
+                // and give more room for bias icons beneath the neuron when hidden layer is large.
+                const extraVSpace = (neuronCount >= 5) ? 12 : 0;
+                const y = (height / (neuronCount + 1)) * (i + 1) + ((i - (neuronCount - 1) / 2) * extraVSpace);
                 layerPositions.push({ x: layerX, y: y });
             }
             network.neuronPositions.push(layerPositions);
@@ -545,7 +587,9 @@ document.addEventListener('DOMContentLoaded', () => {
                     // Draw bias icon (small square beneath neuron)
                     const iconSize = 10;
                     const iconX = pos.x - iconSize / 2;
-                    const iconY = pos.y + neuronRadius + 6;
+                    // nudge bias icon slightly further down when the hidden layer has many neurons
+                    const biasNudge = (network.layers && network.layers.length > 0 && network.layers[0].length >= 5 && layerIndex - 1 === 0) ? 8 : 0;
+                    const iconY = pos.y + neuronRadius + 6 + biasNudge;
                     ctx.beginPath();
                     ctx.rect(iconX, iconY, iconSize, iconSize);
                         // Color bias similar to connections: black when near zero, blue for positive, red for negative
@@ -569,59 +613,87 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         });
 
-        // Draw a small output indicator to the right showing numeric value and ON/OFF
+        // Draw one or more output indicators to the right, labeled with function names.
         try {
             const outLayerIdx = network.layers.length - 1;
             if (outLayerIdx >= 0) {
-                const outNeuron = network.layers[outLayerIdx][0];
+                const outLayer = network.layers[outLayerIdx];
                 const outPosLayer = network.neuronPositions[network.neuronPositions.length - 1];
-                if (outPosLayer && outPosLayer[0]) {
-                    const outPos = outPosLayer[0];
-                    const outX = Math.max(width - 50, outPos.x + 50);
-                    const outY = outPos.y;
+                if (outPosLayer && outPosLayer.length && outLayer && outLayer.length) {
+                    const outCount = outLayer.length;
+                    const inputCount = (network.layers && network.layers[0] && network.layers[0][0]) ? network.layers[0][0].weights.length : null;
+                    const inputsForCalc = (inputCount !== null && network.inputValues && network.inputValues.length >= inputCount) ? network.inputValues.slice(0, inputCount) : null;
+                    let currentOutputs = null;
+                    if (inputsForCalc) currentOutputs = feedForward(inputsForCalc);
+
                     const outRadius = 16;
-                    // Prefer computing output from current custom input toggles when available,
-                    // otherwise fall back to the neuron's stored output (from challenge runs).
-                    let val = 0;
-                    try {
-                        const inputCount = (network.layers && network.layers[0] && network.layers[0][0]) ? network.layers[0][0].weights.length : null;
-                        if (inputCount !== null && network.inputValues && network.inputValues.length >= inputCount) {
-                            val = feedForward(network.inputValues.slice(0, inputCount));
-                        } else {
-                            val = outNeuron && typeof outNeuron.output === 'number' ? outNeuron.output : 0;
-                        }
-                    } catch (e) {
-                        val = outNeuron && typeof outNeuron.output === 'number' ? outNeuron.output : 0;
+                    const labels = getOutputLabels(document.getElementById('gate-select').value);
+                    // horizontal offset for indicators
+                    const baseX = Math.max(width - 50, outPosLayer[0].x + 60);
+                    // vertical stacking offset
+                    const stackSpacing = outRadius * 2 + 12;
+                    const centerY = outPosLayer[0].y;
+
+                    for (let o = 0; o < outCount; o++) {
+                        const neuronPos = outPosLayer[o] || outPosLayer[0];
+                        const outX = baseX;
+                        // Align each indicator vertically with its corresponding output neuron
+                        const outY = neuronPos.y;
+
+                        // Determine current NN output value for this output neuron
+                        let val = 0;
+                        if (currentOutputs && currentOutputs[o] !== undefined) val = currentOutputs[o];
+                        else if (outLayer[o] && typeof outLayer[o].output === 'number') val = outLayer[o].output;
+
+                        // Determine expected value (0/1) for these selected inputs, if available
+                        let expected = null;
+                        try {
+                            const gate = document.getElementById('gate-select').value;
+                            if (inputsForCalc) {
+                                const exp = expectedOutputFor(gate, inputsForCalc);
+                                expected = Array.isArray(exp) ? exp[o] : exp;
+                            }
+                        } catch (e) { expected = null; }
+
+                        const outBit = (val >= 0.5) ? 1 : 0;
+                        const isCorrect = (expected === null) ? null : (outBit === expected);
+                        const correctColor = '#28a745';
+                        const incorrectColor = '#dc3545';
+                        const indicatorFill = (isCorrect === null) ? (val >= 0.5 ? onColor : offColor) : (isCorrect ? correctColor : incorrectColor);
+
+                        // Draw circle
+                        ctx.beginPath();
+                        ctx.arc(outX, outY, outRadius, 0, Math.PI * 2);
+                        ctx.fillStyle = indicatorFill;
+                        ctx.fill();
+                        ctx.strokeStyle = '#222';
+                        ctx.lineWidth = 1;
+                        ctx.stroke();
+                        ctx.closePath();
+
+                        // Numeric value
+                        ctx.fillStyle = 'white';
+                        ctx.font = '12px Arial';
+                        ctx.textAlign = 'center';
+                        ctx.textBaseline = 'middle';
+                        ctx.fillText(val.toFixed(2), outX, outY);
+
+                        // Label beneath (function name or SUM/CARRY)
+                        ctx.font = '11px Arial';
+                        ctx.fillStyle = '#111';
+                        const label = (labels && labels[o]) ? labels[o] : `OUT ${o + 1}`;
+                        ctx.fillText(label, outX, outY + outRadius + 12);
+
+                        // Connector from corresponding output neuron to this indicator
+                        const fromX = neuronPos.x + 20;
+                        ctx.beginPath();
+                        ctx.moveTo(fromX, neuronPos.y);
+                        ctx.lineTo(outX - outRadius, outY);
+                        ctx.strokeStyle = '#888';
+                        ctx.lineWidth = 1;
+                        ctx.stroke();
+                        ctx.closePath();
                     }
-                    ctx.beginPath();
-                    ctx.arc(outX, outY, outRadius, 0, Math.PI * 2);
-                    ctx.fillStyle = val >= 0.5 ? onColor : offColor;
-                    ctx.fill();
-                    ctx.strokeStyle = '#222';
-                    ctx.lineWidth = 1;
-                    ctx.stroke();
-                    ctx.closePath();
-
-                    // numeric text
-                    ctx.fillStyle = 'white';
-                    ctx.font = '12px Arial';
-                    ctx.textAlign = 'center';
-                    ctx.textBaseline = 'middle';
-                    ctx.fillText(val.toFixed(2), outX, outY);
-
-                    // ON/OFF label beneath
-                    ctx.font = '11px Arial';
-                    ctx.fillStyle = '#111';
-                    ctx.fillText(val >= 0.5 ? 'ON' : 'OFF', outX, outY + outRadius + 12);
-
-                    // small connector line from neuron to indicator
-                    ctx.beginPath();
-                    ctx.moveTo(outPos.x + 20, outPos.y);
-                    ctx.lineTo(outX - outRadius, outY);
-                    ctx.strokeStyle = '#888';
-                    ctx.lineWidth = 1;
-                    ctx.stroke();
-                    ctx.closePath();
                 }
             }
         } catch (e) {
@@ -713,15 +785,12 @@ document.addEventListener('DOMContentLoaded', () => {
             if (nextBtn) nextBtn.classList.remove('visible');
             rebuildAndRerunNetwork();
         });
-        // Hidden layer toggle (0 or 1 hidden layers)
-        const hasHiddenEl = document.getElementById('has-hidden');
-        const hiddenNeuronsEl = document.getElementById('hidden-neurons');
-        if (hasHiddenEl && hiddenNeuronsEl) {
-            hasHiddenEl.addEventListener('change', () => {
-                updateHiddenLayerControls();
+        // Hidden layer radio buttons (0..5)
+        const hiddenRadios = document.querySelectorAll('input[name="hidden-count"]');
+        if (hiddenRadios && hiddenRadios.length) {
+            hiddenRadios.forEach(r => r.addEventListener('change', () => {
                 rebuildAndRerunNetwork();
-            });
-            hiddenNeuronsEl.addEventListener('input', rebuildAndRerunNetwork);
+            }));
         }
 
         // Activation is fixed to ReLU; no DOM control to listen for.
@@ -761,37 +830,49 @@ document.addEventListener('DOMContentLoaded', () => {
         // Interactive drag handlers for weights and biases
         const tooltip = document.getElementById('drag-tooltip');
 
-        canvas.addEventListener('mousedown', (event) => {
-            const rect = canvas.getBoundingClientRect();
-            const x = event.clientX - rect.left;
-            const y = event.clientY - rect.top;
+        // Make canvas touch-friendly; allow scrolling when not actively dragging
+        canvas.style.touchAction = 'auto';
 
+        const TIP_OFFSET_X = 8;
+        const TIP_OFFSET_Y = 8;
+        const TOUCH_TIP_OFFSET_Y = 48; // distance above finger for touch tooltips
+
+        // Helper to compute canvas-local coordinates from client coordinates
+        function clientToCanvas(clientX, clientY) {
+            const rect = canvas.getBoundingClientRect();
+            return { x: clientX - rect.left, y: clientY - rect.top };
+        }
+
+        // Pointer down (mouse or touch)
+        function handlePointerDown(clientX, clientY, clientPageX, clientPageY, originalEvent) {
+            const pt = clientToCanvas(clientX, clientY);
+            const x = pt.x, y = pt.y;
             if (!network.neuronPositions) return;
 
             // Check input toggles first to avoid accidental weight drags over toggles
+            const isTouch = !!(originalEvent && typeof originalEvent.type === 'string' && originalEvent.type.indexOf('touch') === 0);
             if (network.inputTogglePositions) {
                 let hitInput = null;
                 for (const t of network.inputTogglePositions) {
                     if (!t) continue;
                     const dx = x - t.x;
                     const dy = y - t.y;
-                    if (Math.sqrt(dx * dx + dy * dy) < t.size + 4) { hitInput = t; break; }
+                    const thresh = t.size + (isTouch ? 12 : 4);
+                    if (Math.sqrt(dx * dx + dy * dy) < thresh) { hitInput = t; break; }
                 }
                 if (hitInput) {
                     const idx = hitInput.index;
                     network.inputValues[idx] = network.inputValues[idx] === 1 ? 0 : 1;
-                    // sync sidebar checkbox if present
                     const el = document.getElementById(`custom-input-${idx}`);
                     const valSpan = document.getElementById(`custom-input-${idx}-value`);
                     if (el) el.checked = network.inputValues[idx] === 1;
                     if (valSpan) valSpan.textContent = String(network.inputValues[idx]);
-                    // update output
                     const inputsArr = network.inputValues.slice(0, network.inputValues.length);
                     const output = feedForward(inputsArr);
                     const outEl = document.getElementById('custom-output');
                     if (outEl) outEl.textContent = formatOutputForDisplay(output);
                     drawNetwork(ctx);
-                    event.preventDefault();
+                    if (originalEvent && originalEvent.preventDefault) originalEvent.preventDefault();
                     return;
                 }
             }
@@ -801,7 +882,8 @@ document.addEventListener('DOMContentLoaded', () => {
             if (network.connectionPositions) {
                 for (const conn of network.connectionPositions) {
                     const d = pointToSegmentDistance(x, y, conn.x1, conn.y1, conn.x2, conn.y2);
-                    if (d < 8) { hitConn = conn; break; }
+                    const connThresh = isTouch ? 14 : 8;
+                    if (d < connThresh) { hitConn = conn; break; }
                 }
             }
 
@@ -815,8 +897,18 @@ document.addEventListener('DOMContentLoaded', () => {
                     startValue: network.layers[hitConn.layerIndex][hitConn.toNeuronIndex].weights[hitConn.fromNeuronIndex]
                 };
                 canvas.style.cursor = 'ns-resize';
-                if (tooltip) { tooltip.style.display = 'block'; tooltip.textContent = `Weight: ${dragState.startValue.toFixed(2)}`; tooltip.style.left = (event.clientX + 12) + 'px'; tooltip.style.top = (event.clientY + 12) + 'px'; }
-                event.preventDefault();
+                if (tooltip) {
+                    const sx = (window.scrollX || window.pageXOffset || 0);
+                    const sy = (window.scrollY || window.pageYOffset || 0);
+                    const top = (isTouch) ? (clientPageY - TOUCH_TIP_OFFSET_Y + sy) : (clientPageY + TIP_OFFSET_Y + sy);
+                    tooltip.style.display = 'block';
+                    tooltip.textContent = `Weight: ${dragState.startValue.toFixed(2)}`;
+                    tooltip.style.left = (clientPageX + TIP_OFFSET_X + sx) + 'px';
+                    tooltip.style.top = top + 'px';
+                }
+                // Prevent page scroll once a drag begins (only when touch)
+                if (isTouch) canvas.style.touchAction = 'none';
+                if (originalEvent && originalEvent.preventDefault) originalEvent.preventDefault();
                 return;
             }
 
@@ -826,7 +918,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 for (const b of network.biasPositions) {
                     const dx = x - b.x;
                     const dy = y - b.y;
-                    if (Math.sqrt(dx * dx + dy * dy) < b.size) { hitBias = b; break; }
+                    const biasThresh = b.size + (isTouch ? 10 : 0);
+                    if (Math.sqrt(dx * dx + dy * dy) < biasThresh) { hitBias = b; break; }
                 }
             }
 
@@ -839,25 +932,35 @@ document.addEventListener('DOMContentLoaded', () => {
                     startValue: network.layers[hitBias.layerIndex][hitBias.neuronIndex].bias
                 };
                 canvas.style.cursor = 'ns-resize';
-                if (tooltip) { tooltip.style.display = 'block'; tooltip.textContent = `Bias: ${dragState.startValue.toFixed(2)}`; tooltip.style.left = (event.clientX + 12) + 'px'; tooltip.style.top = (event.clientY + 12) + 'px'; }
-                event.preventDefault();
+                if (tooltip) {
+                    const sx = (window.scrollX || window.pageXOffset || 0);
+                    const sy = (window.scrollY || window.pageYOffset || 0);
+                    const top = (isTouch) ? (clientPageY - TOUCH_TIP_OFFSET_Y + sy) : (clientPageY + TIP_OFFSET_Y + sy);
+                    tooltip.style.display = 'block';
+                    tooltip.textContent = `Bias: ${dragState.startValue.toFixed(2)}`;
+                    tooltip.style.left = (clientPageX + TIP_OFFSET_X + sx) + 'px';
+                    tooltip.style.top = top + 'px';
+                }
+                if (isTouch) canvas.style.touchAction = 'none';
+                if (originalEvent && originalEvent.preventDefault) originalEvent.preventDefault();
                 return;
             }
-        });
+        }
 
-        canvas.addEventListener('mousemove', (event) => {
-            const rect = canvas.getBoundingClientRect();
-            const x = event.clientX - rect.left;
-            const y = event.clientY - rect.top;
+        // Pointer move (mouse or touch)
+        function handlePointerMove(clientX, clientY, clientPageX, clientPageY, originalEvent) {
+            const pt = clientToCanvas(clientX, clientY);
+            const x = pt.x, y = pt.y;
 
             // Hover detection when not actively dragging
             if (!dragState) {
                 let hovering = false;
                 if (network.connectionPositions) {
                     for (const conn of network.connectionPositions) {
-                        const d = pointToSegmentDistance(x, y, conn.x1, conn.y1, conn.x2, conn.y2);
-                        if (d < 8) { hovering = true; break; }
-                    }
+                            const d = pointToSegmentDistance(x, y, conn.x1, conn.y1, conn.x2, conn.y2);
+                            const connThresh = 8;
+                            if (d < connThresh) { hovering = true; break; }
+                        }
                 }
                 if (!hovering && network.biasPositions) {
                     for (const b of network.biasPositions) {
@@ -884,17 +987,32 @@ document.addEventListener('DOMContentLoaded', () => {
             if (dragState.type === 'weight') {
                 const newVal = dragState.startValue + deltaY * sensitivity;
                 network.layers[dragState.layerIndex][dragState.neuronIndex].weights[dragState.weightIndex] = newVal;
-                if (tooltip) { tooltip.textContent = `Weight: ${newVal.toFixed(2)}`; tooltip.style.left = (event.clientX + 12) + 'px'; tooltip.style.top = (event.clientY + 12) + 'px'; }
+                if (tooltip) {
+                    const sx = (window.scrollX || window.pageXOffset || 0);
+                    const sy = (window.scrollY || window.pageYOffset || 0);
+                    const isTouchMove = !!(originalEvent && typeof originalEvent.type === 'string' && originalEvent.type.indexOf('touch') === 0);
+                    const top = (isTouchMove) ? (clientPageY - TOUCH_TIP_OFFSET_Y + sy) : (clientPageY + TIP_OFFSET_Y + sy);
+                    tooltip.textContent = `Weight: ${newVal.toFixed(2)}`;
+                    tooltip.style.left = (clientPageX + TIP_OFFSET_X + sx) + 'px';
+                    tooltip.style.top = top + 'px';
+                }
             } else if (dragState.type === 'bias') {
                 const newVal = dragState.startValue + deltaY * sensitivity;
                 network.layers[dragState.layerIndex][dragState.neuronIndex].bias = newVal;
-                if (tooltip) { tooltip.textContent = `Bias: ${newVal.toFixed(2)}`; tooltip.style.left = (event.clientX + 12) + 'px'; tooltip.style.top = (event.clientY + 12) + 'px'; }
+                if (tooltip) {
+                    const sx = (window.scrollX || window.pageXOffset || 0);
+                    const sy = (window.scrollY || window.pageYOffset || 0);
+                    const isTouchMove = !!(originalEvent && typeof originalEvent.type === 'string' && originalEvent.type.indexOf('touch') === 0);
+                    const top = (isTouchMove) ? (clientPageY - TOUCH_TIP_OFFSET_Y + sy) : (clientPageY + TIP_OFFSET_Y + sy);
+                    tooltip.textContent = `Bias: ${newVal.toFixed(2)}`;
+                    tooltip.style.left = (clientPageX + TIP_OFFSET_X + sx) + 'px';
+                    tooltip.style.top = top + 'px';
+                }
             }
 
             // Update both the challenge truth-table outputs and the custom input display.
             runNetwork();
             try {
-                // determine expected input count from first layer weights
                 const inputCount = (network.layers && network.layers[0] && network.layers[0][0]) ? network.layers[0][0].weights.length : null;
                 if (inputCount !== null && network.inputValues && network.inputValues.length >= inputCount) {
                     const inputs = network.inputValues.slice(0, inputCount);
@@ -905,13 +1023,34 @@ document.addEventListener('DOMContentLoaded', () => {
             } catch (e) {
                 // ignore custom output update errors
             }
-        });
+            if (originalEvent && originalEvent.preventDefault) originalEvent.preventDefault();
+        }
+
+        // Mouse handlers
+        canvas.addEventListener('mousedown', (event) => handlePointerDown(event.clientX, event.clientY, event.clientX, event.clientY, event));
+        canvas.addEventListener('mousemove', (event) => handlePointerMove(event.clientX, event.clientY, event.clientX, event.clientY, event));
+
+        // Touch handlers (prevent scrolling while interacting with canvas)
+        canvas.addEventListener('touchstart', (ev) => {
+            if (!ev.changedTouches || ev.changedTouches.length === 0) return;
+            const t = ev.changedTouches[0];
+            handlePointerDown(t.clientX, t.clientY, t.clientX, t.clientY, ev);
+        }, { passive: false });
+        canvas.addEventListener('touchmove', (ev) => {
+            if (!ev.changedTouches || ev.changedTouches.length === 0) return;
+            const t = ev.changedTouches[0];
+            handlePointerMove(t.clientX, t.clientY, t.clientX, t.clientY, ev);
+        }, { passive: false });
+        canvas.addEventListener('touchend', (ev) => { endDrag(); });
+        canvas.addEventListener('touchcancel', (ev) => { endDrag(); });
 
         const endDrag = () => {
             if (!dragState) return;
             dragState = null;
             canvas.style.cursor = 'default';
             if (tooltip) tooltip.style.display = 'none';
+            // restore touch scrolling when drag ends
+            try { canvas.style.touchAction = 'auto'; } catch (e) { }
             runNetwork();
         };
 
@@ -924,20 +1063,18 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Custom test UI removed; on-canvas toggles are used instead.
 
-    // Simplified hidden-layer controls: single checkbox (hasHidden) and one neuron count
+    // Hidden-layer controls updated: radio group `hidden-count` with values 0..5
     function updateHiddenLayerControls() {
-        const hasHidden = document.getElementById('has-hidden');
-        const hiddenNeurons = document.getElementById('hidden-neurons');
-        if (!hasHidden || !hiddenNeurons) return;
-        hiddenNeurons.style.display = hasHidden.checked ? 'inline-block' : 'none';
+        // no-op for radio layout (radios always visible)
+        return;
     }
 
     function getHiddenLayerNeuronCounts() {
-        const hasHidden = document.getElementById('has-hidden');
-        const hiddenNeurons = document.getElementById('hidden-neurons');
-        if (!hasHidden || !hasHidden.checked) return [];
-        const n = hiddenNeurons ? parseInt(hiddenNeurons.value, 10) : 2;
-        return [isNaN(n) ? 2 : n];
+        const sel = document.querySelector('input[name="hidden-count"]:checked');
+        if (!sel) return [];
+        const n = parseInt(sel.value, 10);
+        if (!isFinite(n) || n <= 0) return [];
+        return [n];
     }
 
     function rebuildAndRerunNetwork() {
