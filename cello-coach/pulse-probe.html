@@ -6,7 +6,7 @@
     <title>Pulse Probe</title>
     <link rel="icon" href="./icon.svg" type="image/svg+xml" />
     <style>.probe{max-width:960px;margin:0 auto;padding:16px}.probe h1{margin:8px 0 4px}.probe h2{margin:0 0 8px;font-size:1.1rem}.probe .card{margin:14px 0}.probe label{margin:8px 0 4px;font-weight:600;display:block}.probe input[type=text],.probe textarea,.probe select{box-sizing:border-box;width:100%;font:inherit}.probe textarea{min-height:4.5em;font-family:ui-monospace,monospace}.probe .row{flex-wrap:wrap;align-items:center;gap:8px;margin:8px 0;display:flex}.probe code,.probe .mono{font-family:ui-monospace,monospace;font-size:.9em}.probe ol li{margin:4px 0}.svc{border-top:1px solid var(--border);padding:8px 0}.chr{border-left:3px solid var(--border);grid-template-columns:1fr auto;gap:4px 12px;margin:6px 0;padding:6px 0 6px 12px;display:grid}.chr .props{color:var(--muted);font-size:.85em}.chr .value{overflow-wrap:anywhere;grid-column:1/-1;font-family:ui-monospace,monospace;font-size:.85em}.log{background:var(--surface-2);white-space:pre-wrap;overflow-wrap:anywhere;border-radius:8px;max-height:360px;padding:8px;font-family:ui-monospace,monospace;font-size:.82em;overflow:auto}.log .sent{color:var(--accent)}.log .recv{color:var(--trace)}.log .err{color:var(--poor)}.tbl-wrap{overflow-x:auto}table.tbl{border-collapse:collapse;width:100%;font-size:.85em}table.tbl th,table.tbl td{text-align:left;border-bottom:1px solid var(--border);vertical-align:top;padding:4px 8px}table.tbl td.mono{white-space:nowrap}table.tbl td.vals{overflow-wrap:anywhere;font-family:ui-monospace,monospace}.warn{color:var(--poor)}</style>
-    <script type="module" crossorigin src="./assets/probe-CxFtEUOw.js"></script>
+    <script type="module" crossorigin src="./assets/probe-CXlk7piZ.js"></script>
     <link rel="modulepreload" crossorigin href="./assets/style-CmANw_JE.js">
     <link rel="stylesheet" crossorigin href="./assets/style-BpcSHmst.css">
   </head>
@@ -51,11 +51,37 @@
       </section>
 
       <section class="card">
-        <h2>Soundbrenner quick test</h2>
+        <h2>Soundbrenner Pulse test</h2>
         <p class="muted small">
-          Uses the protocol <a href="https://codeberg.org/Freeyourgadget/Gadgetbridge">Gadgetbridge</a> worked out for the
-          Soundbrenner Core: a 32-byte settings packet (tempo, time signature, accents, subdivision), then Start or Stop. The
-          Pulse may use the same one. Connect first; the probe asks for the Core's services automatically.
+          The Pulse’s own protocol, worked out from a recording of the Soundbrenner app. The Pulse keeps its own beat; the probe
+          sets the tempo, starts it, and keeps it in time the way the app does: it asks the Pulse where it is in the bar every
+          few seconds and corrects it. Turn on “click along” to hear the beat the Pulse should match.
+        </p>
+        <p id="p1-status" class="small">Not connected.</p>
+        <div class="row">
+          <label class="small" style="margin:0">Tempo <input id="p1-bpm" type="number" min="20" max="300" step="1" value="72" style="width:5em" /></label>
+          <label class="small" style="margin:0">Beats per bar <input id="p1-beats" type="number" min="1" max="16" step="1" value="4" style="width:4em" /></label>
+          <label class="small" style="display:inline; font-weight:normal; margin:0"><input id="p1-accent" type="checkbox" checked /> stronger first beat</label>
+        </div>
+        <div class="row">
+          <label class="small" style="display:inline; font-weight:normal; margin:0"><input id="p1-click" type="checkbox" checked /> click along</label>
+          <label class="small" style="margin:0">Pulse offset <input id="p1-offset" type="number" step="5" value="0" style="width:5em" /> ms</label>
+          <span class="muted small">(positive: the Pulse vibrates later)</span>
+        </div>
+        <div class="row">
+          <button id="p1-start" class="primary" disabled>Start</button>
+          <button id="p1-stop" disabled>Stop</button>
+          <button id="p1-hello" class="small" disabled>Send the app’s connection commands</button>
+        </div>
+        <p class="small mono" id="p1-sync"></p>
+      </section>
+
+      <section class="card">
+        <h2>Soundbrenner Core protocol</h2>
+        <p class="muted small">
+          The protocol <a href="https://codeberg.org/Freeyourgadget/Gadgetbridge">Gadgetbridge</a> worked out for the
+          Soundbrenner Core: a 32-byte settings packet (tempo, time signature, accents, subdivision), then Start or Stop.
+          The Pulse doesn’t use it; it is here for the Core.
         </p>
         <p id="sb-status" class="small">Not connected.</p>
         <div class="row">
