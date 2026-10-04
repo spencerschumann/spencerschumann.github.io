@@ -6,7 +6,7 @@
     <title>Pulse Probe</title>
     <link rel="icon" href="./icon.svg" type="image/svg+xml" />
     <style>.probe{max-width:960px;margin:0 auto;padding:16px}.probe h1{margin:8px 0 4px}.probe h2{margin:0 0 8px;font-size:1.1rem}.probe .card{margin:14px 0}.probe label{margin:8px 0 4px;font-weight:600;display:block}.probe input[type=text],.probe textarea,.probe select{box-sizing:border-box;width:100%;font:inherit}.probe textarea{min-height:4.5em;font-family:ui-monospace,monospace}.probe .row{flex-wrap:wrap;align-items:center;gap:8px;margin:8px 0;display:flex}.probe code,.probe .mono{font-family:ui-monospace,monospace;font-size:.9em}.probe ol li{margin:4px 0}.svc{border-top:1px solid var(--border);padding:8px 0}.chr{border-left:3px solid var(--border);grid-template-columns:1fr auto;gap:4px 12px;margin:6px 0;padding:6px 0 6px 12px;display:grid}.chr .props{color:var(--muted);font-size:.85em}.chr .value{overflow-wrap:anywhere;grid-column:1/-1;font-family:ui-monospace,monospace;font-size:.85em}.log{background:var(--surface-2);white-space:pre-wrap;overflow-wrap:anywhere;border-radius:8px;max-height:360px;padding:8px;font-family:ui-monospace,monospace;font-size:.82em;overflow:auto}.log .sent{color:var(--accent)}.log .recv{color:var(--trace)}.log .err{color:var(--poor)}.tbl-wrap{overflow-x:auto}table.tbl{border-collapse:collapse;width:100%;font-size:.85em}table.tbl th,table.tbl td{text-align:left;border-bottom:1px solid var(--border);vertical-align:top;padding:4px 8px}table.tbl td.mono{white-space:nowrap}table.tbl td.vals{overflow-wrap:anywhere;font-family:ui-monospace,monospace}.warn{color:var(--poor)}</style>
-    <script type="module" crossorigin src="./assets/probe-CWza_Uhw.js"></script>
+    <script type="module" crossorigin src="./assets/probe-CxFtEUOw.js"></script>
     <link rel="modulepreload" crossorigin href="./assets/style-CmANw_JE.js">
     <link rel="stylesheet" crossorigin href="./assets/style-BpcSHmst.css">
   </head>
@@ -38,6 +38,16 @@
           <span id="device" class="muted"></span>
         </div>
         <p id="adv-hint" class="muted small" hidden></p>
+        <div id="find-service" hidden>
+          <h3 class="small">Find the Pulse’s own service</h3>
+          <p class="small">Web Bluetooth hides any service the page didn’t name in advance, and the Pulse’s isn’t published. Any one of these shows it:</p>
+          <ol class="small">
+            <li><b>Desktop Chrome or Edge:</b> open <code>chrome://bluetooth-internals</code> (or <code>edge://bluetooth-internals</code>) in a new tab, then Devices → Start scan → <b>Inspect</b> next to the Pulse. It lists every service; the long UUIDs that don’t start with <code>0000</code> are the Pulse’s own.</li>
+            <li><b>Android:</b> install <b>nRF Connect</b> (Nordic Semiconductor), scan, press <b>Connect</b> next to the Pulse, and note the services listed as “Unknown Service”. Long-press a UUID to copy it.</li>
+            <li><b>This page:</b> turn on <code>chrome://flags/#enable-experimental-web-platform-features</code>, restart Chrome, disconnect the Pulse, and choose it again: the probe then reads the services it advertises and adds them for you.</li>
+          </ol>
+          <p class="small">Paste the UUIDs into “More service UUIDs” above, press <b>Choose device…</b> again and pick the Pulse. Then send me the log (Copy or Download).</p>
+        </div>
       </section>
 
       <section class="card">
