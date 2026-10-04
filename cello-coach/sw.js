@@ -1,18 +1,21 @@
 // Cello Coach service worker: lets the app open and run without a network
 // connection. The build (vite.config.ts) fills in the version and the list of
 // files to keep; each release gets its own cache.
-const VERSION = "b0638f93cc6e";
+const VERSION = "e5b3d2d30a28";
 const PRECACHE = [
   "./",
   "./assets/analysis.worker-CiFSDVqL.js",
-  "./assets/index-BpcSHmst.css",
-  "./assets/index-oifbDlGW.js",
+  "./assets/main-BsjGOq_k.js",
+  "./assets/probe-B_KJMWAK.js",
+  "./assets/style-BpcSHmst.css",
+  "./assets/style-CmANw_JE.js",
   "./capture-processor.js",
   "./icon-192.png",
   "./icon-512.png",
   "./icon.svg",
   "./index.html",
-  "./manifest.webmanifest"
+  "./manifest.webmanifest",
+  "./pulse-probe.html"
 ];
 const CACHE = `cello-coach-app-${VERSION}`;
 
@@ -66,9 +69,12 @@ self.addEventListener('fetch', (event) => {
   // Other sites (e.g. the piano samples, cached by the piano player itself) go to the network.
   if (url.origin !== self.location.origin) return;
   if (req.mode === 'navigate') {
-    // A single-page app: every page is index.html, from the cache (so it opens offline).
+    // Pages from the cache (so they open offline); any other address is the app, index.html.
     event.respondWith(
-      (async () => (await caches.match('./index.html', { cacheName: CACHE, ignoreVary: true })) ?? fetch(req))(),
+      (async () =>
+        (await caches.match(req, { cacheName: CACHE, ignoreSearch: true, ignoreVary: true })) ??
+        (await caches.match('./index.html', { cacheName: CACHE, ignoreVary: true })) ??
+        fetch(req))(),
     );
     return;
   }
