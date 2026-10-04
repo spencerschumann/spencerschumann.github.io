@@ -12,8 +12,8 @@
     <meta name="description" content="Cello coach in the browser: listens to you play and gives feedback on intonation, vibrato, tone and rhythm." />
     <title>Cello Coach</title>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cellipse cx='16' cy='21' rx='8' ry='9' fill='%23a0522d'/%3E%3Cellipse cx='16' cy='10' rx='6' ry='6' fill='%23a0522d'/%3E%3Crect x='15' y='1' width='2' height='28' fill='%23222'/%3E%3C/svg%3E" />
-    <script type="module" crossorigin src="./assets/main-C_aPlobX.js"></script>
-    <link rel="modulepreload" crossorigin href="./assets/bluetoothPulse-DRGE_Oos.js">
+    <script type="module" crossorigin src="./assets/main-VYOVaM8G.js"></script>
+    <link rel="modulepreload" crossorigin href="./assets/bluetoothPulse-DNn1jcQ0.js">
     <link rel="stylesheet" crossorigin href="./assets/bluetoothPulse-BpcSHmst.css">
   </head>
   <body>
@@ -312,8 +312,14 @@
             <div class="latency-row" id="lat-pulse-row">
               <label class="field"><span>Soundbrenner Pulse <output id="lat-pulse-out"></output></span><input id="lat-pulse" type="range" min="-600" max="600" step="1" /></label>
               <label class="field" id="lat-pulse-start-field"><span>Pulse start/stop delay (Link) <output id="lat-pulse-start-out"></output></span><input id="lat-pulse-start" type="range" min="0" max="1500" step="10" /></label>
-              <button id="pulse-test-btn">Test the Pulse</button>
-              <p class="muted small" id="pulse-test-msg">Plays clicks with the Pulse for 8 bars. Adjust the first slider until the vibration and the click happen together: higher if the Pulse comes after the click. With Link, the transport starts on the first bar line and stops after the last beat: if the Pulse misses the first beat or keeps going after the last click, raise the start/stop delay; if it starts before the first click or misses the last one, lower it. Needs the Pulse connected (Settings → Soundbrenner Pulse).</p>
+              <div class="row">
+                <button id="pulse-test-btn">Test the Pulse</button>
+                <span id="pulse-listen-row" class="row" style="margin:0" hidden>
+                  <button id="pulse-listen-btn" title="Lay the Pulse on the table next to the microphone">Listen for the Pulse</button>
+                  <label class="check small" style="margin:0"><input id="pulse-listen-clicks" type="checkbox" checked /> with clicks</label>
+                </span>
+              </div>
+              <p class="muted small" id="pulse-test-msg">Plays clicks with the Pulse for 8 bars. Adjust the first slider until the vibration and the click happen together: higher if the Pulse comes after the click. With Link, the transport starts on the first bar line and stops after the last beat: if the Pulse misses the first beat or keeps going after the last click, raise the start/stop delay; if it starts before the first click or misses the last one, lower it. Needs the Pulse connected (Settings → Soundbrenner Pulse). Or let the app set it: lay the Pulse on the table next to the microphone and press "Listen for the Pulse" (Bluetooth only). With clicks (between the beats, through the speakers) the result doesn't depend on the microphone latency setting.</p>
             </div>
             <details>
               <summary>Saved devices</summary>
