@@ -1,14 +1,14 @@
 // Tonalivo service worker: lets the app open and run without a network
 // connection. The build (vite.config.ts) fills in the version and the list of
 // files to keep; each release gets its own cache.
-const VERSION = "a078378da248";
+const VERSION = "58eb103b9605";
 const PRECACHE = [
   "./",
   "./assets/analysis.worker-DXyauJ1J.js",
+  "./assets/bluetoothPulse-BECxnO7P.js",
   "./assets/bluetoothPulse-BTFlBFEQ.css",
-  "./assets/bluetoothPulse-D1Yv9OSZ.js",
-  "./assets/main-CKDae8D3.js",
-  "./assets/probe-BYi2fIZG.js",
+  "./assets/main-BOKssOvW.js",
+  "./assets/probe-CyzS3SMR.js",
   "./capture-processor.js",
   "./icon-192.png",
   "./icon-512.png",
