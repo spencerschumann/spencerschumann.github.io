@@ -1,0 +1,350 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#9a4a1f" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Tonalivo" />
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="icon-192.png" />
+    <meta name="description" content="Tonalivo: a practice coach for cello and violin in the browser. It listens to you play and gives feedback on intonation, vibrato, tone, rhythm and dynamics." />
+    <title>Tonalivo</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cellipse cx='16' cy='21' rx='8' ry='9' fill='%23a0522d'/%3E%3Cellipse cx='16' cy='10' rx='6' ry='6' fill='%23a0522d'/%3E%3Crect x='15' y='1' width='2' height='28' fill='%23222'/%3E%3C/svg%3E" />
+    <script type="module" crossorigin src="./assets/main-C6VztfJG.js"></script>
+    <link rel="modulepreload" crossorigin href="./assets/bluetoothPulse-BZxoI96B.js">
+    <link rel="stylesheet" crossorigin href="./assets/bluetoothPulse-BTFlBFEQ.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <svg viewBox="0 0 32 32" aria-hidden="true"><ellipse cx="16" cy="21" rx="8" ry="9" /><ellipse cx="16" cy="10.5" rx="6" ry="6" /><rect x="15.2" y="1" width="1.6" height="29" class="neck" /></svg>
+        <span>Tonalivo</span>
+      </div>
+      <nav class="tabs" role="tablist">
+        <button role="tab" data-tab="practice" aria-selected="true">Practice</button>
+        <button role="tab" data-tab="tuner" aria-selected="false">Tuner &amp; tone</button>
+        <button role="tab" data-tab="settings" aria-selected="false">Settings</button>
+      </nav>
+      <div class="input-status">
+        <span class="level" aria-hidden="true"><span id="level-bar"></span></span>
+        <span id="input-label" class="muted">Input off</span>
+        <button id="mic-btn" class="primary">Enable microphone</button>
+      </div>
+    </header>
+
+    <main>
+      <div id="error" class="banner error" hidden></div>
+      <button id="music-view-fab" class="primary" title="Back to the music view">♪ Music view</button>
+      <div id="update-banner" class="banner update" hidden>A new version of Tonalivo is ready. <button id="update-reload" class="small primary">Reload</button></div>
+
+      <!-- Practice -->
+      <section id="tab-practice" class="tab">
+        <div class="practice-head">
+          <label class="field">
+            <span>Instrument</span>
+            <select id="instrument-select"></select>
+          </label>
+          <label class="field grow">
+            <span>Exercise</span>
+            <select id="exercise-select"></select>
+          </label>
+          <label class="field section">
+            <span>Section</span>
+            <select id="section-select"></select>
+          </label>
+          <span class="bar-range" id="bar-range" hidden>
+            <label class="field"><span>From bar</span><input id="bar-from" type="number" min="1" step="1" /></label>
+            <label class="field"><span>to</span><input id="bar-to" type="number" min="1" step="1" /></label>
+          </span>
+          <label class="field tempo">
+            <span>Tempo <output id="tempo-out"></output></span>
+            <input id="tempo" type="range" min="30" max="160" step="1" />
+          </label>
+          <label class="field strict">
+            <span>Scoring</span>
+            <select id="strictness">
+              <option value="relaxed">Relaxed</option>
+              <option value="standard">Standard</option>
+              <option value="strict">Strict</option>
+            </select>
+          </label>
+          <div class="toggles">
+            <label class="check" id="piano-toggle"><input id="piano-on" type="checkbox" /> Piano <span id="piano-status" class="muted small"></span></label>
+            <label class="check"><input id="click-play" type="checkbox" /> Click while playing</label>
+          </div>
+          <label class="field marks">
+            <span>Feedback</span>
+            <select id="mark-style">
+              <option value="labels">Numbers</option>
+              <option value="lines">Pitch lines</option>
+            </select>
+          </label>
+          <button id="music-view-btn" title="Just the music, large: for a phone or tablet on the music stand">Music view</button>
+          <button id="start-btn" class="primary big">Start</button>
+        </div>
+        <div class="exercise-info">
+          <p id="exercise-desc"></p>
+          <ul id="exercise-focus" class="chips"></ul>
+        </div>
+
+        <div class="card score-card" id="score-card">
+          <div class="stage-bar" id="stage-bar">
+            <button id="stage-exit" class="small" title="Show all the controls and results">☰ Controls</button>
+            <span class="stage-title" id="stage-title"></span>
+            <span class="stage-size" role="group" aria-label="Music size">
+              <button id="stage-smaller" class="small" title="Smaller (more lines on screen)">A−</button>
+              <button id="stage-bigger" class="small" title="Bigger (fewer lines on screen)">A+</button>
+            </span>
+            <button id="stage-start" class="primary">Start</button>
+          </div>
+          <div class="beat-flash" id="beat-flash-layer" aria-hidden="true"></div>
+          <div class="coach-strip" id="coach-strip" hidden>
+            <span id="coach-text"></span>
+            <button id="coach-section-btn" class="small"></button>
+            <button id="coach-echo-btn" class="small" hidden></button>
+          </div>
+          <div id="countin" class="countin" hidden></div>
+          <div class="beat-dots" id="beat-dots" aria-hidden="true"></div>
+          <div id="score"></div>
+          <p class="legend muted small" id="score-legend" hidden>
+            <span id="legend-labels">Number under a note: pitch in cents (+ sharp, − flat). <span class="nowrap">◂ 45</span> = 45 ms early, <span class="nowrap">45 ▸</span> = late<span id="legend-aligned"></span>.</span>
+            <span id="legend-targets" hidden>On each note: the tick is where you started (the notehead is where the note was due), and the line runs for as long as the note sounded, at the pitch you played: higher when sharp, lower when flat (one staff space ≈ 50 cents). Vibrato, slides and wavering show in the line. A ring: not heard, or a wrong note. Hover a note for the numbers.</span>
+            Colours: <span class="swatch" style="background: var(--good)"></span>good
+            <span class="swatch" style="background: var(--ok)"></span>close
+            <span class="swatch" style="background: var(--poor)"></span>off
+            <span class="swatch" style="background: var(--wrong)"></span>wrong note
+            <span class="swatch" style="background: var(--missed)"></span>not heard
+          </p>
+        </div>
+
+        <div class="card live" id="live-card">
+          <div class="live-readout">
+            <div><span class="muted small">Target</span><strong id="live-target">–</strong></div>
+            <div><span class="muted small">You</span><strong id="live-you">–</strong></div>
+            <div><span class="muted small">Intonation</span><strong id="live-cents">–</strong></div>
+          </div>
+          <div class="live-traces">
+            <canvas id="practice-trace" class="trace" aria-label="Pitch deviation from the written note over time"></canvas>
+            <canvas id="volume-trace" class="trace volume" aria-label="Loudness over time"></canvas>
+          </div>
+        </div>
+
+        <div class="card timeline-card" id="timeline-card" hidden>
+          <h3>Your whole run</h3>
+          <div class="player">
+            <button id="play-btn" class="primary" disabled>▶ Play</button>
+            <button id="rewind-btn" disabled title="Back to the start">⏮</button>
+            <span id="play-time" class="muted small">Preparing the recording…</span>
+          </div>
+          <audio id="recording-audio" preload="auto"></audio>
+          <p class="muted small">Pitch (against each written note) and volume for the entire piece. Scroll sideways; click anywhere to hear your recording from that moment. Press Start to play again.</p>
+          <div class="timeline-scroll" id="timeline"></div>
+          <p class="small latency-note" id="latency-note" hidden><span id="latency-note-text"></span> <button id="use-latency-btn" class="small"></button></p>
+        </div>
+
+        <div id="results" class="results" hidden>
+          <div class="score-cards" id="score-cards"></div>
+          <div class="card plan-card" id="plan-card" hidden>
+            <h3>Practice plan</h3>
+            <p class="muted small">Short drills picked from this run to target the trouble spots. Start with the first one; they're also saved under "Focus drills" in the exercise list.</p>
+            <ol id="plan" class="plan"></ol>
+          </div>
+          <div class="results-grid">
+            <div class="card">
+              <h3>Coaching tips</h3>
+              <ul id="tips" class="tips"></ul>
+            </div>
+            <div class="card">
+              <h3>Details</h3>
+              <dl id="details" class="details"></dl>
+            </div>
+          </div>
+          <div class="card recording" id="recording-card" hidden>
+            <h3>Recording</h3>
+            <p class="muted small">The download has two channels: left is what the microphone heard, right is what the app played (metronome and piano), shifted by the latency setting so it lines up the way you heard it. (The player above plays the microphone, and adds the app's sounds only if the microphone didn't pick them up, as with headphones.)</p>
+            <div class="buttons">
+              <a id="download-wav" class="button" download>Download audio (WAV)</a>
+              <a id="download-json" class="button" download>Download analysis (JSON)</a>
+            </div>
+          </div>
+          <details class="card note-table">
+            <summary>Note-by-note</summary>
+            <div class="table-wrap"><table id="note-table"></table></div>
+          </details>
+        </div>
+      </section>
+
+      <!-- Tuner -->
+      <section id="tab-tuner" class="tab" hidden>
+        <div class="tuner card">
+          <div class="tuner-main">
+            <div class="note-big" id="tuner-note">–</div>
+            <div class="tuner-sub"><span id="tuner-cents">–</span> · <span id="tuner-freq">–</span></div>
+          </div>
+          <div class="meter" aria-hidden="true">
+            <div class="meter-zone ok"></div>
+            <div class="meter-zone good"></div>
+            <div class="meter-ticks"><span>−50</span><span>−25</span><span>0</span><span>+25</span><span>+50</span></div>
+            <div class="meter-needle" id="tuner-needle"></div>
+          </div>
+          <div class="strings" id="strings"></div>
+          <div class="a4-tools">
+            <button id="a4-from-string">Set A4 from my A string</button>
+            <span class="muted small" id="a4-msg">Reference A4 = 440 Hz</span>
+          </div>
+        </div>
+        <div class="card">
+          <canvas id="tuner-trace" class="trace tall" aria-label="Pitch deviation from the nearest note over time"></canvas>
+        </div>
+        <div class="metrics">
+          <div class="card metric">
+            <h3>Vibrato</h3>
+            <div class="big" id="vib-state">–</div>
+            <div class="muted small" id="vib-detail">Hold a note with vibrato for a second</div>
+          </div>
+          <div class="card metric">
+            <h3>Volume</h3>
+            <div class="bar"><span id="volume-bar"></span></div>
+            <div class="big small-big" id="volume-state">–</div>
+            <div class="muted small" id="volume-detail">Hold a note to see how steady your volume is</div>
+          </div>
+          <div class="card metric">
+            <h3>Tone clarity</h3>
+            <div class="bar"><span id="clarity-bar"></span></div>
+            <div class="muted small" id="clarity-detail">How periodic (pure) the sound is</div>
+          </div>
+          <div class="card metric">
+            <h3>Tone warnings</h3>
+            <div class="lamps">
+              <span class="lamp" id="lamp-squeak">Squeak</span>
+              <span class="lamp" id="lamp-scratch">Scratch</span>
+              <span class="lamp" id="lamp-unsteady">Wobbly</span>
+            </div>
+            <div class="muted small" id="tone-detail">Brightness –</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Settings -->
+      <section id="tab-settings" class="tab" hidden>
+        <div class="settings">
+          <div class="card">
+            <h3>Input</h3>
+            <label class="field"><span>Microphone</span><select id="device-select"><option value="">Default</option></select></label>
+            <label class="field"><span>…or analyse a recording</span><input id="file-input" type="file" accept="audio/*" /></label>
+            <p class="muted small">Voice processing (echo cancellation, noise suppression, auto gain) is switched off so pitch and dynamics stay accurate. Place the device 1–2 m from your instrument.</p>
+            <p class="muted small">With Bluetooth headphones, choose the phone's or computer's built-in microphone here, not the headset's. A headset microphone puts the headphones into call mode, which cuts the sound quality both ways, and it points at your mouth rather than your instrument. On iPhone, iOS may switch to the headset microphone anyway; choose the iPhone microphone in Control Center if it does. Bluetooth also delays what you hear by roughly 150–250 ms: set the output latency once with the headphones connected (it is remembered for them), as the microphone can't hear the count-in clicks to measure it.</p>
+          </div>
+          <div class="card">
+            <h3>Appearance</h3>
+            <label class="field"><span>Theme</span><select id="theme"><option value="light">Light</option><option value="dark">Dark</option><option value="system">Match system</option></select></label>
+          </div>
+          <div class="card">
+            <h3>Scoring</h3>
+            <label class="field"><span>Strictness</span><select id="strictness-settings"><option value="relaxed">Relaxed – good within ±20¢ and ±90 ms</option><option value="standard">Standard – good within ±12¢ and ±60 ms</option><option value="strict">Strict – good within ±7¢ and ±40 ms</option></select></label>
+            <label class="check"><input id="align-timing" type="checkbox" /> Judge timing relative to my average offset</label>
+            <p class="muted small">If you're always a little behind the click, or the latency isn't calibrated, every note would otherwise show as late. With this on, each note is judged against your average timing and the average itself is reported separately.</p>
+            <label class="check"><input id="record-runs" type="checkbox" /> Record each practice run for playback and download</label>
+          </div>
+          <div class="card">
+            <h3>My pieces</h3>
+            <p class="muted small">Your own music, written in <a href="https://abcnotation.com/learn" target="_blank" rel="noopener">ABC notation</a> and stored only in this browser. Import .abc files (one or many tunes each), or write and paste ABC below. Pieces in the old .json format are converted to ABC.</p>
+            <label class="field"><span>Import pieces (.abc)</span><input id="piece-file" type="file" accept=".abc,.txt,.json,text/plain,application/json" multiple /></label>
+            <ul id="piece-list" class="piece-list"></ul>
+            <p class="muted small" id="piece-msg"></p>
+            <details class="abc-editor" id="abc-editor-box">
+              <summary>Write or edit ABC</summary>
+              <textarea id="abc-editor" rows="14" spellcheck="false" autocapitalize="off" autocomplete="off"></textarea>
+              <div class="row"><button id="abc-save" class="primary">Save to my pieces</button> <button id="abc-new">New piece</button></div>
+              <p class="small" id="abc-msg"></p>
+              <div id="abc-preview" class="abc-preview"></div>
+              <details class="abc-help">
+                <summary>ABC quick reference</summary>
+                <ul class="small">
+                  <li><code>K:D clef=bass</code> key and clef (last header line); <code>M:3/4</code> meter, <code>L:1/8</code> unit length, <code>Q:1/4=92</code> tempo.</li>
+                  <li>Pitches: <code>C</code> = middle C, <code>c</code> an octave up; <code>,</code> lowers an octave: <code>C,,</code> is the open C string, <code>G,,</code> G, <code>D,</code> D, <code>A,</code> A.</li>
+                  <li><code>^F</code> sharp, <code>_B</code> flat, <code>=F</code> natural (for the rest of the bar). The key signature applies otherwise.</li>
+                  <li>Lengths in units of L: <code>D2</code> twice as long, <code>D/</code> half, <code>D3/2</code> dotted; <code>D&gt;E</code> dotted pair; <code>(3DEF</code> triplet; <code>D2-D</code> tie; <code>z</code> rest; <code>[D,A,]</code> double stop.</li>
+                  <li><code>|</code> bar line, <code>|]</code> end, <code>|: … :|</code> repeat, <code>[1 … :|[2</code> endings. <code>P:A</code> on its own line starts a section.</li>
+                  <li><code>!mf!</code> dynamics, <code>!crescendo(!</code> <code>!diminuendo(!</code> hairpins, <code>!1!</code> or <code>"^1"</code> fingering, <code>"G7"</code> chord symbol for the piano.</li>
+                  <li>A written piano part: more voices, e.g. <code>V:pf clef=treble</code> (the solo part is the voice named for an instrument, such as "Cello" or "Violin", else the first). <code>%%accompaniment pulse</code> (or <code>waltz</code>) changes how chord symbols are played; <code>%%focus …</code> adds a hint.</li>
+                </ul>
+              </details>
+            </details>
+          </div>
+          <div class="card">
+            <h3>Soundbrenner Pulse</h3>
+            <p class="small"><b>Bluetooth</b> (Chrome or Edge on Android, Windows, macOS or ChromeOS). Close the Soundbrenner app first: the Pulse connects to one app at a time.</p>
+            <div class="row"><button id="pulse-ble-btn">Connect the Pulse</button> <span class="small" id="pulse-ble-status">Not connected.</span></div>
+            <p class="muted small">Each run then starts the Pulse with the first count-in click at the run's tempo, keeps it in time with the music, and stops it after the last beat. Match its vibration to the clicks with "Test the Pulse" (Settings → Latency); the setting is kept for each Pulse.</p>
+            <h4>Or through Ableton Link</h4>
+            <label class="check"><input id="link-on" type="checkbox" /> Sync with Ableton Link</label>
+            <label class="field"><span>Bridge address</span><input id="link-url" type="text" spellcheck="false" /></label>
+            <p class="small" id="link-status">Off</p>
+            <p class="muted small">For iPhone and iPad, or to play along with other Link apps: run the small helper from the <code>bridge</code> folder (download it from the releases page, or <code>cd bridge &amp;&amp; go run .</code>) and turn on Ableton Link in the Soundbrenner app. Each run then sets the Link tempo and starts on a Link bar line, so the Pulse vibrates with the count-in and the beat.</p>
+            <p class="muted small">The <a href="./pulse-probe.html">Pulse probe</a> shows the Bluetooth traffic in detail, for troubleshooting.</p>
+          </div>
+          <div class="card">
+            <h3>Piano accompaniment</h3>
+            <label class="field"><span>Piano volume <output id="piano-volume-out"></output></span><input id="piano-volume" type="range" min="0" max="1.5" step="0.05" /></label>
+            <p class="muted small">The grand piano (Splendid Grand Piano, via smplr) is downloaded the first time you use it and cached by the browser. If it can't be downloaded, a simpler synthesized piano is used.</p>
+            <p class="muted small">The app knows exactly what the piano plays, so it can tell the piano apart from your instrument. It works best when your instrument is louder than the piano at the microphone: put the device near you and the speaker a little further away, or use headphones.</p>
+          </div>
+          <div class="card">
+            <h3>Tuning</h3>
+            <label class="field"><span>Reference A4 <output id="a4-out"></output></span><input id="a4" type="range" min="415" max="446" step="1" /></label>
+          </div>
+          <div class="card latency-card" id="latency-card">
+            <h3>Latency</h3>
+            <p class="muted small">Each device adds its own delay. The app remembers a value for every device by name, and switches when you change speakers, headphones, audio interface, microphone or screen.</p>
+            <div class="latency-row">
+              <label class="field"><span>Sound output <em id="lat-output-dev"></em> <output id="lat-output-out"></output></span><input id="lat-output" type="range" min="0" max="400" step="1" /></label>
+              <p class="muted small" id="lat-output-hint">Delay from the app playing a click or a piano note to you hearing it. Starts at the browser's estimate; Bluetooth headphones often need 150–300 ms.</p>
+            </div>
+            <div class="latency-row">
+              <label class="field"><span>Microphone <em id="lat-input-dev"></em> <output id="lat-input-out"></output></span><input id="lat-input" type="range" min="0" max="300" step="1" /></label>
+              <button id="calibrate-btn">Measure with speakers</button>
+              <p class="muted small" id="calibrate-msg">Plays clicks through your speakers and listens for them. That measures output + microphone together (the round trip that grading uses), and sets the microphone's share. Don't use headphones for this.</p>
+            </div>
+            <div class="latency-row">
+              <label class="field"><span>Screen <em id="lat-display-dev"></em> <output id="lat-display-out"></output></span><input id="lat-display" type="range" min="0" max="200" step="1" /></label>
+              <div class="row"><button id="flash-test-btn">Test the flash</button> <button id="screen-names-btn" hidden>Name my screens</button></div>
+              <p class="muted small">During the test, adjust until the flash and the click happen together. Monitors and TVs often lag more than a laptop's built-in screen.</p>
+              <div class="flash-test" id="flash-test" hidden></div>
+            </div>
+            <div class="latency-row" id="lat-pulse-row">
+              <label class="field"><span>Soundbrenner Pulse <output id="lat-pulse-out"></output></span><input id="lat-pulse" type="range" min="-600" max="600" step="1" /></label>
+              <label class="field" id="lat-pulse-start-field"><span>Pulse start/stop delay (Link) <output id="lat-pulse-start-out"></output></span><input id="lat-pulse-start" type="range" min="0" max="1500" step="10" /></label>
+              <div class="row">
+                <button id="pulse-test-btn">Test the Pulse</button>
+                <span id="pulse-listen-row" class="row" style="margin:0" hidden>
+                  <button id="pulse-listen-btn" title="Lay the Pulse on the table next to the microphone">Listen for the Pulse</button>
+                  <label class="check small" style="margin:0"><input id="pulse-listen-clicks" type="checkbox" checked /> with clicks</label>
+                </span>
+              </div>
+              <p class="muted small" id="pulse-test-msg">Plays clicks with the Pulse for 8 bars. Adjust the first slider until the vibration and the click happen together: higher if the Pulse comes after the click. With Link, the transport starts on the first bar line and stops after the last beat: if the Pulse misses the first beat or keeps going after the last click, raise the start/stop delay; if it starts before the first click or misses the last one, lower it. Needs the Pulse connected (Settings → Soundbrenner Pulse). Or let the app set it: lay the Pulse on the table next to the microphone and press "Listen for the Pulse" (Bluetooth only). With clicks (between the beats, through the speakers) the result doesn't depend on the microphone latency setting.</p>
+            </div>
+            <details>
+              <summary>Saved devices</summary>
+              <ul class="latency-list" id="latency-list"></ul>
+            </details>
+          </div>
+          <div class="card">
+            <h3>Timing</h3>
+            <label class="field"><span>Count-in (bars)</span><select id="countin-bars"><option value="1">1</option><option value="2">2</option></select></label>
+            <label class="field"><span>Click volume <output id="volume-out"></output></span><input id="volume" type="range" min="0" max="1" step="0.05" /></label>
+            <label class="check"><input id="beat-flash" type="checkbox" /> Flash the beat on screen</label>
+            <p class="muted small">Clicks picked up by the microphone are ignored when detecting squeaks, so a louder click is fine. Headphones avoid the issue entirely.</p>
+          </div>
+          <div class="card">
+            <h3>Diagnostics</h3>
+            <p class="muted small" id="diag">Audio not started.</p>
+            <p class="muted small" id="offline-status">Offline use: not set up (it needs the installed or hosted app, not the development server).</p>
+          </div>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

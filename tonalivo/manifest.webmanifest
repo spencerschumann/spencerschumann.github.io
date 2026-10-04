@@ -1,7 +1,7 @@
 {
-  "name": "Cello Coach",
-  "short_name": "Cello Coach",
-  "description": "Listens to you play and gives feedback on intonation, rhythm, tone and dynamics.",
+  "name": "Tonalivo",
+  "short_name": "Tonalivo",
+  "description": "A practice coach for cello and violin: listens to you play and gives feedback on intonation, rhythm, tone and dynamics.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Pulse Probe</title>
+    <link rel="icon" href="./icon.svg" type="image/svg+xml" />
+    <style>.probe{max-width:960px;margin:0 auto;padding:16px}.probe h1{margin:8px 0 4px}.probe h2{margin:0 0 8px;font-size:1.1rem}.probe .card{margin:14px 0}.probe label{margin:8px 0 4px;font-weight:600;display:block}.probe input[type=text],.probe textarea,.probe select{box-sizing:border-box;width:100%;font:inherit}.probe textarea{min-height:4.5em;font-family:ui-monospace,monospace}.probe .row{flex-wrap:wrap;align-items:center;gap:8px;margin:8px 0;display:flex}.probe code,.probe .mono{font-family:ui-monospace,monospace;font-size:.9em}.probe ol li{margin:4px 0}.svc{border-top:1px solid var(--border);padding:8px 0}.chr{border-left:3px solid var(--border);grid-template-columns:1fr auto;gap:4px 12px;margin:6px 0;padding:6px 0 6px 12px;display:grid}.chr .props{color:var(--muted);font-size:.85em}.chr .value{overflow-wrap:anywhere;grid-column:1/-1;font-family:ui-monospace,monospace;font-size:.85em}.log{background:var(--surface-2);white-space:pre-wrap;overflow-wrap:anywhere;border-radius:8px;max-height:360px;padding:8px;font-family:ui-monospace,monospace;font-size:.82em;overflow:auto}.log .sent{color:var(--accent)}.log .recv{color:var(--trace)}.log .err{color:var(--poor)}.tbl-wrap{overflow-x:auto}table.tbl{border-collapse:collapse;width:100%;font-size:.85em}table.tbl th,table.tbl td{text-align:left;border-bottom:1px solid var(--border);vertical-align:top;padding:4px 8px}table.tbl td.mono{white-space:nowrap}table.tbl td.vals{overflow-wrap:anywhere;font-family:ui-monospace,monospace}.warn{color:var(--poor)}</style>
+    <script type="module" crossorigin src="./assets/probe-Ds7eIyPp.js"></script>
+    <link rel="modulepreload" crossorigin href="./assets/bluetoothPulse-BZxoI96B.js">
+    <link rel="stylesheet" crossorigin href="./assets/bluetoothPulse-BTFlBFEQ.css">
+  </head>
+  <body>
+    <main class="probe">
+      <div id="update-banner" class="banner update" hidden>A newer version of the probe is ready. <button id="update-reload" class="small primary">Reload</button></div>
+      <p class="small"><a href="./">← Tonalivo</a> <span class="muted" id="build"></span></p>
+      <h1>Pulse probe</h1>
+      <p class="muted">
+        Finds out how to drive a Soundbrenner Pulse from a web page over Bluetooth, so Tonalivo can make it pulse without the
+        Link bridge. It needs Chrome or Edge on Android, Windows, macOS or ChromeOS. Close the Soundbrenner app first, as the
+        Pulse talks to one app at a time.
+      </p>
+      <p id="support" class="warn" hidden></p>
+
+      <section class="card">
+        <h2>1. Connect</h2>
+        <p class="muted small">
+          A web page can only use the Bluetooth services it names before connecting. The probe names some common ones and
+          tries to read the services the Pulse advertises. If the Pulse's own service doesn't show up below, find its
+          UUID with <code>chrome://bluetooth-internals</code> (desktop Chrome) or the nRF Connect app, paste it here and connect again.
+        </p>
+        <label for="name-prefix">Device name starts with (optional)</label>
+        <input id="name-prefix" type="text" placeholder="e.g. Pulse; empty lists every device" />
+        <label for="extra-services">More service UUIDs, one per line</label>
+        <textarea id="extra-services" placeholder="e.g. 0000fff0-0000-1000-8000-00805f9b34fb or fff0"></textarea>
+        <div class="row">
+          <button id="choose" class="primary">Choose device…</button>
+          <button id="disconnect" disabled>Disconnect</button>
+          <span id="device" class="muted"></span>
+        </div>
+        <p id="adv-hint" class="muted small" hidden></p>
+        <div id="find-service" hidden>
+          <h3 class="small">Find the Pulse’s own service</h3>
+          <p class="small">Web Bluetooth hides any service the page didn’t name in advance, and the Pulse’s isn’t published. Any one of these shows it:</p>
+          <ol class="small">
+            <li><b>Desktop Chrome or Edge:</b> open <code>chrome://bluetooth-internals</code> (or <code>edge://bluetooth-internals</code>) in a new tab, then Devices → Start scan → <b>Inspect</b> next to the Pulse. It lists every service; the long UUIDs that don’t start with <code>0000</code> are the Pulse’s own.</li>
+            <li><b>Android:</b> install <b>nRF Connect</b> (Nordic Semiconductor), scan, press <b>Connect</b> next to the Pulse, and note the services listed as “Unknown Service”. Long-press a UUID to copy it.</li>
+            <li><b>This page:</b> turn on <code>chrome://flags/#enable-experimental-web-platform-features</code>, restart Chrome, disconnect the Pulse, and choose it again: the probe then reads the services it advertises and adds them for you.</li>
+          </ol>
+          <p class="small">Paste the UUIDs into “More service UUIDs” above, press <b>Choose device…</b> again and pick the Pulse. Then send me the log (Copy or Download).</p>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Soundbrenner Pulse test</h2>
+        <p class="muted small">
+          The Pulse’s own protocol, worked out from a recording of the Soundbrenner app. The Pulse keeps its own beat; the probe
+          sets the tempo, starts it, and keeps it in time the way the app does: it asks the Pulse where it is in the bar every
+          few seconds and corrects it. Turn on “click along” to hear the beat the Pulse should match.
+        </p>
+        <p id="p1-status" class="small">Not connected.</p>
+        <div class="row">
+          <label class="small" style="margin:0">Tempo <input id="p1-bpm" type="number" min="20" max="300" step="1" value="72" style="width:5em" /></label>
+          <label class="small" style="margin:0">Beats per bar <input id="p1-beats" type="number" min="1" max="16" step="1" value="4" style="width:4em" /></label>
+          <label class="small" style="display:inline; font-weight:normal; margin:0"><input id="p1-accent" type="checkbox" /> beat 1 = 2 (a double buzz)</label>
+        </div>
+        <div class="row">
+          <label class="small" style="display:inline; font-weight:normal; margin:0"><input id="p1-click" type="checkbox" checked /> click along</label>
+          <label class="small" style="margin:0">Pulse offset <input id="p1-offset" type="number" step="5" value="0" style="width:5em" /> ms</label>
+          <span class="muted small">(positive: the Pulse vibrates later)</span>
+        </div>
+        <div class="row">
+          <button id="p1-start" class="primary" disabled>Start</button>
+          <button id="p1-stop" disabled>Stop</button>
+          <button id="p1-hello" class="small" disabled>Send the app’s connection commands</button>
+        </div>
+        <p class="small mono" id="p1-sync"></p>
+      </section>
+
+      <section class="card">
+        <h2>Soundbrenner Core protocol</h2>
+        <p class="muted small">
+          The protocol <a href="https://codeberg.org/Freeyourgadget/Gadgetbridge">Gadgetbridge</a> worked out for the
+          Soundbrenner Core: a 32-byte settings packet (tempo, time signature, accents, subdivision), then Start or Stop.
+          The Pulse doesn’t use it; it is here for the Core.
+        </p>
+        <p id="sb-status" class="small">Not connected.</p>
+        <div class="row">
+          <label class="small" style="margin:0">Tempo <input id="sb-bpm" type="number" min="20" max="400" step="1" value="60" style="width:5em" /></label>
+          <label class="small" style="margin:0">Beats per bar <input id="sb-beats" type="number" min="1" max="16" step="1" value="4" style="width:4em" /></label>
+          <label class="small" style="margin:0">Beat unit
+            <select id="sb-unit" style="width:auto"><option value="4" selected>quarter</option><option value="8">eighth</option><option value="2">half</option></select></label>
+          <label class="small" style="margin:0">Subdivision
+            <select id="sb-sub" style="width:auto"><option value="1" selected>none</option><option value="2">eighths</option><option value="3">triplets</option><option value="4">sixteenths</option></select></label>
+        </div>
+        <div class="row">
+          <label class="small" style="display:inline; font-weight:normal; margin:0"><input id="sb-read-first" type="checkbox" checked /> read the unknown characteristic before sending settings (the official app does)</label>
+          <label class="small" style="display:inline; font-weight:normal; margin:0"><input id="sb-prestart" type="checkbox" /> send d1 to Control before Start</label>
+        </div>
+        <div class="row">
+          <button id="sb-read" class="small" disabled>Read settings</button>
+          <button id="sb-send" class="small" disabled>Send settings</button>
+          <button id="sb-start" class="primary" disabled>Send settings and start</button>
+          <button id="sb-stop" disabled>Stop</button>
+        </div>
+        <p class="muted small mono" id="sb-packet"></p>
+      </section>
+
+      <section class="card">
+        <h2>2. Services</h2>
+        <div id="services"><p class="muted small">Connect to a device to list what it offers.</p></div>
+      </section>
+
+      <section class="card">
+        <h2>3. Send bytes</h2>
+        <label for="write-target">Characteristic</label>
+        <select id="write-target" disabled><option>Connect first</option></select>
+        <label for="write-bytes">Bytes (hex)</label>
+        <input id="write-bytes" type="text" class="mono" placeholder="e.g. 01 78 00" />
+        <div class="row">
+          <label class="small" style="display:inline; font-weight:normal"><input id="write-response" type="checkbox" checked /> wait for a response</label>
+          <button id="send" class="primary" disabled>Send</button>
+        </div>
+        <p class="muted small">Every send, read and notification goes in the log below.</p>
+      </section>
+
+      <section class="card">
+        <h2>Log</h2>
+        <div id="log" class="log" aria-live="polite"></div>
+        <div class="row">
+          <button id="log-copy" class="small">Copy</button>
+          <button id="log-save" class="small">Download</button>
+          <button id="log-clear" class="small">Clear</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>4. Read what the Soundbrenner app sends</h2>
+        <p class="muted small">
+          Android can record all Bluetooth traffic. Record the Soundbrenner app driving the Pulse, then open the recording here
+          to see the bytes it writes.
+        </p>
+        <ol class="small">
+          <li>Settings → About phone: tap <b>Build number</b> seven times to turn on Developer options.</li>
+          <li>Settings → System → Developer options: turn on <b>Enable Bluetooth HCI snoop log</b> (on some phones, choose "Enabled"), then turn Bluetooth off and on.</li>
+          <li>In the Soundbrenner app, connect the Pulse and do one thing at a time, a few seconds apart, and note what you did:
+            set the tempo to 60, start, wait 4 beats, stop; set 120, start, stop; change the beats per bar; change the vibration strength.</li>
+          <li>Developer options → <b>Take bug report</b> (Interactive). When it is ready, share the .zip to your computer or open it on the phone.</li>
+          <li>Choose the .zip (or a <code>btsnoop_hci.log</code> taken out of it) below. Turn the snoop log off again afterwards.</li>
+        </ol>
+        <div class="row">
+          <input id="snoop-file" type="file" accept=".zip,.log,.cfa,application/zip,application/octet-stream" />
+        </div>
+        <div id="snoop-pick" class="row" hidden>
+          <label for="snoop-entry" style="margin:0">Log in the zip</label>
+          <select id="snoop-entry" style="width:auto"></select>
+        </div>
+        <p id="snoop-status" class="muted small"></p>
+        <div id="snoop-out" hidden>
+          <div class="row">
+            <label for="snoop-device" style="margin:0">Device</label>
+            <select id="snoop-device" style="width:auto"></select>
+            <label class="small" style="display:inline; font-weight:normal; margin:0"><input id="snoop-writes" type="checkbox" checked /> writes only</label>
+            <button id="snoop-save" class="small">Download as text</button>
+          </div>
+          <h3 class="small">Each characteristic, with the values seen most often</h3>
+          <div class="tbl-wrap"><table class="tbl" id="snoop-summary"></table></div>
+          <h3 class="small">Everything, in order</h3>
+          <div class="tbl-wrap"><table class="tbl" id="snoop-events"></table></div>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>
