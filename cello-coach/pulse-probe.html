@@ -6,13 +6,14 @@
     <title>Pulse Probe</title>
     <link rel="icon" href="./icon.svg" type="image/svg+xml" />
     <style>.probe{max-width:960px;margin:0 auto;padding:16px}.probe h1{margin:8px 0 4px}.probe h2{margin:0 0 8px;font-size:1.1rem}.probe .card{margin:14px 0}.probe label{margin:8px 0 4px;font-weight:600;display:block}.probe input[type=text],.probe textarea,.probe select{box-sizing:border-box;width:100%;font:inherit}.probe textarea{min-height:4.5em;font-family:ui-monospace,monospace}.probe .row{flex-wrap:wrap;align-items:center;gap:8px;margin:8px 0;display:flex}.probe code,.probe .mono{font-family:ui-monospace,monospace;font-size:.9em}.probe ol li{margin:4px 0}.svc{border-top:1px solid var(--border);padding:8px 0}.chr{border-left:3px solid var(--border);grid-template-columns:1fr auto;gap:4px 12px;margin:6px 0;padding:6px 0 6px 12px;display:grid}.chr .props{color:var(--muted);font-size:.85em}.chr .value{overflow-wrap:anywhere;grid-column:1/-1;font-family:ui-monospace,monospace;font-size:.85em}.log{background:var(--surface-2);white-space:pre-wrap;overflow-wrap:anywhere;border-radius:8px;max-height:360px;padding:8px;font-family:ui-monospace,monospace;font-size:.82em;overflow:auto}.log .sent{color:var(--accent)}.log .recv{color:var(--trace)}.log .err{color:var(--poor)}.tbl-wrap{overflow-x:auto}table.tbl{border-collapse:collapse;width:100%;font-size:.85em}table.tbl th,table.tbl td{text-align:left;border-bottom:1px solid var(--border);vertical-align:top;padding:4px 8px}table.tbl td.mono{white-space:nowrap}table.tbl td.vals{overflow-wrap:anywhere;font-family:ui-monospace,monospace}.warn{color:var(--poor)}</style>
-    <script type="module" crossorigin src="./assets/probe-CXlk7piZ.js"></script>
-    <link rel="modulepreload" crossorigin href="./assets/style-CmANw_JE.js">
+    <script type="module" crossorigin src="./assets/probe-BSNiGvxM.js"></script>
+    <link rel="modulepreload" crossorigin href="./assets/style-BsQrYDdA.js">
     <link rel="stylesheet" crossorigin href="./assets/style-BpcSHmst.css">
   </head>
   <body>
     <main class="probe">
-      <p class="small"><a href="./">← Cello Coach</a></p>
+      <div id="update-banner" class="banner update" hidden>A newer version of the probe is ready. <button id="update-reload" class="small primary">Reload</button></div>
+      <p class="small"><a href="./">← Cello Coach</a> <span class="muted" id="build"></span></p>
       <h1>Pulse probe</h1>
       <p class="muted">
         Finds out how to drive a Soundbrenner Pulse from a web page over Bluetooth, so Cello Coach can make it pulse without the
