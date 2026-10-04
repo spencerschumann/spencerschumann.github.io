@@ -1,14 +1,14 @@
 // Cello Coach service worker: lets the app open and run without a network
 // connection. The build (vite.config.ts) fills in the version and the list of
 // files to keep; each release gets its own cache.
-const VERSION = "df126264cbef";
+const VERSION = "7243a342d8f4";
 const PRECACHE = [
   "./",
   "./assets/analysis.worker-CiFSDVqL.js",
-  "./assets/main-CtTEAsuL.js",
-  "./assets/probe-BSNiGvxM.js",
-  "./assets/style-BpcSHmst.css",
-  "./assets/style-BsQrYDdA.js",
+  "./assets/bluetoothPulse-BpcSHmst.css",
+  "./assets/bluetoothPulse-DRGE_Oos.js",
+  "./assets/main-C_aPlobX.js",
+  "./assets/probe-CmeOrbUf.js",
   "./capture-processor.js",
   "./icon-192.png",
   "./icon-512.png",

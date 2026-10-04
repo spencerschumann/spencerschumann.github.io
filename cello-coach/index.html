@@ -12,9 +12,9 @@
     <meta name="description" content="Cello coach in the browser: listens to you play and gives feedback on intonation, vibrato, tone and rhythm." />
     <title>Cello Coach</title>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cellipse cx='16' cy='21' rx='8' ry='9' fill='%23a0522d'/%3E%3Cellipse cx='16' cy='10' rx='6' ry='6' fill='%23a0522d'/%3E%3Crect x='15' y='1' width='2' height='28' fill='%23222'/%3E%3C/svg%3E" />
-    <script type="module" crossorigin src="./assets/main-CtTEAsuL.js"></script>
-    <link rel="modulepreload" crossorigin href="./assets/style-BsQrYDdA.js">
-    <link rel="stylesheet" crossorigin href="./assets/style-BpcSHmst.css">
+    <script type="module" crossorigin src="./assets/main-C_aPlobX.js"></script>
+    <link rel="modulepreload" crossorigin href="./assets/bluetoothPulse-DRGE_Oos.js">
+    <link rel="stylesheet" crossorigin href="./assets/bluetoothPulse-BpcSHmst.css">
   </head>
   <body>
     <header class="topbar">
@@ -270,12 +270,16 @@
             </details>
           </div>
           <div class="card">
-            <h3>Soundbrenner Pulse (Ableton Link)</h3>
+            <h3>Soundbrenner Pulse</h3>
+            <p class="small"><b>Bluetooth</b> (Chrome or Edge on Android, Windows, macOS or ChromeOS). Close the Soundbrenner app first: the Pulse connects to one app at a time.</p>
+            <div class="row"><button id="pulse-ble-btn">Connect the Pulse</button> <span class="small" id="pulse-ble-status">Not connected.</span></div>
+            <p class="muted small">Each run then starts the Pulse with the first count-in click at the run's tempo, keeps it in time with the music, and stops it after the last beat. Match its vibration to the clicks with "Test the Pulse" (Settings → Latency); the setting is kept for each Pulse.</p>
+            <h4>Or through Ableton Link</h4>
             <label class="check"><input id="link-on" type="checkbox" /> Sync with Ableton Link</label>
             <label class="field"><span>Bridge address</span><input id="link-url" type="text" spellcheck="false" /></label>
             <p class="small" id="link-status">Off</p>
-            <p class="muted small">Feel the beat on a Soundbrenner Pulse: run the small helper from the <code>bridge</code> folder (download it from the releases page, or <code>cd bridge &amp;&amp; go run .</code>) and turn on Ableton Link in the Soundbrenner app. Each run then sets the Link tempo and starts on a Link bar line, so the Pulse vibrates with the count-in and the beat.</p>
-            <p class="muted small">Experimental: the <a href="./pulse-probe.html">Pulse probe</a> works out how to drive the Pulse directly over Bluetooth, with no helper.</p>
+            <p class="muted small">For iPhone and iPad, or to play along with other Link apps: run the small helper from the <code>bridge</code> folder (download it from the releases page, or <code>cd bridge &amp;&amp; go run .</code>) and turn on Ableton Link in the Soundbrenner app. Each run then sets the Link tempo and starts on a Link bar line, so the Pulse vibrates with the count-in and the beat.</p>
+            <p class="muted small">The <a href="./pulse-probe.html">Pulse probe</a> shows the Bluetooth traffic in detail, for troubleshooting.</p>
           </div>
           <div class="card">
             <h3>Piano accompaniment</h3>
@@ -307,9 +311,9 @@
             </div>
             <div class="latency-row" id="lat-pulse-row">
               <label class="field"><span>Soundbrenner Pulse <output id="lat-pulse-out"></output></span><input id="lat-pulse" type="range" min="-600" max="600" step="1" /></label>
-              <label class="field"><span>Pulse start/stop delay <output id="lat-pulse-start-out"></output></span><input id="lat-pulse-start" type="range" min="0" max="1500" step="10" /></label>
+              <label class="field" id="lat-pulse-start-field"><span>Pulse start/stop delay (Link) <output id="lat-pulse-start-out"></output></span><input id="lat-pulse-start" type="range" min="0" max="1500" step="10" /></label>
               <button id="pulse-test-btn">Test the Pulse</button>
-              <p class="muted small" id="pulse-test-msg">Plays clicks locked to Link for 8 bars. Adjust the first slider until the vibration and the click happen together: higher if the Pulse comes after the click. The Link transport starts on the first bar line and stops after the last beat. If the Pulse misses the first beat or keeps going after the last click, raise the start/stop delay; if it starts before the first click or misses the last one, lower it. Needs the Link bridge (Settings → Soundbrenner Pulse).</p>
+              <p class="muted small" id="pulse-test-msg">Plays clicks with the Pulse for 8 bars. Adjust the first slider until the vibration and the click happen together: higher if the Pulse comes after the click. With Link, the transport starts on the first bar line and stops after the last beat: if the Pulse misses the first beat or keeps going after the last click, raise the start/stop delay; if it starts before the first click or misses the last one, lower it. Needs the Pulse connected (Settings → Soundbrenner Pulse).</p>
             </div>
             <details>
               <summary>Saved devices</summary>
