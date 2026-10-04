@@ -1,0 +1,16 @@
+{
+  "name": "Cello Coach",
+  "short_name": "Cello Coach",
+  "description": "Listens to you play and gives feedback on intonation, rhythm, tone and dynamics.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f7f4ef",
+  "theme_color": "#9a4a1f",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}
