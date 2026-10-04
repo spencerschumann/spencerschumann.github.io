@@ -6,7 +6,7 @@
     <title>Pulse Probe</title>
     <link rel="icon" href="./icon.svg" type="image/svg+xml" />
     <style>.probe{max-width:960px;margin:0 auto;padding:16px}.probe h1{margin:8px 0 4px}.probe h2{margin:0 0 8px;font-size:1.1rem}.probe .card{margin:14px 0}.probe label{margin:8px 0 4px;font-weight:600;display:block}.probe input[type=text],.probe textarea,.probe select{box-sizing:border-box;width:100%;font:inherit}.probe textarea{min-height:4.5em;font-family:ui-monospace,monospace}.probe .row{flex-wrap:wrap;align-items:center;gap:8px;margin:8px 0;display:flex}.probe code,.probe .mono{font-family:ui-monospace,monospace;font-size:.9em}.probe ol li{margin:4px 0}.svc{border-top:1px solid var(--border);padding:8px 0}.chr{border-left:3px solid var(--border);grid-template-columns:1fr auto;gap:4px 12px;margin:6px 0;padding:6px 0 6px 12px;display:grid}.chr .props{color:var(--muted);font-size:.85em}.chr .value{overflow-wrap:anywhere;grid-column:1/-1;font-family:ui-monospace,monospace;font-size:.85em}.log{background:var(--surface-2);white-space:pre-wrap;overflow-wrap:anywhere;border-radius:8px;max-height:360px;padding:8px;font-family:ui-monospace,monospace;font-size:.82em;overflow:auto}.log .sent{color:var(--accent)}.log .recv{color:var(--trace)}.log .err{color:var(--poor)}.tbl-wrap{overflow-x:auto}table.tbl{border-collapse:collapse;width:100%;font-size:.85em}table.tbl th,table.tbl td{text-align:left;border-bottom:1px solid var(--border);vertical-align:top;padding:4px 8px}table.tbl td.mono{white-space:nowrap}table.tbl td.vals{overflow-wrap:anywhere;font-family:ui-monospace,monospace}.warn{color:var(--poor)}</style>
-    <script type="module" crossorigin src="./assets/probe-B_KJMWAK.js"></script>
+    <script type="module" crossorigin src="./assets/probe-CWza_Uhw.js"></script>
     <link rel="modulepreload" crossorigin href="./assets/style-CmANw_JE.js">
     <link rel="stylesheet" crossorigin href="./assets/style-BpcSHmst.css">
   </head>
@@ -38,6 +38,35 @@
           <span id="device" class="muted"></span>
         </div>
         <p id="adv-hint" class="muted small" hidden></p>
+      </section>
+
+      <section class="card">
+        <h2>Soundbrenner quick test</h2>
+        <p class="muted small">
+          Uses the protocol <a href="https://codeberg.org/Freeyourgadget/Gadgetbridge">Gadgetbridge</a> worked out for the
+          Soundbrenner Core: a 32-byte settings packet (tempo, time signature, accents, subdivision), then Start or Stop. The
+          Pulse may use the same one. Connect first; the probe asks for the Core's services automatically.
+        </p>
+        <p id="sb-status" class="small">Not connected.</p>
+        <div class="row">
+          <label class="small" style="margin:0">Tempo <input id="sb-bpm" type="number" min="20" max="400" step="1" value="60" style="width:5em" /></label>
+          <label class="small" style="margin:0">Beats per bar <input id="sb-beats" type="number" min="1" max="16" step="1" value="4" style="width:4em" /></label>
+          <label class="small" style="margin:0">Beat unit
+            <select id="sb-unit" style="width:auto"><option value="4" selected>quarter</option><option value="8">eighth</option><option value="2">half</option></select></label>
+          <label class="small" style="margin:0">Subdivision
+            <select id="sb-sub" style="width:auto"><option value="1" selected>none</option><option value="2">eighths</option><option value="3">triplets</option><option value="4">sixteenths</option></select></label>
+        </div>
+        <div class="row">
+          <label class="small" style="display:inline; font-weight:normal; margin:0"><input id="sb-read-first" type="checkbox" checked /> read the unknown characteristic before sending settings (the official app does)</label>
+          <label class="small" style="display:inline; font-weight:normal; margin:0"><input id="sb-prestart" type="checkbox" /> send d1 to Control before Start</label>
+        </div>
+        <div class="row">
+          <button id="sb-read" class="small" disabled>Read settings</button>
+          <button id="sb-send" class="small" disabled>Send settings</button>
+          <button id="sb-start" class="primary" disabled>Send settings and start</button>
+          <button id="sb-stop" disabled>Stop</button>
+        </div>
+        <p class="muted small mono" id="sb-packet"></p>
       </section>
 
       <section class="card">
