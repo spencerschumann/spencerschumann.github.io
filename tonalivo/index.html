@@ -11,20 +11,26 @@
     <link rel="apple-touch-icon" href="icon-192.png" />
     <meta name="description" content="Tonalivo: a practice coach for cello and violin in the browser. It listens to you play and gives feedback on intonation, vibrato, tone, rhythm and dynamics." />
     <title>Tonalivo</title>
-    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cellipse cx='16' cy='21' rx='8' ry='9' fill='%23a0522d'/%3E%3Cellipse cx='16' cy='10' rx='6' ry='6' fill='%23a0522d'/%3E%3Crect x='15' y='1' width='2' height='28' fill='%23222'/%3E%3C/svg%3E" />
-    <script type="module" crossorigin src="./assets/main-BOKssOvW.js"></script>
-    <link rel="modulepreload" crossorigin href="./assets/bluetoothPulse-BECxnO7P.js">
-    <link rel="stylesheet" crossorigin href="./assets/bluetoothPulse-BTFlBFEQ.css">
+    <link rel="icon" href="icon.svg" type="image/svg+xml" />
+    <script type="module" crossorigin src="./assets/main-CmQ24gnG.js"></script>
+    <link rel="modulepreload" crossorigin href="./assets/bluetoothPulse-DkQzBJeC.js">
+    <link rel="stylesheet" crossorigin href="./assets/bluetoothPulse-CJRjIo0s.css">
   </head>
   <body>
     <header class="topbar">
       <div class="brand">
-        <svg viewBox="0 0 32 32" aria-hidden="true"><ellipse cx="16" cy="21" rx="8" ry="9" /><ellipse cx="16" cy="10.5" rx="6" ry="6" /><rect x="15.2" y="1" width="1.6" height="29" class="neck" /></svg>
+        <svg viewBox="10 6 80 86" width="26" height="28" fill="#c0592a" aria-hidden="true">
+          <path class="ring" d="M83.26 61.07A34 34 0 0 1 53.55 87.81M46.45 87.81A34 34 0 0 1 45.27 20.33" fill="none" stroke="#4a2b17" stroke-width="7.5" />
+          <ellipse cx="46" cy="64" rx="14" ry="10.5" transform="rotate(-25 46 64)" />
+          <rect x="57" y="9" width="5" height="54" />
+          <path class="flag" d="M59.5 11C61 27 84 31 83 50" fill="none" stroke="#c0592a" stroke-width="5.5" />
+        </svg>
         <span>Tonalivo</span>
       </div>
       <nav class="tabs" role="tablist">
         <button role="tab" data-tab="practice" aria-selected="true">Practice</button>
         <button role="tab" data-tab="tuner" aria-selected="false">Tuner &amp; tone</button>
+        <button role="tab" data-tab="pieces" aria-selected="false">My pieces</button>
         <button role="tab" data-tab="settings" aria-selected="false">Settings</button>
       </nav>
       <div class="input-status">
@@ -227,6 +233,42 @@
         </div>
       </section>
 
+      <!-- My pieces -->
+      <section id="tab-pieces" class="tab" hidden>
+        <div class="pieces-page">
+          <div class="card pieces-library">
+            <h3>My pieces</h3>
+            <p class="muted">Your own music, written in <a href="https://abcnotation.com/learn" target="_blank" rel="noopener">ABC notation</a> and stored only in this browser. Import .abc files (one or many tunes each), or write and paste ABC in the editor. Pieces in the old .json format are converted to ABC.</p>
+            <ul id="piece-list" class="piece-list"></ul>
+            <p class="muted small" id="piece-msg"></p>
+            <label class="field"><span>Import pieces (.abc)</span><input id="piece-file" type="file" accept=".abc,.txt,.json,text/plain,application/json" multiple /></label>
+          </div>
+          <div class="card abc-editor" id="abc-editor-box">
+            <h3>Write or edit ABC</h3>
+            <textarea id="abc-editor" rows="16" spellcheck="false" autocapitalize="off" autocomplete="off"></textarea>
+            <div class="row"><button id="abc-save" class="primary">Save to my pieces</button> <button id="abc-new">New piece</button> <button id="abc-practice">Save and practice</button></div>
+            <p class="small" id="abc-msg"></p>
+            <details class="abc-help">
+              <summary>ABC quick reference</summary>
+              <ul class="small">
+                <li><code>K:D clef=bass</code> key and clef (last header line); <code>M:3/4</code> meter, <code>L:1/8</code> unit length, <code>Q:1/4=92</code> tempo.</li>
+                <li>Pitches: <code>C</code> = middle C, <code>c</code> an octave up; <code>,</code> lowers an octave: <code>C,,</code> is the open C string, <code>G,,</code> G, <code>D,</code> D, <code>A,</code> A.</li>
+                <li><code>^F</code> sharp, <code>_B</code> flat, <code>=F</code> natural (for the rest of the bar). The key signature applies otherwise.</li>
+                <li>Lengths in units of L: <code>D2</code> twice as long, <code>D/</code> half, <code>D3/2</code> dotted; <code>D&gt;E</code> dotted pair; <code>(3DEF</code> triplet; <code>D2-D</code> tie; <code>z</code> rest; <code>[D,A,]</code> double stop.</li>
+                <li><code>[M:2/4]</code> at the start of a bar changes the meter from there on.</li>
+                <li><code>|</code> bar line, <code>|]</code> end, <code>|: … :|</code> repeat, <code>[1 … :|[2</code> endings. <code>P:A</code> on its own line starts a section.</li>
+                <li><code>!mf!</code> dynamics, <code>!crescendo(!</code> <code>!diminuendo(!</code> hairpins, <code>!1!</code> or <code>"^1"</code> fingering, <code>"G7"</code> chord symbol for the piano.</li>
+                <li>A written piano part: more voices, e.g. <code>V:pf clef=treble</code> (the solo part is the voice named for an instrument, such as "Cello" or "Violin", else the first). <code>%%accompaniment pulse</code> (or <code>waltz</code>) changes how chord symbols are played; <code>%%focus …</code> adds a hint.</li>
+              </ul>
+            </details>
+          </div>
+          <div class="card pieces-preview">
+            <h3>Preview</h3>
+            <div id="abc-preview" class="abc-preview"></div>
+          </div>
+        </div>
+      </section>
+
       <!-- Settings -->
       <section id="tab-settings" class="tab" hidden>
         <div class="settings">
@@ -247,32 +289,6 @@
             <label class="check"><input id="align-timing" type="checkbox" /> Judge timing relative to my average offset</label>
             <p class="muted small">If you're always a little behind the click, or the latency isn't calibrated, every note would otherwise show as late. With this on, each note is judged against your average timing and the average itself is reported separately.</p>
             <label class="check"><input id="record-runs" type="checkbox" /> Record each practice run for playback and download</label>
-          </div>
-          <div class="card">
-            <h3>My pieces</h3>
-            <p class="muted small">Your own music, written in <a href="https://abcnotation.com/learn" target="_blank" rel="noopener">ABC notation</a> and stored only in this browser. Import .abc files (one or many tunes each), or write and paste ABC below. Pieces in the old .json format are converted to ABC.</p>
-            <label class="field"><span>Import pieces (.abc)</span><input id="piece-file" type="file" accept=".abc,.txt,.json,text/plain,application/json" multiple /></label>
-            <ul id="piece-list" class="piece-list"></ul>
-            <p class="muted small" id="piece-msg"></p>
-            <details class="abc-editor" id="abc-editor-box">
-              <summary>Write or edit ABC</summary>
-              <textarea id="abc-editor" rows="14" spellcheck="false" autocapitalize="off" autocomplete="off"></textarea>
-              <div class="row"><button id="abc-save" class="primary">Save to my pieces</button> <button id="abc-new">New piece</button></div>
-              <p class="small" id="abc-msg"></p>
-              <div id="abc-preview" class="abc-preview"></div>
-              <details class="abc-help">
-                <summary>ABC quick reference</summary>
-                <ul class="small">
-                  <li><code>K:D clef=bass</code> key and clef (last header line); <code>M:3/4</code> meter, <code>L:1/8</code> unit length, <code>Q:1/4=92</code> tempo.</li>
-                  <li>Pitches: <code>C</code> = middle C, <code>c</code> an octave up; <code>,</code> lowers an octave: <code>C,,</code> is the open C string, <code>G,,</code> G, <code>D,</code> D, <code>A,</code> A.</li>
-                  <li><code>^F</code> sharp, <code>_B</code> flat, <code>=F</code> natural (for the rest of the bar). The key signature applies otherwise.</li>
-                  <li>Lengths in units of L: <code>D2</code> twice as long, <code>D/</code> half, <code>D3/2</code> dotted; <code>D&gt;E</code> dotted pair; <code>(3DEF</code> triplet; <code>D2-D</code> tie; <code>z</code> rest; <code>[D,A,]</code> double stop.</li>
-                  <li><code>|</code> bar line, <code>|]</code> end, <code>|: … :|</code> repeat, <code>[1 … :|[2</code> endings. <code>P:A</code> on its own line starts a section.</li>
-                  <li><code>!mf!</code> dynamics, <code>!crescendo(!</code> <code>!diminuendo(!</code> hairpins, <code>!1!</code> or <code>"^1"</code> fingering, <code>"G7"</code> chord symbol for the piano.</li>
-                  <li>A written piano part: more voices, e.g. <code>V:pf clef=treble</code> (the solo part is the voice named for an instrument, such as "Cello" or "Violin", else the first). <code>%%accompaniment pulse</code> (or <code>waltz</code>) changes how chord symbols are played; <code>%%focus …</code> adds a hint.</li>
-                </ul>
-              </details>
-            </details>
           </div>
           <div class="card">
             <h3>Soundbrenner Pulse</h3>
