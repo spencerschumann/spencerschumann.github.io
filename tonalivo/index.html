@@ -12,9 +12,9 @@
     <meta name="description" content="Tonalivo: a practice coach for cello and violin in the browser. It listens to you play and gives feedback on intonation, vibrato, tone, rhythm and dynamics." />
     <title>Tonalivo</title>
     <link rel="icon" href="icon.svg" type="image/svg+xml" />
-    <script type="module" crossorigin src="./assets/main-CmQ24gnG.js"></script>
-    <link rel="modulepreload" crossorigin href="./assets/bluetoothPulse-DkQzBJeC.js">
-    <link rel="stylesheet" crossorigin href="./assets/bluetoothPulse-CJRjIo0s.css">
+    <script type="module" crossorigin src="./assets/main-CzBxkAkh.js"></script>
+    <link rel="modulepreload" crossorigin href="./assets/bluetoothPulse-CT8Dwzfs.js">
+    <link rel="stylesheet" crossorigin href="./assets/bluetoothPulse-DiTtH4yA.css">
   </head>
   <body>
     <header class="topbar">
@@ -236,16 +236,21 @@
       <!-- My pieces -->
       <section id="tab-pieces" class="tab" hidden>
         <div class="pieces-page">
-          <div class="card pieces-library">
+          <div class="card pieces-head">
             <h3>My pieces</h3>
-            <p class="muted">Your own music, written in <a href="https://abcnotation.com/learn" target="_blank" rel="noopener">ABC notation</a> and stored only in this browser. Import .abc files (one or many tunes each), or write and paste ABC in the editor. Pieces in the old .json format are converted to ABC.</p>
-            <ul id="piece-list" class="piece-list"></ul>
+            <select id="piece-select" aria-label="Piece"></select>
+            <span class="buttons">
+              <button id="piece-practice" class="small">Practice</button>
+              <button id="piece-edit" class="small">Edit</button>
+              <button id="piece-download" class="small">Download</button>
+              <button id="piece-remove" class="small">Remove</button>
+              <label class="button small">Import .abc…<input id="piece-file" type="file" accept=".abc,.txt,text/plain" multiple hidden /></label>
+            </span>
+            <p class="muted small">Your own music in <a href="https://abcnotation.com/learn" target="_blank" rel="noopener">ABC notation</a>, stored only in this browser. An .abc file can hold several tunes.</p>
             <p class="muted small" id="piece-msg"></p>
-            <label class="field"><span>Import pieces (.abc)</span><input id="piece-file" type="file" accept=".abc,.txt,.json,text/plain,application/json" multiple /></label>
           </div>
           <div class="card abc-editor" id="abc-editor-box">
-            <h3>Write or edit ABC</h3>
-            <textarea id="abc-editor" rows="16" spellcheck="false" autocapitalize="off" autocomplete="off"></textarea>
+            <textarea id="abc-editor" rows="24" spellcheck="false" autocapitalize="off" autocomplete="off"></textarea>
             <div class="row"><button id="abc-save" class="primary">Save to my pieces</button> <button id="abc-new">New piece</button> <button id="abc-practice">Save and practice</button></div>
             <p class="small" id="abc-msg"></p>
             <details class="abc-help">
@@ -263,7 +268,6 @@
             </details>
           </div>
           <div class="card pieces-preview">
-            <h3>Preview</h3>
             <div id="abc-preview" class="abc-preview"></div>
           </div>
         </div>
