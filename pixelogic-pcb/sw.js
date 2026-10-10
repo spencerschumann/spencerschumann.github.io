@@ -21,7 +21,7 @@
 // not remove it because it looks unused.
 
 const CACHE_VERSION = 'v5';
-const BUILD = '0ff48b8';
+const BUILD = '119303c';
 const CACHE_NAME = `pixelogic-pcb-${CACHE_VERSION}-${BUILD}`;
 
 const ASSETS = [

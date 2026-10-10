@@ -33,16 +33,14 @@
     // Insulator: 0 (plain only - a bare insulator is inert, and an insulator
     //            hole no longer means anything special)
     // Conductor: 10-12 (charge 0-2)
-    // +V: 13   -V: 14  (explicit sources - a distinct tool that can sit right
-    //            against a mux and drive it directly; a gray blob that isn't
-    //            a mux also acts as a -V one, see isolatedGray below)
-    // 15-20:     RETIRED. Held the mux control band (gold) of the old band
-    //            mux, removed when the box mux became the only style. The
-    //            range stays reserved rather than being reused, so a circuit
-    //            saved before the removal loads with those pixels dropped
-    //            (isValidId rejects them) instead of silently reading as
-    //            whatever moved into their numbers.
-    // Gray (mux body colored pixel):     21-26 (charge*2 + wasActive)
+    // +V: 13   -V: 14  (explicit sources - they can sit right against a mux
+    //            and drive it directly)
+    // 15-20:     unassigned, and kept that way: circuits saved by older builds
+    //            use them, and an id this build does not define loads as
+    //            insulator (see isValidId) rather than as whatever might move
+    //            into the number later.
+    // Gray (mux body colored pixel):     21-26 (charge*2 + wasActive). Only a
+    //            solid 3x2 of it is a part; any other shape is inert.
     // Crossover conductor: 27-35 (27 + v*3 + h) - a conductor whose four
     //            neighbors are all conductors routes its vertical axis (N<->S)
     //            independently from its horizontal axis (E<->W), so it needs to
@@ -156,6 +154,1232 @@
         return out;
     }
 
+    // ===== Blocks: a part placed whole =====
+    //
+    // A block is a circuit dropped onto the board at full size — its own
+    // cells, simulated exactly like any others — plus a record of what it
+    // is: a name, its pins and what they are called, the blocks nested inside
+    // it, and whether its lid is shut. The pixels cannot say any of that, so
+    // it rides alongside them: two per-cell arrays (which block holds a cell,
+    // which pin leaves it) and a map of records. Everything that moves cells
+    // carries the arrays with them.
+    //
+    // A cell belongs to the innermost block holding it; the blocks around
+    // that one are its ancestors (`parent`). Block cells are off limits to
+    // every ordinary edit — paint, erase, paste, the router — the way a
+    // level's locked pads are. The only ways to change one are to take the
+    // whole block (erase, move, copy, turn) or to decap it, which drops the
+    // record and leaves its cells as loose parts.
+    //
+    // A block's cells are its CORE: the muxes, sources and wiring of its
+    // circuit and nothing else. Its terminals are not its cells. A pin is a
+    // core cell and a face of it — `pinAt` holds pinCode(pin, face) — and the
+    // pin's TERMINAL is the cell just outside that face: where a wire, a
+    // switch or another part's terminal wire goes to connect. The ring of
+    // cells round the core is the block's EDGE, and each of those cells is
+    // one of three kinds (classifyRing): a terminal; a cell that must stay
+    // bare substrate, because anything there would join the circuit or make
+    // a mux read itself differently; or a cell nothing inside cares about,
+    // free for anything — another part's edge included. Edges are not stored:
+    // they are worked out from the core, and kept (ringMask) so every edit
+    // can respect them.
+    var blockAt = new Int32Array(GRID_W * GRID_H);   // innermost block id, 0 = none
+    var pinAt = new Int16Array(GRID_W * GRID_H);     // pinCode(pin, face) of that block, 0 = none
+    var blocks = new Map();      // id -> {id, name, source, pins: [{name, dir}], parent, open}
+    var blockGeom = new Map();   // id -> {x0, y0, x1, y1, pins: [{host: [x, y], d} | null], count}
+    var ringMask = new Uint8Array(GRID_W * GRID_H);  // RING_R | RING_T from the outermost blocks' edges
+    var ringCache = new Map();   // id -> {sig, ring}
+    var nextBlockId = 1;
+    const RING_R = 1, RING_T = 2;
+    // A pin's cell value: which pin, and which face of the cell it leaves by
+    // (an index into DIRS: north, east, south, west).
+    const pinCode = (k, d) => k * 4 + d + 1;
+    const pinIndex = (v) => (v - 1) >> 2;
+    const pinFaceOf = (v) => (v - 1) & 3;
+    const turnPinCode = (v, turns) => (v ? pinCode(pinIndex(v), (pinFaceOf(v) + turns + 4) & 3) : 0);
+    const mirrorPinCode = (v) => (v ? pinCode(pinIndex(v), [0, 3, 2, 1][pinFaceOf(v)]) : 0);
+
+    function blockParent(id) { const r = blocks.get(id); return r ? r.parent : 0; }
+    // Cells no edit may write: a block's own cells, a level's locked pads, and
+    // cells a block's edge keeps bare.
+    function isProtected(x, y) {
+        if (!inBounds(x, y)) return false;
+        const i = idx(x, y);
+        return blockAt[i] !== 0 || (anyLocked && locked[i] === 1) || (ringMask[i] & RING_R) !== 0;
+    }
+    // A cell some block's edge has as a terminal: wire may go there, mux body
+    // may not.
+    function isTerminalCell(x, y) { return inBounds(x, y) && (ringMask[idx(x, y)] & RING_T) !== 0; }
+    // Is cell i inside block `id`, directly or nested deeper?
+    function cellInBlock(i, id) {
+        for (let b = blockAt[i]; b; b = blockParent(b)) if (b === id) return true;
+        return false;
+    }
+    function topBlockOf(id) {
+        let b = id;
+        while (b && blockParent(b)) b = blockParent(b);
+        return b;
+    }
+    // Every cell of block `id`, nested blocks included, as flat indices.
+    function blockCellIdxs(id) {
+        const g = blockGeom.get(id);
+        if (!g) return [];
+        const out = [];
+        for (let y = g.y0; y <= g.y1; y++)
+            for (let x = g.x0; x <= g.x1; x++) {
+                const i = idx(x, y);
+                if (blockAt[i] && cellInBlock(i, id)) out.push(i);
+            }
+        return out;
+    }
+    // Blocks whose every cell lies inside a rectangle.
+    function blocksInside(r) {
+        const out = new Set();
+        for (const [id, g] of blockGeom)
+            if (g.x0 >= r.x0 && g.x1 <= r.x1 && g.y0 >= r.y0 && g.y1 <= r.y1) out.add(id);
+        return out;
+    }
+
+    // Where each block is, re-read from the cell arrays after any change
+    // (recomputeRoles calls it). A cell naming a block with no record, or a
+    // record with no cells left, is dropped rather than drawn half-there.
+    function computeBlockGeom() {
+        blockGeom = new Map();
+        if (!blocks.size) {
+            // Nothing to find — but a stray id left in the arrays must not
+            // survive to be read as a block later.
+            for (let i = 0; i < blockAt.length; i++) if (blockAt[i]) { blockAt[i] = 0; pinAt[i] = 0; }
+            return;
+        }
+        for (let i = 0; i < blockAt.length; i++) {
+            const b0 = blockAt[i];
+            if (!b0) continue;
+            if (!blocks.has(b0)) { blockAt[i] = 0; pinAt[i] = 0; continue; }
+            const x = i % GRID_W, y = (i - x) / GRID_W;
+            for (let b = b0; b; b = blockParent(b)) {
+                const rec = blocks.get(b);
+                if (!rec) break;
+                let g = blockGeom.get(b);
+                if (!g) {
+                    g = { x0: x, y0: y, x1: x, y1: y, pins: rec.pins.map(() => null), count: 0 };
+                    blockGeom.set(b, g);
+                }
+                if (x < g.x0) g.x0 = x;
+                if (x > g.x1) g.x1 = x;
+                if (y < g.y0) g.y0 = y;
+                if (y > g.y1) g.y1 = y;
+                g.count++;
+            }
+            const p = pinAt[i];
+            if (p) {
+                const g = blockGeom.get(b0);
+                if (pinIndex(p) < g.pins.length) g.pins[pinIndex(p)] = { host: [x, y], d: pinFaceOf(p) };
+                else pinAt[i] = 0;
+            }
+        }
+        for (const id of [...blocks.keys()]) if (!blockGeom.has(id)) blocks.delete(id);
+    }
+
+    // Every block, outermost first, with where it is, where its pins are and
+    // its edge. A pin: `host` is its core cell, `face` the way it leaves, and
+    // `at` its terminal — the cell outside that face. `hidden` is true when
+    // some block around it has its lid shut.
+    function blockList() {
+        const out = [];
+        for (const [id, rec] of blocks) {
+            const g = blockGeom.get(id);
+            if (!g) continue;
+            let depth = 0, hidden = false;
+            for (let p = rec.parent; p; p = blockParent(p)) {
+                depth++;
+                if (blocks.get(p) && !blocks.get(p).open) hidden = true;
+            }
+            out.push({
+                id, name: rec.name, source: rec.source, parent: rec.parent, open: rec.open, depth, hidden,
+                x0: g.x0, y0: g.y0, x1: g.x1, y1: g.y1,
+                pins: rec.pins.map((p, k) => {
+                    const q = g.pins[k];
+                    if (!q) return { name: p.name, dir: p.dir, at: null, host: null, face: null };
+                    const [dx, dy] = DIRS[q.d];
+                    return { name: p.name, dir: p.dir, host: q.host, face: [dx, dy], at: [q.host[0] + dx, q.host[1] + dy] };
+                }),
+                ring: [...ringOfBlock(id).values()],
+            });
+        }
+        out.sort((a, b) => a.depth - b.depth);
+        return out;
+    }
+    function blockInfo(id) { return blockList().find((b) => b.id === id) || null; }
+
+    // The innermost block holding (x,y), or 0.
+    function blockAtCell(x, y) { return inBounds(x, y) ? blockAt[idx(x, y)] : 0; }
+    // The block a click at (x,y) is about: the outermost one with its lid
+    // shut (everything inside that is out of sight), or else the innermost.
+    function visibleBlockAt(x, y) {
+        if (!inBounds(x, y)) return 0;
+        const chain = [];
+        for (let b = blockAt[idx(x, y)]; b; b = blockParent(b)) chain.push(b);
+        for (let k = chain.length - 1; k >= 0; k--) if (!blocks.get(chain[k]).open) return chain[k];
+        return chain.length ? chain[0] : 0;
+    }
+    // Whose edge a cell is on, and as what: [{id, cls, pin}] for the
+    // outermost blocks whose edge includes it.
+    function edgeAt(x, y) {
+        const out = [];
+        if (!inBounds(x, y) || !ringMask[idx(x, y)]) return out;
+        for (const id of blocks.keys()) {
+            if (blockParent(id)) continue;
+            const r = ringOfBlock(id).get(x + ',' + y);
+            if (r) out.push({ id, cls: r.cls, pin: r.pin });
+        }
+        return out;
+    }
+    function setBlockOpen(id, open) {
+        const r = blocks.get(id);
+        if (!r) return false;
+        r.open = !!open;
+        return true;
+    }
+    // Erase a block, nested blocks and all.
+    function removeBlock(id) {
+        const list = blockCellIdxs(id);
+        if (!list.length) return false;
+        for (const i of list) { cells[i] = ID_INSULATOR_PLAIN; blockAt[i] = 0; pinAt[i] = 0; }
+        recomputeRoles();
+        return true;
+    }
+    // Take the lid off for good: the record goes, and its cells become loose
+    // parts of whatever it sat in (the board, or the block around it). Blocks
+    // nested inside it stay blocks, one level further out. Its edge goes
+    // with it: what was kept bare is ordinary board again.
+    function decapBlock(id) {
+        const rec = blocks.get(id);
+        if (!rec) return false;
+        for (let i = 0; i < blockAt.length; i++)
+            if (blockAt[i] === id) { blockAt[i] = rec.parent; pinAt[i] = 0; }
+        for (const r of blocks.values()) if (r.parent === id) r.parent = rec.parent;
+        blocks.delete(id);
+        recomputeRoles();
+        return true;
+    }
+
+    const copyBlockRec = (r) => ({
+        id: r.id, name: r.name, source: r.source, parent: r.parent, open: !!r.open,
+        pins: r.pins.map((p) => ({ name: p.name, dir: p.dir })),
+    });
+    // Everything about the blocks, for a snapshot. (The edges are worked out
+    // again from the cores.)
+    function blockState() {
+        return {
+            at: blockAt.slice(), pin: pinAt.slice(),
+            recs: [...blocks.values()].map(copyBlockRec), next: nextBlockId,
+        };
+    }
+    function restoreBlockState(s) {
+        if (!s || s.at.length !== blockAt.length) {
+            blockAt.fill(0); pinAt.fill(0); blocks = new Map();
+            return;
+        }
+        blockAt.set(s.at);
+        pinAt.set(s.pin);
+        blocks = new Map(s.recs.map((r) => [r.id, copyBlockRec(r)]));
+        nextBlockId = Math.max(nextBlockId, s.next || 1);
+    }
+
+    // ===== How a mux reads itself =====
+    // Which long side is COM (comD: 0 for the row at the smaller coordinate,
+    // 1 for the other) and which COM-row end is SELECT (sel: 0 or 2), each
+    // null until something says. `wired(x, y)` says whether a cell against
+    // the part is taken — by anything at all, not only wire. buildBoxMux
+    // reads the board this way; classifyRing asks it "what if?".
+    //
+    // The ORDER is the whole story, and it is why a part's edge has to be
+    // worked out rather than guessed: a wire at the middle of a long side
+    // settles COM before anything else is looked at; failing that, a short
+    // side of either row decides, the row at the smaller coordinate first;
+    // failing that, a wire at a long side's end puts COM on the far side.
+    // SELECT is the first COM-row end with its short side taken.
+    function readBox(minX, minY, w, wired) {
+        const along = w === 3 ? [1, 0] : [0, 1];
+        const perp = w === 3 ? [0, 1] : [1, 0];
+        const gridAt = (i, d) => [minX + along[0] * i + perp[0] * d, minY + along[1] * i + perp[1] * d];
+        const out = (p, [dx, dy]) => wired(p[0] + dx, p[1] + dy);
+        const perpOut = (d) => (d === 0 ? [-perp[0], -perp[1]] : perp);
+        const alongOut = (i) => (i === 0 ? [-along[0], -along[1]] : along);
+        let comD = null;
+        for (const d of [0, 1]) if (out(gridAt(1, d), perpOut(d))) { comD = d; break; }
+        if (comD === null)
+            for (const d of [0, 1]) if ([0, 2].some((i) => out(gridAt(i, d), alongOut(i)))) { comD = d; break; }
+        if (comD === null)
+            for (const d of [0, 1]) if ([0, 2].some((i) => out(gridAt(i, d), perpOut(d)))) { comD = 1 - d; break; }
+        let sel = null;
+        if (comD !== null) for (const i of [0, 2]) if (out(gridAt(i, comD), alongOut(i))) { sel = i; break; }
+        return { comD, sel };
+    }
+    // The leads a reading gives the part: [[x, y, dx, dy]] — COM, SELECT and
+    // both pins once it works; COM and the pins once COM is known.
+    function boxLeads(minX, minY, w, r) {
+        if (r.comD === null) return [];
+        const along = w === 3 ? [1, 0] : [0, 1];
+        const perp = w === 3 ? [0, 1] : [1, 0];
+        const gridAt = (i, d) => [minX + along[0] * i + perp[0] * d, minY + along[1] * i + perp[1] * d];
+        const toward = r.comD === 0 ? perp : [-perp[0], -perp[1]];
+        const leads = [[...gridAt(1, r.comD), -toward[0], -toward[1]],
+            [...gridAt(0, 1 - r.comD), toward[0], toward[1]], [...gridAt(2, 1 - r.comD), toward[0], toward[1]]];
+        if (r.sel !== null) {
+            const out = r.sel === 0 ? [-along[0], -along[1]] : along;
+            leads.push([...gridAt(r.sel, r.comD), out[0], out[1]]);
+        }
+        return leads;
+    }
+
+    // ===== A part's edge =====
+    //
+    // Every cell of the ring round a core, as one of:
+    //   'T' — a terminal: where a wire (or a switch, a lamp, another part's
+    //         terminal) goes to connect to the pin inside;
+    //   'R' — kept bare: anything there would join the circuit inside, or
+    //         make one of its muxes read itself differently;
+    //   'X' — nothing inside cares: free for anything, another part's edge
+    //         included. (Except mux body against mux body, which is never
+    //         allowed anywhere — the two would merge into a blob that is
+    //         neither.)
+    //
+    // Worked out, not guessed, because a mux reads its orientation off
+    // whatever lies against it, in an order that depends on which way round
+    // it stands (see readBox). So for each edge cell next to a mux, the
+    // question is asked for every way the part could be turned or flipped,
+    // and for every mix of its terminals being wired or not — with at least
+    // one wired, since a part with nothing connected does nothing to get
+    // wrong. If a thing on the edge cell changes the reading in any of those,
+    // or meets a lead that is not a terminal, the cell is kept bare.
+    //
+    // A change only counts if it matters: a mux with no SELECT does nothing
+    // at all, so two readings that both leave it without one are the same.
+    // That is what lets an output wire bend along the edge past the COM
+    // row's far end — the only reading it could spoil is one where, with
+    // nothing on SELECT, the mux is dead whichever way round it reads.
+    //
+    // `core`: {x0, y0, x1, y1, id(x, y), nested(x, y) → a block inside it (0
+    // for its own cells), nestedRing(b, x, y) → that block's class there,
+    // pins: [{hx, hy, d, k, dir}]}. Returns a Map 'x,y' -> {x, y, cls, pin}.
+    const TRANSFORMS = [[1, 0, 0, 1], [0, -1, 1, 0], [-1, 0, 0, -1], [0, 1, -1, 0],
+        [-1, 0, 0, 1], [1, 0, 0, -1], [0, 1, 1, 0], [0, -1, -1, 0]];
+    function classifyRing(core) {
+        const key = (x, y) => x + ',' + y;
+        const inCore = (x, y) => x >= core.x0 && x <= core.x1 && y >= core.y0 && y <= core.y1;
+        const termOf = new Map(), hostOf = new Map();
+        for (const p of core.pins) {
+            const [dx, dy] = DIRS[p.d];
+            termOf.set(key(p.hx + dx, p.hy + dy), p);
+            hostOf.set(key(p.hx, p.hy), p);
+        }
+        // The muxes in the core itself (not inside a part nested in it).
+        const muxOf = new Map(), seen = new Set();
+        for (let y = core.y0; y <= core.y1; y++)
+            for (let x = core.x0; x <= core.x1; x++) {
+                if (seen.has(key(x, y)) || !isGrayId(core.id(x, y)) || core.nested(x, y)) continue;
+                const blob = [], stack = [[x, y]];
+                seen.add(key(x, y));
+                while (stack.length) {
+                    const [cx, cy] = stack.pop();
+                    blob.push([cx, cy]);
+                    for (const [dx, dy] of DIRS) {
+                        const nx = cx + dx, ny = cy + dy;
+                        if (!inCore(nx, ny) || seen.has(key(nx, ny)) || !isGrayId(core.id(nx, ny)) || core.nested(nx, ny)) continue;
+                        seen.add(key(nx, ny));
+                        stack.push([nx, ny]);
+                    }
+                }
+                const xs = blob.map((c) => c[0]), ys = blob.map((c) => c[1]);
+                const minX = Math.min(...xs), minY = Math.min(...ys);
+                const w = Math.max(...xs) - minX + 1, h = Math.max(...ys) - minY + 1;
+                const m = blob.length === 6 && w * h === 6 ? { cells: blob, minX, minY, w } : null;
+                for (const [bx, by] of blob) muxOf.set(key(bx, by), m);
+            }
+        const taken = (x, y, wired, probe) => (probe !== null && probe[0] === x && probe[1] === y)
+            || (inCore(x, y) ? !isInsulatorId(core.id(x, y)) : wired.has(key(x, y)));
+        const reading = (m, T, wired, probe) => {
+            const [a, b, c, d] = T;
+            const pts = m.cells.map(([x, y]) => [a * x + b * y, c * x + d * y]);
+            const minX = Math.min(...pts.map((p) => p[0])), minY = Math.min(...pts.map((p) => p[1]));
+            const w = Math.max(...pts.map((p) => p[0])) - minX + 1;
+            // (The transforms are orthogonal: the inverse is the transpose.)
+            const r = readBox(minX, minY, w, (tx, ty) => taken(a * tx + c * ty, b * tx + d * ty, wired, probe));
+            return r.sel === null ? 'dead' : r.comD + ':' + r.sel;
+        };
+        const ring = new Map();
+        const put = (x, y, cls, pin) => ring.set(key(x, y), { x, y, cls, pin: pin ? pin.k : -1 });
+        for (let y = core.y0 - 1; y <= core.y1 + 1; y++)
+            for (let x = core.x0 - 1; x <= core.x1 + 1; x++) {
+                if (inCore(x, y)) continue;
+                const xin = x >= core.x0 && x <= core.x1, yin = y >= core.y0 && y <= core.y1;
+                if (!xin && !yin) { put(x, y, 'X'); continue; }   // a corner only touches the ring
+                const nx = xin ? x : (x < core.x0 ? core.x0 : core.x1);
+                const ny = yin ? y : (y < core.y0 ? core.y0 : core.y1);
+                const term = termOf.get(key(x, y));
+                if (term) { put(x, y, 'T', term); continue; }
+                const child = core.nested(nx, ny);
+                if (child) { put(x, y, core.nestedRing(child, x, y) === 'X' ? 'X' : 'R'); continue; }
+                const nid = core.id(nx, ny);
+                if (isInsulatorId(nid)) { put(x, y, 'X'); continue; }
+                if (!isGrayId(nid)) {
+                    // Wire, a source, a lamp: anything touching it joins it. A
+                    // pin's wire reached from another face is the same pin.
+                    const host = hostOf.get(key(nx, ny));
+                    if (host && isWireId(nid)) put(x, y, 'T', host);
+                    else put(x, y, 'R');
+                    continue;
+                }
+                const m = muxOf.get(key(nx, ny));
+                if (!m) { put(x, y, 'R'); continue; }
+                const near = [];
+                for (const [tk] of termOf) {
+                    const [tx, ty] = tk.split(',').map(Number);
+                    if (m.cells.some(([mx, my]) => Math.abs(mx - tx) + Math.abs(my - ty) === 1)) near.push(tk);
+                }
+                // At least one terminal of the part wired — a terminal elsewhere
+                // can be the wired one, and then any mix here counts.
+                const allMine = near.length === termOf.size && termOf.size > 0;
+                let upset = false;
+                for (let mask = allMine ? 1 : 0; mask < (1 << near.length) && !upset; mask++) {
+                    const wired = new Set(near.filter((_, j) => mask & (1 << j)));
+                    for (const T of TRANSFORMS)
+                        if (reading(m, T, wired, null) !== reading(m, T, wired, [x, y])) { upset = true; break; }
+                }
+                if (upset) { put(x, y, 'R'); continue; }
+                // A lead facing it, with every terminal wired, would take
+                // whatever is put there as a connection.
+                const r = readBox(m.minX, m.minY, m.w, (tx, ty) => taken(tx, ty, new Set(near), null));
+                const faces = boxLeads(m.minX, m.minY, m.w, r)
+                    .some(([lx, ly, dx, dy]) => lx === nx && ly === ny && lx + dx === x && ly + dy === y);
+                put(x, y, faces ? 'R' : 'X');
+            }
+        return ring;
+    }
+
+    // A core on the board — a placed block's, or a rectangle being fitted —
+    // as classifyRing wants it.
+    // `asWire` (a set of cell indexes) reads those cells as plain wire: the
+    // pads a level part has had to take in (see fitPart).
+    function coreOnBoard(r, own, pins, asWire) {
+        // The part directly inside this core that holds a cell (with no
+        // `own`, the outermost part there), or 0 for the core's own cells.
+        const child = (x, y) => {
+            if (!inBounds(x, y)) return 0;
+            let b = blockAt[idx(x, y)];
+            if (!b || b === own) return 0;
+            while (blockParent(b) && blockParent(b) !== own) b = blockParent(b);
+            return own && blockParent(b) !== own ? 0 : b;
+        };
+        return {
+            x0: r.x0, y0: r.y0, x1: r.x1, y1: r.y1,
+            id: (x, y) => (!inBounds(x, y) ? ID_INSULATOR_PLAIN
+                : asWire && asWire.has(idx(x, y)) ? ID_CONDUCTOR_BASE : cells[idx(x, y)]),
+            nested: child,
+            nestedRing: (b, x, y) => { const c = ringOfBlock(b).get(x + ',' + y); return c ? c.cls : 'X'; },
+            pins,
+        };
+    }
+    function blockSig(id, g) {
+        let h = 0x811c9dc5;
+        for (let y = g.y0; y <= g.y1; y++)
+            for (let x = g.x0; x <= g.x1; x++) {
+                const i = idx(x, y);
+                h = Math.imul(h ^ stripId(cells[i]), 0x01000193);
+                h = Math.imul(h ^ (blockAt[i] === id ? 0 : 1), 0x01000193);
+                h = Math.imul(h ^ pinAt[i], 0x01000193);
+            }
+        return `${g.x0},${g.y0},${g.x1},${g.y1}:${h >>> 0}`;
+    }
+    // A placed block's edge, worked out once per shape and place.
+    function ringOfBlock(id) {
+        const g = blockGeom.get(id);
+        if (!g) return new Map();
+        const sig = blockSig(id, g);
+        const hit = ringCache.get(id);
+        if (hit && hit.sig === sig) return hit.ring;
+        const pins = [];
+        const rec = blocks.get(id);
+        g.pins.forEach((p, k) => { if (p) pins.push({ hx: p.host[0], hy: p.host[1], d: p.d, k, dir: rec.pins[k].dir }); });
+        const ring = classifyRing(coreOnBoard(g, id, pins));
+        ringCache.set(id, { sig, ring });
+        return ring;
+    }
+    // The edges every edit has to respect, from the outermost blocks (a
+    // nested block's edge is inside its host, which is sealed anyway).
+    function computeRingMask() {
+        if (ringMask.length !== cells.length) ringMask = new Uint8Array(cells.length);
+        else ringMask.fill(0);
+        for (const id of [...ringCache.keys()]) if (!blocks.has(id)) ringCache.delete(id);
+        for (const id of blocks.keys()) {
+            if (blockParent(id)) continue;
+            for (const c of ringOfBlock(id).values()) {
+                if (!inBounds(c.x, c.y)) continue;
+                ringMask[idx(c.x, c.y)] |= c.cls === 'R' ? RING_R : c.cls === 'T' ? RING_T : 0;
+            }
+        }
+    }
+    // Cells where an edge is broken: something on a cell kept bare, or mux
+    // body — or another part's insides — on a terminal.
+    function ringViolations() {
+        const out = [];
+        for (let i = 0; i < ringMask.length; i++) {
+            const m = ringMask[i];
+            if (!m) continue;
+            if ((m & RING_R) && !isInsulatorId(cells[i])) out.push(i);
+            else if ((m & RING_T) && (isGrayId(cells[i]) || blockAt[i])) out.push(i);
+        }
+        return out;
+    }
+
+    // ---- Clips that carry blocks ----
+    // A clip is {w, h, data} — cell ids, row by row — and, when blocks came
+    // with it, `blocks` (records keyed by a clip-local id `lid`, `parent`
+    // another lid or 0), `bmap` (each cell's innermost lid, 0 = loose) and
+    // `pmap` (pin codes, as pinAt). Copy/paste, the parts shelf and a
+    // level's solution all use this one form.
+    const clipTops = (c) => (c.blocks || []).filter((b) => !b.parent).map((b) => b.lid);
+    // Is lid `l` inside lid `top` (or it)?
+    function clipUnder(c, l, top) {
+        const parentOf = c._parentOf || (c._parentOf = new Map(c.blocks.map((b) => [b.lid, b.parent])));
+        for (let n = 0; l && n <= c.blocks.length; n++, l = parentOf.get(l)) if (l === top) return true;
+        return false;
+    }
+    // A block of a clip, at (ox, oy) on the board, as a core for classifyRing.
+    function coreInClip(c, lid, ox, oy) {
+        let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+        const pins = [];
+        for (let y = 0; y < c.h; y++)
+            for (let x = 0; x < c.w; x++) {
+                const k = y * c.w + x, l = c.bmap[k];
+                if (!l || !clipUnder(c, l, lid)) continue;
+                x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y);
+                if (l === lid && c.pmap[k]) {
+                    const pk = pinIndex(c.pmap[k]), rec = c.blocks.find((b) => b.lid === lid);
+                    pins.push({ hx: ox + x, hy: oy + y, d: pinFaceOf(c.pmap[k]), k: pk, dir: rec && rec.pins[pk] ? rec.pins[pk].dir : 'in' });
+                }
+            }
+        const at = (x, y) => {
+            const cx = x - ox, cy = y - oy;
+            return cx >= 0 && cy >= 0 && cx < c.w && cy < c.h ? cy * c.w + cx : -1;
+        };
+        return {
+            x0: ox + x0, y0: oy + y0, x1: ox + x1, y1: oy + y1,
+            id: (x, y) => { const k = at(x, y); return k < 0 ? ID_INSULATOR_PLAIN : c.data[k]; },
+            nested: (x, y) => {
+                const k = at(x, y);
+                if (k < 0) return 0;
+                let l = c.bmap[k];
+                if (!l || l === lid || !clipUnder(c, l, lid)) return 0;
+                while (c._parentOf.get(l) !== lid) l = c._parentOf.get(l);
+                return l;
+            },
+            nestedRing: (l, x, y) => { const r = clipRingOf(c, l, ox, oy).get(x + ',' + y); return r ? r.cls : 'X'; },
+            pins,
+        };
+    }
+    function clipRingOf(c, lid, ox, oy) {
+        const cache = c._rings || (c._rings = new Map());
+        const k = lid + '@' + ox + ',' + oy;
+        if (!cache.has(k)) cache.set(k, classifyRing(coreInClip(c, lid, ox, oy)));
+        return cache.get(k);
+    }
+    // A clip with its outermost part's lid taken off — its cells loose, the
+    // parts nested in it still parts. What Edit puts down to work on.
+    function decapClip(c) {
+        if (!c.blocks || !c.bmap) return c;
+        const tops = new Set(clipTops(c));
+        const out = { w: c.w, h: c.h, data: c.data.slice(), bmap: new Int32Array(c.bmap), pmap: new Int16Array(c.pmap) };
+        for (let i = 0; i < out.bmap.length; i++) if (tops.has(out.bmap[i])) { out.bmap[i] = 0; out.pmap[i] = 0; }
+        out.blocks = c.blocks.filter((b) => !tops.has(b.lid))
+            .map((b) => ({ ...b, parent: tops.has(b.parent) ? 0 : b.parent, pins: b.pins.map((p) => ({ ...p })) }));
+        if (!out.blocks.length) { delete out.blocks; delete out.bmap; delete out.pmap; }
+        return out;
+    }
+    // The pins of a clip's outermost block, in the clip's own coordinates:
+    // [{name, dir, host, face, at}], `at` being the terminal outside.
+    function clipPins(c) {
+        const tops = c.blocks && c.bmap ? clipTops(c) : [];
+        if (!tops.length) return [];
+        const top = c.blocks.find((b) => b.lid === tops[0]);
+        const pins = top.pins.map((p) => ({ name: p.name, dir: p.dir, host: null, face: null, at: null }));
+        for (let i = 0; i < c.pmap.length; i++) {
+            if (c.bmap[i] !== top.lid || !c.pmap[i]) continue;
+            const k = pinIndex(c.pmap[i]), [dx, dy] = DIRS[pinFaceOf(c.pmap[i])];
+            const hx = i % c.w, hy = Math.floor(i / c.w);
+            if (pins[k]) Object.assign(pins[k], { host: [hx, hy], face: [dx, dy], at: [hx + dx, hy + dy] });
+        }
+        return pins;
+    }
+    // The edge of a clip's outermost block, in the clip's own coordinates.
+    function clipRing(c) {
+        const tops = c.blocks && c.bmap ? clipTops(c) : [];
+        return tops.length ? [...clipRingOf(c, tops[0], 0, 0).values()] : [];
+    }
+
+    // A clip that came from storage or an import, made safe to paste: right
+    // lengths, known ids, parents that exist and do not loop. Returns null
+    // if there is no usable clip at all. Clips saved before pins recorded
+    // their face (no `pv`) had every pin on its block's edge, facing out,
+    // which is what they are read as.
+    function sanitizeClip(c) {
+        if (!c || !Number.isInteger(c.w) || !Number.isInteger(c.h) || c.w <= 0 || c.h <= 0) return null;
+        const n = c.w * c.h;
+        if (n > MAX_CELLS || !c.data || c.data.length !== n) return null;
+        const data = new Uint8Array(n);
+        for (let i = 0; i < n; i++) data[i] = stripId(c.data[i] & 0xff);
+        const out = { w: c.w, h: c.h, data };
+        if (!Array.isArray(c.blocks) || !c.blocks.length || !c.bmap || c.bmap.length !== n) return out;
+        const recs = [];
+        const seen = new Set();
+        for (const b of c.blocks) {
+            if (!b || !Number.isInteger(b.lid) || b.lid <= 0 || seen.has(b.lid)) continue;
+            seen.add(b.lid);
+            recs.push({
+                lid: b.lid, name: String(b.name || 'Part').slice(0, 40), source: b.source ? String(b.source) : '',
+                parent: Number.isInteger(b.parent) ? b.parent : 0, open: !!b.open,
+                pins: (Array.isArray(b.pins) ? b.pins : []).slice(0, 256).map((p) => ({
+                    name: String((p && p.name) || '?').slice(0, 12), dir: p && p.dir === 'out' ? 'out' : 'in',
+                })),
+            });
+        }
+        const byLid = new Map(recs.map((r) => [r.lid, r]));
+        for (const r of recs) {
+            // A parent that is missing, or that leads back round to this one,
+            // is cut: the block stands on its own instead.
+            let p = r.parent, steps = 0;
+            while (p && byLid.has(p) && p !== r.lid && steps++ < recs.length) p = byLid.get(p).parent;
+            if (!byLid.has(r.parent) || p === r.lid || steps >= recs.length) r.parent = 0;
+        }
+        const bmap = new Int32Array(n), pmap = new Int16Array(n);
+        for (let i = 0; i < n; i++) {
+            const l = c.bmap[i] | 0;
+            if (byLid.has(l)) bmap[i] = l;
+        }
+        const legacy = !c.pv;
+        const box = legacy ? lidBoxes(bmap, c.w, c.h) : null;
+        for (let i = 0; i < n; i++) {
+            const l = bmap[i];
+            let p = c.pmap ? c.pmap[i] | 0 : 0;
+            if (!l || p <= 0) continue;
+            if (legacy) p = pinCode(p - 1, outwardFace(box.get(l), i % c.w, Math.floor(i / c.w)));
+            if (pinIndex(p) < byLid.get(l).pins.length) pmap[i] = p;
+        }
+        out.blocks = recs;
+        out.bmap = bmap;
+        out.pmap = pmap;
+        return out;
+    }
+    // Each lid's own bounding box (its own cells only), for reading old pins.
+    function lidBoxes(bmap, w, h) {
+        const box = new Map();
+        for (let i = 0; i < bmap.length; i++) {
+            const l = bmap[i];
+            if (!l) continue;
+            const x = i % w, y = Math.floor(i / w);
+            const b = box.get(l) || { x0: x, y0: y, x1: x, y1: y };
+            b.x0 = Math.min(b.x0, x); b.y0 = Math.min(b.y0, y); b.x1 = Math.max(b.x1, x); b.y1 = Math.max(b.y1, y);
+            box.set(l, b);
+        }
+        return box;
+    }
+    // The face of a cell on a box's edge that looks out of it.
+    function outwardFace(b, x, y) {
+        if (x === b.x0) return 3;
+        if (x === b.x1) return 1;
+        if (y === b.y0) return 0;
+        return 2;
+    }
+    // Plain arrays, for JSON.
+    function clipToJSON(c) {
+        const o = { w: c.w, h: c.h, data: Array.from(c.data) };
+        if (c.blocks && c.blocks.length) {
+            o.pv = 2;
+            o.blocks = c.blocks.map((b) => ({
+                lid: b.lid, name: b.name, source: b.source, parent: b.parent, open: !!b.open,
+                pins: b.pins.map((p) => ({ name: p.name, dir: p.dir })),
+            }));
+            o.bmap = Array.from(c.bmap);
+            o.pmap = Array.from(c.pmap);
+        }
+        return o;
+    }
+
+    // A quarter turn clockwise, or a left-right flip, of a clip — blocks and
+    // pins turn with their cells, pins' faces too.
+    function transformClip(c, turn) {
+        const w = turn ? c.h : c.w, h = turn ? c.w : c.h;
+        const to = turn
+            ? (x, y) => x * w + (c.h - 1 - y)     // (x, y) -> (c.h-1-y, x), as rotateRegionCW
+            : (x, y) => y * w + (c.w - 1 - x);
+        const out = { w, h, data: new Uint8Array(w * h) };
+        const hasBlocks = !!(c.blocks && c.blocks.length && c.bmap);
+        if (hasBlocks) {
+            out.blocks = c.blocks.map((b) => ({ ...b, pins: b.pins.map((p) => ({ ...p })) }));
+            out.bmap = new Int32Array(w * h);
+            out.pmap = new Int16Array(w * h);
+        }
+        for (let y = 0; y < c.h; y++)
+            for (let x = 0; x < c.w; x++) {
+                const k = y * c.w + x, t = to(x, y);
+                out.data[t] = c.data[k];
+                if (!hasBlocks) continue;
+                out.bmap[t] = c.bmap[k];
+                const p = c.pmap ? c.pmap[k] : 0;
+                out.pmap[t] = turn ? turnPinCode(p, 1) : mirrorPinCode(p);
+            }
+        return out;
+    }
+    function rotateClipCW(c) { return transformClip(c, true); }
+    function mirrorClipH(c) { return transformClip(c, false); }
+
+    // Why the blocks of a clip cannot land with the clip's top-left at
+    // (x0, y0), or null if they can. A part's core needs empty board that no
+    // other part's terminal or kept-bare edge claims (unless the core is
+    // empty right there); its own edge needs bare board wherever it says
+    // bare, and no mux body on a terminal; and no mux body of it may touch
+    // mux body outside it. `grow`: cells off the board are fine (the sandbox
+    // grows to take them).
+    function clipBlockFits(c, lid, x0, y0, grow) {
+        const core = coreInClip(c, lid, x0, y0);
+        for (let y = core.y0; y <= core.y1; y++)
+            for (let x = core.x0; x <= core.x1; x++) {
+                const k = (y - y0) * c.w + (x - x0);
+                if (!c.bmap[k] || !clipUnder(c, c.bmap[k], lid)) continue;
+                if (!inBounds(x, y)) { if (grow) continue; return 'No room for it here'; }
+                const i = idx(x, y);
+                if (blockAt[i]) return 'It would sit on another part';
+                if (anyLocked && locked[i] === 1) return 'It would sit on a pad';
+                if (!isInsulatorId(cells[i])) return 'It needs empty board to sit on';
+                if ((ringMask[i] & RING_T) || ((ringMask[i] & RING_R) && !isInsulatorId(c.data[k])))
+                    return 'It would sit on another part’s edge';
+                if (isGrayId(c.data[k]))
+                    for (const [dx, dy] of DIRS) {
+                        const nx = x + dx, ny = y + dy, nk = (ny - y0) * c.w + (nx - x0);
+                        const mine = nx >= core.x0 && nx <= core.x1 && ny >= core.y0 && ny <= core.y1 && c.bmap[nk] && clipUnder(c, c.bmap[nk], lid);
+                        if (!mine && inBounds(nx, ny) && isGrayId(cells[idx(nx, ny)])) return 'Two muxes cannot touch — leave a gap';
+                    }
+            }
+        // Edges may overlap wherever both allow it — bare on bare, anything on
+        // free — but a terminal (which a wire will go on) never on a cell
+        // another part keeps bare, nor the other way round. Two terminals on
+        // one cell are one wire joining both pins, which is fine.
+        for (const r of clipRingOf(c, lid, x0, y0).values()) {
+            if (!inBounds(r.x, r.y)) continue;
+            const i = idx(r.x, r.y);
+            if (r.cls === 'R' && !isInsulatorId(cells[i])) return 'Something is in the way of its edge';
+            if (r.cls === 'R' && (ringMask[i] & RING_T)) return 'Its edge would cover another part’s terminal';
+            if (r.cls === 'T' && (isGrayId(cells[i]) || blockAt[i])) return 'Something is in the way of its terminals';
+            if (r.cls === 'T' && (ringMask[i] & RING_R)) return 'Its terminal would be on another part’s edge';
+        }
+        return null;
+    }
+    function blockFits(clip, x0, y0, opts) {
+        if (!clip.bmap) return null;
+        for (const lid of clipTops(clip)) {
+            const why = clipBlockFits(clip, lid, x0, y0, !!(opts && opts.grow));
+            if (why) return why;
+        }
+        return null;
+    }
+
+    // The fallback, for a level whose wiring cannot be fitted to a tight edge
+    // (see fitPart): a part made from everything joined to the given pads —
+    // and nothing else, so a doodle in a corner stays behind — trimmed to
+    // what that is, with a one-cell margin round it, and each pad turned into
+    // wire with a lead run straight out to the margin's edge, where it
+    // becomes a pin. It is as big as the board's pads are far apart. `pads`: [{name, dir: 'in'|'out', x, y}], each a single
+    // cell (a level's switch or lamp). `rect`, if given, bounds what may be
+    // taken. Blocks already on the board come along whole, nested inside
+    // the new one. Returns {clip} or {error}.
+    //
+    // A lead leaves from the pad itself if it can — to the west for an
+    // input, the east for an output, the way the pads face — and otherwise
+    // from any wire on the pad's net that has a clear run to the edge: a
+    // circuit is free to wall its own switch in, running wire round the
+    // outside of it, and the pin then comes out of that wire instead.
+    function captureBlock(name, source, pads, rect) {
+        if (!pads.length) return { error: 'A part needs at least one pin' };
+        const within = (x, y) => inBounds(x, y) && (!rect || (x >= rect.x0 && x <= rect.x1 && y >= rect.y0 && y <= rect.y1));
+        const padSet = new Set();
+        for (const p of pads) {
+            if (!within(p.x, p.y)) return { error: 'A pin is outside the part' };
+            padSet.add(idx(p.x, p.y));
+        }
+        const incl = new Set(padSet), stack = [...padSet], takenTops = new Set();
+        while (stack.length) {
+            const i = stack.pop();
+            const x = i % GRID_W, y = (i - x) / GRID_W;
+            if (blockAt[i]) {
+                const top = topBlockOf(blockAt[i]);
+                if (!takenTops.has(top)) {
+                    takenTops.add(top);
+                    for (const j of blockCellIdxs(top)) {
+                        const jx = j % GRID_W, jy = (j - jx) / GRID_W;
+                        if (!within(jx, jy)) return { error: 'A part it uses is not wholly inside' };
+                        if (!incl.has(j)) { incl.add(j); stack.push(j); }
+                    }
+                }
+                // A block leads anywhere else only through its own pins.
+                if (!(pinAt[i] && blockAt[i] === top)) continue;
+            }
+            for (const [dx, dy] of DIRS) {
+                const nx = x + dx, ny = y + dy;
+                if (!within(nx, ny)) continue;
+                const ni = idx(nx, ny);
+                if (incl.has(ni)) continue;
+                if (blockAt[ni]) {
+                    if (!(pinAt[ni] && blockAt[ni] === topBlockOf(blockAt[ni]))) continue;
+                } else if (isInsulatorId(cells[ni])) continue;
+                incl.add(ni);
+                stack.push(ni);
+            }
+        }
+        let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+        for (const i of incl) {
+            const x = i % GRID_W, y = (i - x) / GRID_W;
+            if (x < x0) x0 = x;
+            if (x > x1) x1 = x;
+            if (y < y0) y0 = y;
+            if (y > y1) y1 = y;
+        }
+        x0--; y0--; x1++; y1++;   // the margin
+        const w = x1 - x0 + 1, h = y1 - y0 + 1;
+        const has = (x, y) => incl.has(inBounds(x, y) ? idx(x, y) : -1);
+        const onEdge = (x, y, d) => (d === 0 ? y === y0 : d === 1 ? x === x1 : d === 2 ? y === y1 : x === x0);
+        // Each pad's way out: straight to the margin's edge, through cells
+        // the part does not use, with nothing of the part flush beside it.
+        // Where it starts from must be left with at most three wires: with
+        // a fourth it would be a crossing, not a junction.
+        const leadCells = new Set(), leads = [];
+        const clearRun = (sx, sy, d) => {
+            const [dx, dy] = DIRS[d], path = [];
+            let x = sx, y = sy;
+            while (!onEdge(x, y, d)) {
+                x += dx; y += dy;
+                if (has(x, y) || leadCells.has(x + ',' + y)) return null;
+                const side = d % 2 === 0 ? [[1, 0], [-1, 0]] : [[0, 1], [0, -1]];
+                if (side.some(([ex, ey]) => has(x + ex, y + ey) || leadCells.has((x + ex) + ',' + (y + ey)))) return null;
+                path.push([x, y]);
+            }
+            return path.length ? path : null;
+        };
+        const armsAt = (x, y) => {
+            let n = 0;
+            for (const [dx, dy] of DIRS) if (has(x + dx, y + dy) && cellConnects(x + dx, y + dy, [-dx, -dy])) n++;
+            return n;
+        };
+        for (let k = 0; k < pads.length; k++) {
+            const p = pads[k];
+            const order = p.dir === 'out' ? [1, 0, 2, 3] : [3, 0, 2, 1];
+            const padIdx = idx(p.x, p.y);
+            // The pad first, then the rest of its wire.
+            const starts = [padIdx, ...[...netCellsOf(padIdx)].filter((i) =>
+                i !== padIdx && incl.has(i) && isConductorId(cells[i]) && !blockAt[i]
+                && !isCrossoverAt(i % GRID_W, (i - i % GRID_W) / GRID_W))];
+            let found = null;
+            for (const d of order) {
+                let best = null;
+                for (const si of starts) {
+                    const sx = si % GRID_W, sy = (si - sx) / GRID_W;
+                    if (armsAt(sx, sy) >= 3) continue;
+                    const path = clearRun(sx, sy, d);
+                    if (path && (!best || path.length < best.path.length)) best = { path, d };
+                    if (best && si === padIdx) break;   // the pad itself wins
+                }
+                if (best) { found = best; break; }
+            }
+            if (!found) return { error: `Nothing clear around ${p.name} to bring its pin out` };
+            for (const [x, y] of found.path) leadCells.add(x + ',' + y);
+            leads.push(found);
+        }
+        const data = new Uint8Array(w * h);
+        const bmap = new Int32Array(w * h).fill(1);
+        const pmap = new Int16Array(w * h);
+        const lidOf = new Map();
+        let nextLid = 2;
+        for (const i of incl) {
+            const x = i % GRID_W, y = (i - x) / GRID_W;
+            const k = (y - y0) * w + (x - x0);
+            data[k] = padSet.has(i) ? makeConductor(OFF) : stripId(cells[i]);
+            if (!blockAt[i]) continue;
+            for (let b = blockAt[i]; b; b = blockParent(b)) if (!lidOf.has(b)) lidOf.set(b, nextLid++);
+            bmap[k] = lidOf.get(blockAt[i]);
+            pmap[k] = pinAt[i];
+        }
+        const recs = [{ lid: 1, name, source: source || '', parent: 0, open: false, pins: pads.map((p) => ({ name: p.name, dir: p.dir === 'out' ? 'out' : 'in' })) }];
+        for (const [b, lid] of lidOf) {
+            const r = blocks.get(b);
+            recs.push({ lid, name: r.name, source: r.source, parent: r.parent ? lidOf.get(r.parent) : 1, open: false, pins: r.pins.map((p) => ({ ...p })) });
+        }
+        leads.forEach(({ path, d }, k) => {
+            for (const [x, y] of path) data[(y - y0) * w + (x - x0)] = makeConductor(OFF);
+            const [px, py] = path[path.length - 1];
+            pmap[(py - y0) * w + (px - x0)] = pinCode(k, d);
+        });
+        return { clip: { w, h, data, blocks: recs, bmap, pmap } };
+    }
+
+    // ===== Fitting a part =====
+    //
+    // A part is its core and nothing more: the smallest rectangle holding
+    // its muxes, sources and parts, and the wires that only join them to
+    // each other. Everything round it is edge (see classifyRing), and the
+    // edge is where the terminals are — the wires, switches or lamps that
+    // meet the circuit from outside. An inverter is its 3x2 mux and the row
+    // of sources under it: 3x3, its input and output wires just outside.
+    //
+    // `fitPart` finds that rectangle round a circuit on the board. It starts
+    // from everything that has to be inside and grows an edge wherever the
+    // ring round it holds something it may not: a wire that joins the
+    // circuit somewhere that cannot be a pin (a source, the middle of a
+    // wire run inside, a part nested in it), one terminal meeting the
+    // circuit twice (the meeting nearest where the wire leads is kept), or
+    // anything on a cell the edge must keep bare. What lies on the edge's
+    // free cells — a wire running past, a test switch — is left outside. One
+    // edge at a time, the one with the most trouble, then look again.
+    //
+    // `region` bounds the core (the board, or a selection — which says where
+    // the part may reach, so a selection of just the core is enough); the
+    // ring round it may sit a cell outside, off the board included (off the
+    // board is bare). `pads`, in a level, are its switches and lamps: each must
+    // meet exactly one terminal, which takes its name. Without pads — the
+    // sandbox — a terminal is anything on the ring that meets the circuit.
+    // Returns {core, ring, pins: [{x, y, hx, hy, d, side, dir, name?}],
+    // edge: [{x, y, cls, pin}]}, or {error, cells}.
+    const SIDE_OF_FACE = ['n', 'e', 's', 'w'];
+    function fitPart(region, pads) {
+        const r0 = normalizeRect(region.x0, region.y0, region.x1, region.y1);
+        const inRegion = (x, y) => x >= r0.x0 && x <= r0.x1 && y >= r0.y0 && y <= r0.y1;
+        const fail = (error, list) => ({ error, cells: list || [] });
+        const padAt = new Map();
+        if (pads) for (const p of pads) padAt.set(idx(p.x, p.y), p);
+        const isFixture = (i) => !blockAt[i] && (isToggle(cells[i]) || isSwitch(cells[i]) || isLed(cells[i]));
+        const xy = (i) => [i % GRID_W, (i - i % GRID_W) / GRID_W];
+        const connectsWay = (x, y, dx, dy) => inBounds(x, y) && inBounds(x + dx, y + dy)
+            && cellConnects(x, y, [dx, dy]) && cellConnects(x + dx, y + dy, [-dx, -dy]);
+
+        // What has to be inside: muxes, sources, parts.
+        const core = new Set(), tops = new Set();
+        for (let y = r0.y0; y <= r0.y1; y++)
+            for (let x = r0.x0; x <= r0.x1; x++) {
+                const i = idx(x, y), id = cells[i];
+                if (blockAt[i]) { core.add(i); tops.add(topBlockOf(blockAt[i])); continue; }
+                if (isGrayId(id) || id === ID_POS || id === ID_NEG) core.add(i);
+                else if (pads && isFixture(i) && !padAt.has(i))
+                    return fail('Only the level’s own switches and lamps can be on the board', [[x, y]]);
+            }
+        for (const t of tops)
+            for (const j of blockCellIdxs(t)) {
+                const [jx, jy] = xy(j);
+                if (!inRegion(jx, jy)) return fail('A part it uses is not wholly inside', [[jx, jy]]);
+            }
+        if (!core.size) return fail('There is nothing here to make a part of: a part needs a mux or a part inside it');
+
+        // Every wire net: what it touches, where it leads. (Wires on the
+        // ring just outside the region count: that is where terminals are.)
+        const netOf = new Map(), nets = [];
+        for (let y = r0.y0 - 1; y <= r0.y1 + 1; y++)
+            for (let x = r0.x0 - 1; x <= r0.x1 + 1; x++) {
+                if (!inBounds(x, y)) continue;
+                const i = idx(x, y);
+                if (netOf.has(i) || !isWireId(cells[i]) || blockAt[i]) continue;
+                const net = { id: nets.length, cells: [i], core: false, out: false, ext: [], leaves: false };
+                nets.push(net);
+                netOf.set(i, net.id);
+                walkNet(i, (ci, through) => {
+                    if (through) {
+                        if (!netOf.has(ci)) netOf.set(ci, net.id);
+                        net.cells.push(ci);
+                        const [cx, cy] = xy(ci);
+                        if (!inRegion(cx, cy)) net.leaves = true;
+                        return false;
+                    }
+                    if (core.has(ci)) {
+                        net.core = true;
+                        const r = roles[ci];
+                        if (r && r.macro && r.kind === 'comMiddle' && idx(r.macro.comCell[0], r.macro.comCell[1]) === ci) net.out = true;
+                        if (blockAt[ci] && pinAt[ci]) {
+                            const rec = blocks.get(blockAt[ci]);
+                            const pin = rec && rec.pins[pinIndex(pinAt[ci])];
+                            if (pin && pin.dir === 'out') net.out = true;
+                        }
+                    } else if (padAt.has(ci) || (!pads && isFixture(ci))) {
+                        net.ext.push(ci);
+                        if (isLed(cells[ci])) net.out = true;
+                    }
+                    return false;
+                });
+            }
+        // A pad the core cannot help taking in — a switch whose wire forks
+        // right at it, one way up the board and one across, so the fork has
+        // to be inside the part — becomes a plain wire junction in the part,
+        // with its terminal the cell beyond it on the board's edge side.
+        // (Before, that failed the fit, and the level's part fell back to the
+        // whole board.) Only where it stays a junction: a switch with at most
+        // two wires leaving it, so that wiring its terminal makes a tee and
+        // not a crossing; a lamp with one, so no two wires are joined that
+        // were not.
+        const outwardFace = (p) => (p.face !== undefined ? p.face
+            : p.x <= 1 ? 3 : p.x >= GRID_W - 2 ? 1 : p.y <= 1 ? 0 : p.y >= GRID_H - 2 ? 2 : -1);
+        const deadEnd = (i) => {
+            const [x, y] = xy(i);
+            let n = 0;
+            for (const [dx, dy] of DIRS) if (connectsWay(x, y, dx, dy)) n++;
+            return n <= 1;
+        };
+        for (const net of nets) {
+            net.pin = net.core && (net.ext.length > 0 || net.leaves || (!pads && net.cells.some(deadEnd)));
+            if (pads && net.ext.length > 1) {
+                const names = net.ext.map((i) => padAt.get(i).name);
+                return fail(`${names.join(' and ')} are wired together`, net.ext.map(xy));
+            }
+        }
+        // How far each wire of a terminal is from where it leads — to pick,
+        // when a terminal meets the circuit twice, the meeting that is really
+        // its way in.
+        const dist = new Map();
+        for (const net of nets) {
+            if (!net.pin) continue;
+            const inNet = new Set(net.cells), queue = [];
+            for (const ci of net.cells) {
+                const [cx, cy] = xy(ci);
+                const ends = !inRegion(cx, cy) || (!pads && deadEnd(ci))
+                    || DIRS.some(([dx, dy]) => inBounds(cx + dx, cy + dy) && net.ext.includes(idx(cx + dx, cy + dy)));
+                if (ends) { dist.set(ci, 0); queue.push(ci); }
+            }
+            for (let q = 0; q < queue.length; q++) {
+                const ci = queue[q], [cx, cy] = xy(ci);
+                for (const [dx, dy] of DIRS) {
+                    const nx = cx + dx, ny = cy + dy;
+                    if (!inBounds(nx, ny)) continue;
+                    const ni = idx(nx, ny);
+                    if (!inNet.has(ni) || dist.has(ni)) continue;
+                    dist.set(ni, dist.get(ci) + 1);
+                    queue.push(ni);
+                }
+            }
+        }
+
+        // Start from everything that must be inside.
+        let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
+        const take = (i) => {
+            const [x, y] = xy(i);
+            if (x < bx0) bx0 = x;
+            if (x > bx1) bx1 = x;
+            if (y < by0) by0 = y;
+            if (y > by1) by1 = y;
+        };
+        for (const i of core) take(i);
+        for (const net of nets) if (net.core && !net.pin) for (const ci of net.cells) take(ci);
+        const C = { x0: bx0, y0: by0, x1: bx1, y1: by1 };
+        const bound = { n: 'y0', s: 'y1', w: 'x0', e: 'x1' };
+        const roomy = () => C.x0 >= r0.x0 && C.y0 >= r0.y0 && C.x1 <= r0.x1 && C.y1 <= r0.y1;
+
+        for (let iter = 0; iter < 4 * (GRID_W + GRID_H); iter++) {
+            const grow = { n: 0, e: 0, s: 0, w: 0 }, bad = [];
+            const inC = (x, y) => x >= C.x0 && x <= C.x1 && y >= C.y0 && y <= C.y1;
+            const junction = new Map();     // pad cell taken in -> the face its terminal is on
+            for (let y = C.y0; y <= C.y1; y++)
+                for (let x = C.x0; x <= C.x1; x++) {
+                    if (!inBounds(x, y)) continue;
+                    const i = idx(x, y);
+                    if (padAt.has(i)) {
+                        const p = padAt.get(i), f = outwardFace(p);
+                        const inner = DIRS.filter(([dx, dy], d) => d !== f && connectsWay(x, y, dx, dy)).length;
+                        if (f >= 0 && !inC(x + DIRS[f][0], y + DIRS[f][1]) && inner <= (p.dir === 'out' ? 1 : 2)) {
+                            junction.set(i, f);
+                            continue;
+                        }
+                    }
+                    if (padAt.has(i) || isFixture(i)) return fail('A switch or lamp is in the way of the part', [[x, y]]);
+                }
+            const ring = [];
+            for (let x = C.x0 - 1; x <= C.x1 + 1; x++) { ring.push([x, C.y0 - 1]); ring.push([x, C.y1 + 1]); }
+            for (let y = C.y0; y <= C.y1; y++) { ring.push([C.x0 - 1, y]); ring.push([C.x1 + 1, y]); }
+            const sideOf = (x, y) => (y < C.y0 ? 'n' : y > C.y1 ? 's' : x < C.x0 ? 'w' : 'e');
+            const flag = (x, y, why) => { grow[sideOf(x, y)] += 1; bad.push([x, y, why]); };
+            const terms = [], others = [];
+            for (const [x, y] of ring) {
+                const corner = (x < C.x0 || x > C.x1) && (y < C.y0 || y > C.y1);
+                // The core cell it faces, and the face.
+                const hx = Math.min(Math.max(x, C.x0), C.x1), hy = Math.min(Math.max(y, C.y0), C.y1);
+                const d = DIRS.findIndex(([dx, dy]) => hx + dx === x && hy + dy === y);
+                const hi = !corner && inBounds(hx, hy) ? idx(hx, hy) : -1;
+                // A pad taken in has its terminal here, wired or not — off
+                // the board, for a pad on its very edge.
+                const jt = hi >= 0 && junction.get(hi) === d;
+                if (!inBounds(x, y)) {
+                    if (jt) {
+                        const pad = padAt.get(hi);
+                        terms.push({ x, y, hx, hy, d, side: SIDE_OF_FACE[d], key: 'p' + hi, pad, out: pad.dir === 'out', i: -1, jt });
+                    }
+                    continue;
+                }
+                const i = idx(x, y);
+                const blank = isInsulatorId(cells[i]) && !blockAt[i];
+                if (corner) { if (!blank) others.push([x, y]); continue; }
+                const hid = cells[hi];
+                // So does a wire of a terminal's that ends at the core's
+                // edge pointing straight out: in the sandbox a wire end is a
+                // terminal, and when the core has had to grow over the
+                // stub drawn to mark one — past a crossing right behind it,
+                // which cannot be a pin (unwired, it would turn into a tee
+                // and join its two wires) — the terminal is the cell beyond
+                // the stub's end, still to be wired.
+                const st = !pads && blank && !jt && isWireId(hid) && !isCrossoverAt(hx, hy) && !blockAt[hi]
+                    && netOf.has(hi) && nets[netOf.get(hi)].pin
+                    && DIRS.every(([dx, dy], k) => connectsWay(hx, hy, dx, dy) === (k === (d + 2) % 4));
+                if (blank && !jt && !st) continue;
+                if (!jt && !st && !connectsWay(hx, hy, DIRS[d][0], DIRS[d][1])) { others.push([x, y]); continue; }
+                if (blockAt[hi] || blockAt[i]) { flag(x, y, 'part'); continue; }
+                const wireHost = (isWireId(hid) && !isCrossoverAt(hx, hy)) || junction.has(hi);
+                if (!wireHost && !isGrayId(hid)) { flag(x, y, 'solid'); continue; }
+                // What it leads to: in a level, one of the pads.
+                let key, pad = null, out = false;
+                if (jt) { pad = padAt.get(hi); key = 'p' + hi; }
+                else if (st) { const net = nets[netOf.get(hi)]; key = 'n' + net.id; out = net.out; }
+                else if (padAt.has(i)) { pad = padAt.get(i); key = 'p' + i; }
+                else if (isWireId(cells[i])) {
+                    const net = nets[netOf.get(i)];
+                    if (!net) { flag(x, y, 'stray'); continue; }
+                    if (pads) {
+                        if (!net.ext.length) { flag(x, y, 'not a terminal'); continue; }
+                        pad = padAt.get(net.ext[0]);
+                        key = 'p' + net.ext[0];
+                    } else key = 'n' + net.id;
+                    out = net.out;
+                } else if (!pads && isFixture(i)) { key = 'f' + i; out = isLed(cells[i]); }
+                else { flag(x, y, 'solid'); continue; }
+                if (isGrayId(hid)) {
+                    const r = roles[hi];
+                    if (r && r.macro && r.macro.comCell[0] === hx && r.macro.comCell[1] === hy) out = true;
+                }
+                terms.push({ x, y, hx, hy, d, side: SIDE_OF_FACE[d], key, pad, out, i, jt, st });
+            }
+            // One meeting per terminal: the one nearest where its wire leads
+            // (a pad taken in is where it leads). A stub's end is only the
+            // terminal when its wire meets the ring nowhere else, and a
+            // second stub end is just a stub.
+            const byKey = new Map();
+            for (const t of terms) { if (!byKey.has(t.key)) byKey.set(t.key, []); byKey.get(t.key).push(t); }
+            const pins = [];
+            const far = (t) => (t.jt ? -1 : dist.has(t.i) ? dist.get(t.i) : 1e9);
+            for (const all of byKey.values()) {
+                const met = all.filter((t) => !t.st), list = met.length ? met : all.slice(0, 1);
+                list.sort((a, b) => far(a) - far(b));
+                pins.push(list[0]);
+                for (const t of list.slice(1)) flag(t.x, t.y, 'twice');
+            }
+            let edge = null;
+            if (!bad.length) {
+                // Whatever else is on the ring must be on cells nothing
+                // inside cares about.
+                edge = classifyRing(coreOnBoard(C, 0, pins.map((p, k) => ({
+                    hx: p.hx, hy: p.hy, d: p.d, k, dir: p.pad ? p.pad.dir : (p.out ? 'out' : 'in'),
+                })), new Set(junction.keys())));
+                for (const [x, y] of others) {
+                    const e = edge.get(x + ',' + y);
+                    if (e && e.cls !== 'X') flag(x, y, 'kept bare');
+                }
+            }
+            if (!bad.length) {
+                if (pads) {
+                    for (const p of pads)
+                        if (!pins.some((q) => q.pad === p)) return fail(`${p.name} never meets the part`, [[p.x, p.y]]);
+                    pins.sort((a, b) => pads.indexOf(a.pad) - pads.indexOf(b.pad));
+                }
+                if (!pins.length) return fail('Nothing meets it from outside: a part needs at least one terminal', []);
+                return {
+                    core: { x0: C.x0, y0: C.y0, x1: C.x1, y1: C.y1 },
+                    ring: { x0: C.x0 - 1, y0: C.y0 - 1, x1: C.x1 + 1, y1: C.y1 + 1 },
+                    pins: pins.map((p) => ({
+                        x: p.x, y: p.y, hx: p.hx, hy: p.hy, d: p.d, side: p.side,
+                        dir: p.pad ? p.pad.dir : (p.out ? 'out' : 'in'),
+                        name: p.pad ? p.pad.name : undefined, pad: p.pad || undefined,
+                    })),
+                    edge: [...edge.values()].map((e) => ({ x: e.x, y: e.y, cls: e.cls, pin: e.pin })),
+                    // Pads taken in, which the part has as plain wire.
+                    junctions: [...junction.keys()].map(xy),
+                };
+            }
+            // One edge at a time — the one with the most trouble — and look
+            // again: growing one edge often clears another's trouble too.
+            const order = ['n', 'e', 's', 'w'].filter((s) => grow[s] > 0).sort((a, b) => grow[b] - grow[a]);
+            let grew = false;
+            for (const s of order) {
+                C[bound[s]] += s === 'n' || s === 'w' ? -1 : 1;
+                if (roomy()) { grew = true; break; }
+                C[bound[s]] -= s === 'n' || s === 'w' ? -1 : 1;
+            }
+            if (!grew) return fail('Something against it could not be taken inside — there is no room left', bad.map(([x, y]) => [x, y]));
+        }
+        return fail('Could not find an edge for it');
+    }
+
+    // Make a fitted core a part right where it is: its cells become the
+    // part's, parts already inside it nest in it, and its pins are
+    // recorded ([{hx, hy, d, name, dir}]). What is round it stays as it was —
+    // the fit has already made sure that suits the new part's edge. Returns
+    // the new block's id.
+    function capPart(r, pins, name, source) {
+        const id = nextBlockId++;
+        blocks.set(id, {
+            id, name, source: source || '', parent: 0, open: false,
+            pins: pins.map((p) => ({ name: p.name, dir: p.dir === 'out' ? 'out' : 'in' })),
+        });
+        for (let y = r.y0; y <= r.y1; y++)
+            for (let x = r.x0; x <= r.x1; x++) {
+                if (!inBounds(x, y)) continue;
+                const i = idx(x, y);
+                if (!blockAt[i]) { blockAt[i] = id; pinAt[i] = 0; continue; }
+                const t = topBlockOf(blockAt[i]);
+                if (t !== id) blocks.get(t).parent = id;
+            }
+        pins.forEach((p, k) => { pinAt[idx(p.hx, p.hy)] = pinCode(k, p.d); });
+        recomputeRoles();
+        return id;
+    }
+
+    // The part a fitted core makes: every cell of it, parts nested inside
+    // coming along whole, and `pins` ([{hx, hy, d, name, dir}]) as its pins,
+    // in order — each a core cell and the face it meets the outside by.
+    // `junctions` ([[x, y]], from the fit) are pads it took in, which the
+    // part has as plain wire.
+    function captureRect(r, pins, name, source, junctions) {
+        const w = r.x1 - r.x0 + 1, h = r.y1 - r.y0 + 1;
+        const data = new Uint8Array(w * h), bmap = new Int32Array(w * h).fill(1), pmap = new Int16Array(w * h);
+        const lidOf = new Map();
+        let nextLid = 2;
+        for (let y = r.y0; y <= r.y1; y++)
+            for (let x = r.x0; x <= r.x1; x++) {
+                if (!inBounds(x, y)) continue;
+                const i = idx(x, y), k = (y - r.y0) * w + (x - r.x0);
+                data[k] = stripId(cells[i]);
+                if (!blockAt[i]) continue;
+                for (let b = blockAt[i]; b; b = blockParent(b)) if (!lidOf.has(b)) lidOf.set(b, nextLid++);
+                bmap[k] = lidOf.get(blockAt[i]);
+                pmap[k] = pinAt[i];
+            }
+        const recs = [{
+            lid: 1, name, source: source || '', parent: 0, open: false,
+            pins: pins.map((p) => ({ name: p.name, dir: p.dir === 'out' ? 'out' : 'in' })),
+        }];
+        for (const [b, lid] of lidOf) {
+            const rec = blocks.get(b);
+            recs.push({
+                lid, name: rec.name, source: rec.source, open: false,
+                parent: rec.parent && lidOf.has(rec.parent) ? lidOf.get(rec.parent) : 1,
+                pins: rec.pins.map((p) => ({ ...p })),
+            });
+        }
+        for (const [x, y] of junctions || [])
+            if (x >= r.x0 && x <= r.x1 && y >= r.y0 && y <= r.y1) data[(y - r.y0) * w + (x - r.x0)] = ID_CONDUCTOR_BASE;
+        pins.forEach((p, k) => { pmap[(p.hy - r.y0) * w + (p.hx - r.x0)] = pinCode(k, p.d); });
+        return { w, h, data, blocks: recs, bmap, pmap };
+    }
+
     // A wire pixel whose four orthogonal neighbors are all wires is a
     // crossover: the two axes pass over each other without connecting. Purely
     // geometric, so both the simulation and the renderer agree the instant the
@@ -190,36 +1414,51 @@
         if (isGrayId(id)) {
             const role = roles[idx(x, y)];
             if (!role) return false;
-            // A box mux cell connects only where it actually has a lead —
-            // its four live faces are the four the view draws leads on, and
-            // the rest of the outline is package. Every other role is
-            // per-cell, with no face of its own to distinguish.
-            if (role.lead !== undefined) {
-                if (!role.lead) return false;
-                return !out || (role.lead[0] === out[0] && role.lead[1] === out[1]);
-            }
-            return role.kind === 'isolatedGray';
+            // A mux cell connects only where it actually has a lead — its
+            // four live faces are the four the view draws leads on, and the
+            // rest of the outline is package. Mux material that is not a
+            // solid 3x2 has no leads at all: it is inert until it is a part.
+            if (!role.lead) return false;
+            return !out || (role.lead[0] === out[0] && role.lead[1] === out[1]);
         }
         return false;
     }
 
     // ===== Painting =====
-    // Colors: 'insulator', 'conductor', 'gray'
-    function paintCell(x, y, color) {
-        if (!inBounds(x, y) || isLocked(x, y)) return;
-        let id;
+    // Colors: 'insulator', 'conductor', 'gray', 'pos', 'neg', 'led',
+    // 'switch', 'toggle'
+    function idForColor(color) {
         switch (color) {
-            case 'conductor': id = makeConductor(OFF); break;
-            case 'gray': id = makeGray(OFF, false); break;
-            case 'pos': id = ID_POS; break;
-            case 'neg': id = ID_NEG; break;
-            case 'led': id = makeLed(OFF); break;
-            case 'switch': id = ID_SWITCH_OFF; break;
-            case 'toggle': id = ID_TOGGLE_OFF; break;
-            default: id = ID_INSULATOR_PLAIN;
+            case 'conductor': return makeConductor(OFF);
+            case 'gray': return makeGray(OFF, false);
+            case 'pos': return ID_POS;
+            case 'neg': return ID_NEG;
+            case 'led': return makeLed(OFF);
+            case 'switch': return ID_SWITCH_OFF;
+            case 'toggle': return ID_TOGGLE_OFF;
+            default: return ID_INSULATOR_PLAIN;
         }
-        cells[idx(x, y)] = id;
-        recomputeRoles();
+    }
+    function paintCell(x, y, color) { paintCells([[x, y]], color); }
+    // Several cells in one go, re-reading the board once at the end — a
+    // stroke joined up across a fast drag can be dozens of cells.
+    //
+    // Nothing is painted over mux body. A mux is a solid 3x2 and nothing
+    // else is: a wire drawn into one leaves five cells of material that is
+    // no part at all. If a wire has to go where a mux is, the mux is erased
+    // (the eraser takes it whole) or moved first. Erasing — painting bare
+    // substrate — is the one paint that may touch it.
+    function paintCells(list, color) {
+        const id = idForColor(color);
+        let any = false;
+        for (const [x, y] of list) {
+            if (!inBounds(x, y) || isProtected(x, y)) continue;
+            if (isGrayId(id) && isTerminalCell(x, y)) continue;
+            if (!isInsulatorId(id) && !isGrayId(id) && isGrayId(cells[idx(x, y)])) continue;
+            cells[idx(x, y)] = id;
+            any = true;
+        }
+        if (any) recomputeRoles();
     }
 
     function colorOfCell(id) {
@@ -274,7 +1513,7 @@
     //
     // One shape: a solid 3x2 of body (gray) pixels, at any of the 4
     // orientations, wired into a mux by what touches its faces (see
-    // buildBoxMux). Gray that isn't a 3x2 is a -V source pad.
+    // buildBoxMux). Gray that isn't a 3x2 is inert: a part not finished yet.
     //
     // Detection runs on the whole grid after every edit (grids here are
     // small enough - tens of columns - that a full rescan is cheap).
@@ -304,6 +1543,7 @@
     }
 
     function recomputeRoles() {
+        computeBlockGeom();
         roles.fill(null);
         const grayVisited = new Set();
         for (let y = 0; y < GRID_H; y++) {
@@ -312,13 +1552,16 @@
                 if (grayVisited.has(i)) continue;
                 if (!isGrayId(cells[i])) continue;
                 const blob = floodFill(x, y, (nx, ny) => isGrayId(cells[idx(nx, ny)]), grayVisited);
-                // A solid 3x2 is a mux; any other gray blob is a -V source
-                // pad. There is nothing in between to be invalid about — the
-                // shape either is the part or it is a pad.
+                // A solid 3x2 is a mux; any other gray blob is mux material
+                // that is not a part yet. It connects to nothing, drives
+                // nothing and reads nothing — it used to act as a -V source,
+                // which let a mux you were half-way through drawing pull
+                // down whatever wire it touched.
                 if (buildBoxMux(blob)) continue;
-                markBlob(blob, 'isolatedGray');
+                for (const [bx, by] of blob) roles[idx(bx, by)] = { kind: 'isolatedGray' };
             }
         }
+        computeRingMask();
         prunePendingLinks();
     }
 
@@ -364,8 +1607,17 @@
     // and the circuit quietly stopped working. `hit(cell, through)` is called
     // for every cell reached — `through` says whether the walk continues past
     // it — and returning true stops the walk.
-    function walkNet(fromIdx, hit) {
+    //
+    // A block's edge is where a walk stops, unless it is `electrical`: seen
+    // from outside, a block's pins are terminals like a mux's leads — what
+    // is inside is the block's business, and a re-route or a pruning pass
+    // that followed its wires in would rewire a part it cannot see. A walk
+    // that starts ON a pin stands outside the block, facing out. The coach
+    // asks electrically (reaches), since for "does A get to Q" the wire
+    // through a part is as good as any other.
+    function walkNet(fromIdx, hit, electrical) {
         const fx = fromIdx % GRID_W, fy = (fromIdx - fx) / GRID_W;
+        const ctx = electrical ? -1 : (pinAt[fromIdx] ? blockParent(blockAt[fromIdx]) : blockAt[fromIdx]);
         const seen = new Set(), stack = [];
         for (let d = 0; d < 4; d++) stack.push([fx, fy, d]);
         while (stack.length) {
@@ -379,7 +1631,7 @@
             const key = cross ? ni + (dx !== 0 ? 'h' : 'v') : ni;
             if (seen.has(key)) continue;
             seen.add(key);
-            const through = passesThrough(ci, ni);
+            const through = passesThrough(ci, ni) && (ctx < 0 || blockAt[ni] === ctx);
             if (hit(ni, through)) return true;
             if (!through) continue;
             if (cross) { stack.push([nx, ny, d]); continue; }
@@ -391,6 +1643,54 @@
     function netReaches(fromIdx, toIdx) {
         if (fromIdx === toIdx) return true;
         return walkNet(fromIdx, (ci) => ci === toIdx);
+    }
+
+    // Coordinate form of netReaches, for callers outside the model (the
+    // campaign's step-by-step coach): is (x1,y1) on the net (x0,y0) drives?
+    function reaches(x0, y0, x1, y1) {
+        if (!inBounds(x0, y0) || !inBounds(x1, y1)) return false;
+        const a = idx(x0, y0), b = idx(x1, y1);
+        return a === b || walkNet(a, (ci) => ci === b, true);
+    }
+
+    // How many muxes are on the board, those inside parts included — what a
+    // level that asks for no more than so many counts.
+    function muxCount() {
+        const seen = new Set();
+        for (let i = 0; i < roles.length; i++) {
+            const r = roles[i];
+            if (r && (r.macro || r.frame)) seen.add(r.macro || r.frame);
+        }
+        return seen.size;
+    }
+
+    // Every 3x2 part on the board and how far along it is: 'idle' (nothing
+    // wired yet), 'frame' (COM side known, no SELECT — `com` given) or 'mux'
+    // (working), with a working part's terminal cells. Each terminal is the mux's own
+    // cell whose lead faces out, so reaches() from it walks out through the
+    // lead.
+    function parts() {
+        const out = [], seen = new Set();
+        for (let i = 0; i < roles.length; i++) {
+            const r = roles[i];
+            if (!r || blockAt[i]) continue;
+            if (r.macro) {
+                const m = r.macro;
+                if (seen.has(m)) continue;
+                seen.add(m);
+                const no = m.selIsFirst ? m.pinFirst : m.pinLast;
+                const nc = m.selIsFirst ? m.pinLast : m.pinFirst;
+                out.push({ state: 'mux', sel: m.selCorner.slice(), com: m.comCell.slice(), no: no.slice(), nc: nc.slice() });
+            } else if (r.frame) {
+                const f = r.frame;
+                if (seen.has(f)) continue;
+                seen.add(f);
+                // Once the COM side is known, so is COM.
+                if (r.kind === 'boxIdle') out.push({ state: 'idle' });
+                else out.push({ state: 'frame', com: [f.rowStart[0] + f.along[0], f.rowStart[1] + f.along[1]] });
+            }
+        }
+        return out;
     }
 
     // Every cell electrically joined to `from`, itself included — the same
@@ -427,7 +1727,9 @@
             const cx = ci % GRID_W, cy = (ci - cx) / GRID_W;
             for (const [dx, dy] of DIRS) {
                 const nx = cx + dx, ny = cy + dy;
-                if (!inBounds(nx, ny) || isWireId(cells[idx(nx, ny)])) continue;
+                if (!inBounds(nx, ny)) continue;
+                const ni = idx(nx, ny);
+                if (isWireId(cells[ni]) && blockAt[ni] === blockAt[ci]) continue;
                 if (cellConnects(cx, cy, [dx, dy]) && cellConnects(nx, ny, [-dx, -dy])) return true;
             }
         }
@@ -442,7 +1744,8 @@
     function orphanWire() {
         const out = new Set(), seen = new Set();
         for (let i = 0; i < cells.length; i++) {
-            if (!isWireId(cells[i]) || seen.has(i)) continue;
+            // A block's wiring is its own business: never litter.
+            if (!isWireId(cells[i]) || seen.has(i) || blockAt[i]) continue;
             const net = netCellsOf(i);
             for (const ci of net) seen.add(ci);
             if (!netHasTerminal(net)) for (const ci of net) out.add(ci);
@@ -517,12 +1820,11 @@
         });
     }
 
-    // ===== Box mux: the second mux style =====
+    // ===== The mux =====
     //
-    // Six gray pixels in a solid 3x2 rectangle — the whole
-    // device is body, with no control band. It is an unprogrammed part until
-    // ONE wire lands on a corner: that single wire is SELECT, and placing it
-    // fixes the whole frame, its own role included.
+    // Six gray pixels in a solid 3x2 rectangle, all of it body. It is an
+    // unprogrammed part until ONE wire lands on a corner: that single wire is
+    // SELECT, and placing it fixes the whole frame, its own role included.
     //
     //          SEL                         SEL
     //           |                           |
@@ -539,8 +1841,7 @@
     //   - the corner's own row is the COM row (COM exits its middle cell),
     //   - the far row holds the two switched pins, at its ends,
     //   - and the corner's end is NO, so select ON bridges the pin below it
-    //     and OFF bridges the far one — the band mux's convention, where the
-    //     wired control corner also marks NO.
+    //     and OFF bridges the far one.
     // Four corners, four frames, no defaults and no tie-breaks: with nothing
     // wired the part simply has no orientation yet ('boxIdle'), and is inert
     // until it gets one. If more than one corner is wired the first in scan
@@ -554,11 +1855,10 @@
     // otherwise have no state, and it is that stored bit that gives the
     // control the same one-tick delay every other signal here has.
     //
-    // Everything downstream (node charges, the fill-wave animation, region
-    // ops, rearrange) is shared with the band mux: the box's cells carry the
-    // same 'end'/'comMiddle' roles, and rowStart/along/toward keep their band
-    // meaning with d=0 the COM row and d=1 the pin row, so macroFootprint and
-    // objectAt need no special case.
+    // Roles: the COM row's three cells are 'comMiddle' (they relax as one
+    // node), the two pins are 'end', and the spacer is 'boxSel'. rowStart,
+    // along and toward frame the part with d=0 the COM row and d=1 the pin
+    // row, which is all macroFootprint and objectAt need.
     function buildBoxMux(blob) {
         if (blob.length !== 6) return false;
         const xs = blob.map((c) => c[0]), ys = blob.map((c) => c[1]);
@@ -573,6 +1873,7 @@
             const nx = x + dx, ny = y + dy;
             return inBounds(nx, ny) && cells[idx(nx, ny)] !== ID_INSULATOR_PLAIN;
         };
+        const reading = readBox(minX, minY, w, (x, y) => inBounds(x, y) && cells[idx(x, y)] !== ID_INSULATOR_PLAIN);
         const gridAt = (i, d) => [minX + along[0] * i + perp[0] * d, minY + along[1] * i + perp[1] * d];
 
         const rect = { x: minX, y: minY, w, h };
@@ -591,20 +1892,8 @@
         // that can say everything at once, so it decides next: its own row is
         // COM. Failing that, a wire at a long side's END says that side holds
         // a pin, so COM is the far side — the axis, with no select.
-        let comD = null;
-        for (const d of [0, 1]) if (wiredAt(gridAt(1, d), perpOut(d))) { comD = d; break; }
-        if (comD === null) {
-            for (const d of [0, 1]) {
-                if ([0, 2].some((i) => wiredAt(gridAt(i, d), i === 0 ? neg(along) : along))) {
-                    comD = d; break;
-                }
-            }
-        }
-        if (comD === null) {
-            for (const d of [0, 1]) {
-                if ([0, 2].some((i) => wiredAt(gridAt(i, d), perpOut(d)))) { comD = 1 - d; break; }
-            }
-        }
+        // (readBox does the reading, in exactly this order.)
+        const comD = reading.comD;
         if (comD === null) {
             // Nothing wired at all: a blank part with no orientation yet,
             // drawn as a plain package and electrically inert. The footprint
@@ -622,11 +1911,8 @@
         // row's own corners are package, so a wire elbowing past one is just
         // a wire. If both COM-row ends are wired the first wins and the other
         // is an ordinary connection to that end's pin.
-        let sel = null;
-        for (const i of [0, 2]) {
-            const out = i === 0 ? neg(along) : along;
-            if (wiredAt(gridAt(i, comD), out)) { sel = { i, d: comD, out }; break; }
-        }
+        const sel = reading.sel === null ? null
+            : { i: reading.sel, d: comD, out: reading.sel === 0 ? neg(along) : along };
 
         if (!sel) {
             // Oriented but not yet commissioned: COM and both pins are known
@@ -657,8 +1943,7 @@
         const selIsFirst = sel.i === 0;
 
         const macro = {
-            kind: 'box',
-            key: `box:${rowStart[0]},${rowStart[1]},${along[0]},${along[1]},${toward[0]},${toward[1]}`,
+            key:`box:${rowStart[0]},${rowStart[1]},${along[0]},${along[1]},${toward[0]},${toward[1]}`,
             rowStart, along, toward, selIsFirst,
             selCell: at(1, 1),
             selCorner: at(sel.i, 0),
@@ -723,28 +2008,6 @@
         return true;
     }
 
-    // The blob's own cell nearest its bounding-box center — used to pick one
-    // representative cell to mark (e.g. the invalid-fragment "!") instead of
-    // decorating every cell in a multi-pixel blob identically.
-    function blobCenterCell(blob) {
-        const xs = blob.map(c => c[0]), ys = blob.map(c => c[1]);
-        const ccx = (Math.min(...xs) + Math.max(...xs)) / 2;
-        const ccy = (Math.min(...ys) + Math.max(...ys)) / 2;
-        let best = blob[0], bestDist = Infinity;
-        for (const [bx, by] of blob) {
-            const d = (bx - ccx) ** 2 + (by - ccy) ** 2;
-            if (d < bestDist) { bestDist = d; best = [bx, by]; }
-        }
-        return best;
-    }
-
-    function markBlob(blob, kind) {
-        const [centerX, centerY] = blobCenterCell(blob);
-        for (const [bx, by] of blob) {
-            roles[idx(bx, by)] = { kind, size: blob.length, isCenter: bx === centerX && by === centerY };
-        }
-    }
-
     // ===== Per-tick macro control cache =====
     var macroControlCache = new Map();
     var macroControlCacheTick = -1;
@@ -797,8 +2060,7 @@
                     // select corner — an input — would drive its own select
                     // line.
                     return role.reportAxis === axis ? grayCharge(id) : OFF;
-                case 'isolatedGray': return FALLING;
-                default: return OFF; // boxSel, boxIdle/boxFrame
+                default: return OFF; // boxSel, boxIdle/boxFrame, unfinished material
             }
         }
         return OFF;
@@ -928,10 +2190,8 @@
         // A COM cell's gate to an end is open only toward the active end.
         const charge = relaxBodyCell(id, role, body.comNext, (g) => g.endIsFirst === body.activeIsFirst);
         // COM's own wasActive bit doesn't mean anything to COM itself, but
-        // getMacroBody reads it (off any COM cell, always populated) as the
-        // macro-wide "was first active" memory instead of an end's own bit,
-        // since an end can be entirely corner-sourced with no cells of its
-        // own to hold it.
+        // getMacroBody reads it (off the first COM cell) as the macro-wide
+        // "was first active" memory: one place for the whole part to keep it.
         return makeGray(charge, body.activeIsFirst);
     }
 
@@ -949,9 +2209,9 @@
     function nextGray(x, y, id) {
         const role = roles[idx(x, y)];
         if (!role) return id;
-        if (role.kind === 'isolatedGray') return id; // fixed -V source, not simulated
-        if (role.kind === 'boxIdle' || role.kind === 'boxFrame')
-            return makeGray(OFF, false); // inert: no orientation, or no select yet
+        // Inert: not a part yet, no orientation yet, or no select yet.
+        if (role.kind === 'isolatedGray' || role.kind === 'boxIdle' || role.kind === 'boxFrame')
+            return makeGray(OFF, false);
         if (role.kind === 'end') return nextEnd(x, y, id, role);
         if (role.kind === 'comMiddle') return nextComMiddle(x, y, id, role);
         if (role.kind === 'boxSel') return nextBoxSel(id, role);
@@ -994,24 +2254,61 @@
         tickCount++;
     }
 
+    // The per-tick mux caches are keyed on tickCount, which starts over at 0
+    // on a reset, a clear or a load. Restarting the count without forgetting
+    // them let the first tick afterwards reuse whatever the LAST tick 0 had
+    // worked out — for a different board, or the same board with different
+    // inputs — so one board could step two ways depending on its history.
+    // The verifier resets before every test vector, which is exactly the
+    // pattern that hits it.
+    function restartTicks() {
+        tickCount = 0;
+        macroControlCacheTick = -1;
+        macroBodyCacheTick = -1;
+    }
+
+    // A flat cell index re-addressed for a grid whose width changed and whose
+    // content moved by (offX, offY). The ratsnest stores flat indices, so it
+    // is the one thing that has to be carried across a resize by hand.
+    function remapIdx(i, oldW, newW, offX, offY) {
+        const x = i % oldW, y = (i - x) / oldW;
+        return (y + offY) * newW + (x + offX);
+    }
+
     // Reallocate the cell arrays at a new size, copying existing content offset
     // by (offX, offY). Used both by auto-expansion and by load/undo restoring a
     // different size.
     function resizeGrid(newW, newH, offX, offY, keepContent) {
         const oldW = GRID_W, oldH = GRID_H, old = cells, oldLocked = locked;
+        const oldBlockAt = blockAt, oldPinAt = pinAt;
         const newCells = new Uint8Array(newW * newH); // 0 = insulator
         const newLocked = new Uint8Array(newW * newH);
+        const newBlockAt = new Int32Array(newW * newH), newPinAt = new Int16Array(newW * newH);
         if (keepContent) {
             for (let y = 0; y < oldH; y++)
                 for (let x = 0; x < oldW; x++) {
-                    newCells[(y + offY) * newW + (x + offX)] = old[y * oldW + x];
-                    newLocked[(y + offY) * newW + (x + offX)] = oldLocked[y * oldW + x];
+                    const ni = (y + offY) * newW + (x + offX), oi = y * oldW + x;
+                    newCells[ni] = old[oi];
+                    newLocked[ni] = oldLocked[oi];
+                    newBlockAt[ni] = oldBlockAt[oi];
+                    newPinAt[ni] = oldPinAt[oi];
                 }
+            // Left alone, every owed connection would point at the wrong
+            // cells once the width changes, and the next prune would drop it
+            // as erased: drawing up against the top or left edge used to make
+            // the ratsnest silently vanish.
+            pendingLinks = pendingLinks.map((l) => l.map((i) => remapIdx(i, oldW, newW, offX, offY)));
         } else {
-            anyLocked = false; // a wholesale reload brings its own locks, if any
+            anyLocked = false;  // a wholesale reload brings its own locks, if any
+            pendingLinks = [];  // ...and its own ratsnest (a snapshot restores one after)
+            blocks = new Map(); // ...and its own blocks
+            blockGeom = new Map();
         }
         cells = newCells;
         locked = newLocked;
+        blockAt = newBlockAt;
+        pinAt = newPinAt;
+        ringMask = new Uint8Array(newW * newH);
         nextCells = new Uint8Array(newW * newH);
         roles = new Array(newW * newH).fill(null);
         GRID_W = newW; GRID_H = newH;
@@ -1023,19 +2320,61 @@
     // doesn't appear to move.
     function expandForBorder() {
         let left = 0, top = 0, right = 0, bottom = 0;
+        // A block's margin is empty substrate, but it is the block's.
+        const used = (x, y) => cells[idx(x, y)] !== ID_INSULATOR_PLAIN || blockAt[idx(x, y)] !== 0;
         for (let y = 0; y < GRID_H; y++) {
-            if (cells[idx(0, y)] !== ID_INSULATOR_PLAIN) left = 1;
-            if (cells[idx(GRID_W - 1, y)] !== ID_INSULATOR_PLAIN) right = 1;
+            if (used(0, y)) left = 1;
+            if (used(GRID_W - 1, y)) right = 1;
         }
         for (let x = 0; x < GRID_W; x++) {
-            if (cells[idx(x, 0)] !== ID_INSULATOR_PLAIN) top = 1;
-            if (cells[idx(x, GRID_H - 1)] !== ID_INSULATOR_PLAIN) bottom = 1;
+            if (used(x, 0)) top = 1;
+            if (used(x, GRID_H - 1)) bottom = 1;
         }
         if (left || top || right || bottom) {
             resizeGrid(GRID_W + left + right, GRID_H + top + bottom, left, top, true);
             recomputeRoles();
         }
         return { left, top, right, bottom };
+    }
+
+    // Grow (never shrink) to at least w x h, adding only on the right and the
+    // bottom so no existing cell moves. For an edit that needs more room than
+    // the one-cell border provides, such as a region rotated off the edge.
+    function growTo(w, h) {
+        if (w <= GRID_W && h <= GRID_H) return false;
+        resizeGrid(Math.max(w, GRID_W), Math.max(h, GRID_H), 0, 0, true);
+        recomputeRoles();
+        return true;
+    }
+
+    // Grow on any side, never shrinking — for putting a part down that
+    // reaches past the sandbox's edge. Returns how much was added where;
+    // {left, top} is how far everything moved.
+    function growBy(left, top, right, bottom) {
+        const g = { left: Math.max(0, left | 0), top: Math.max(0, top | 0), right: Math.max(0, right | 0), bottom: Math.max(0, bottom | 0) };
+        if (!g.left && !g.top && !g.right && !g.bottom) return g;
+        resizeGrid(GRID_W + g.left + g.right, GRID_H + g.top + g.bottom, g.left, g.top, true);
+        recomputeRoles();
+        return g;
+    }
+
+    // A structural snapshot grown the way expandForBorder just grew the grid
+    // (`g` is its return value), for a caller holding a snapshot across an
+    // expansion — the floating paste's base. The ratsnest is re-addressed
+    // along with the cells, or restoring the base would drop it.
+    function growSnapshot(snap, g) {
+        const newW = snap.w + g.left + g.right, newH = snap.h + g.top + g.bottom;
+        const data = new Uint8Array(newW * newH);
+        const b = snap.blocks, at = new Int32Array(newW * newH), pin = new Int16Array(newW * newH);
+        for (let y = 0; y < snap.h; y++)
+            for (let x = 0; x < snap.w; x++) {
+                const ni = (y + g.top) * newW + (x + g.left), oi = y * snap.w + x;
+                data[ni] = snap.data[oi];
+                if (b) { at[ni] = b.at[oi]; pin[ni] = b.pin[oi]; }
+            }
+        const links = (snap.links || []).map((l) => l.map((i) => remapIdx(i, snap.w, newW, g.left, g.top)));
+        const blocksOut = b ? { at, pin, recs: b.recs.map(copyBlockRec), next: b.next } : null;
+        return { w: newW, h: newH, data, links, blocks: blocksOut };
     }
 
     // With locks in play (a campaign level) "clear" means "clear what the
@@ -1047,10 +2386,13 @@
         if (anyLocked) {
             for (let i = 0; i < cells.length; i++)
                 if (locked[i] !== 1) cells[i] = ID_INSULATOR_PLAIN;
+            blockAt.fill(0);
+            pinAt.fill(0);
+            blocks = new Map();
         } else {
             resizeGrid(DEFAULT_W, DEFAULT_H, 0, 0, false);
         }
-        tickCount = 0;
+        restartTicks();
         recomputeRoles();
     }
 
@@ -1065,7 +2407,31 @@
             else if (isSwitch(id)) cells[i] = ID_SWITCH_OFF;
             else if (isToggle(id)) cells[i] = ID_TOGGLE_OFF;
         }
-        tickCount = 0;
+        restartTicks();
+        recomputeRoles();
+    }
+
+    // The board exactly as it stands — live charge, locks and ratsnest
+    // included — for running the simulation somewhere and then putting
+    // everything back (the campaign verifier). A structural snapshot strips
+    // the charge and a serialize leaves out the ratsnest, so neither will do:
+    // verifying used to go through serialize, and so quietly depended on a
+    // load NOT clearing the owed connections of the board it replaced.
+    function getLiveSnapshot() {
+        return {
+            w: GRID_W, h: GRID_H, cells: cells.slice(), locked: locked.slice(), anyLocked,
+            links: pendingLinks.map((l) => l.slice()), tick: tickCount, blocks: blockState(),
+        };
+    }
+    function restoreLiveSnapshot(s) {
+        if (s.w !== GRID_W || s.h !== GRID_H) resizeGrid(s.w, s.h, 0, 0, false);
+        cells.set(s.cells);
+        locked.set(s.locked);
+        anyLocked = s.anyLocked;
+        restoreBlockState(s.blocks);
+        pendingLinks = s.links.map((l) => l.slice());
+        restartTicks();
+        tickCount = s.tick;
         recomputeRoles();
     }
 
@@ -1086,12 +2452,13 @@
         return isValidId(id) ? id : ID_INSULATOR_PLAIN;
     }
 
-    // 15-20 are the retired control-band ids (see the id map): inside the
-    // overall range but no longer meaning anything, so they are rejected here
-    // and load as insulator rather than as an unclassifiable cell.
+    // Exactly the ids this build defines (see the id map). Anything else —
+    // including 15-20, which older builds used — loads as insulator rather
+    // than as a cell nothing knows how to draw or step.
     function isValidId(id) {
-        if (id >= 15 && id <= 20) return false;
-        return id === ID_INSULATOR_PLAIN || (id >= ID_CONDUCTOR_BASE && id <= ID_TOGGLE_ON);
+        return id === ID_INSULATOR_PLAIN ||
+            (id >= ID_CONDUCTOR_BASE && id <= ID_NEG) ||
+            (id >= ID_GRAY_BASE && id <= ID_TOGGLE_ON);
     }
 
     // Pending links ride along. They are the one thing here not derivable
@@ -1104,7 +2471,10 @@
     function getStructuralSnapshot() {
         const data = new Uint8Array(cells.length);
         for (let i = 0; i < cells.length; i++) data[i] = stripId(cells[i]);
-        return { w: GRID_W, h: GRID_H, data, links: pendingLinks.map((l) => l.slice()) };
+        return {
+            w: GRID_W, h: GRID_H, data, links: pendingLinks.map((l) => l.slice()),
+            blocks: blocks.size ? blockState() : null,
+        };
     }
 
     // When the grid size is unchanged, only touch cells whose structure differs,
@@ -1120,6 +2490,11 @@
             resizeGrid(snap.w, snap.h, 0, 0, false);
             cells.set(snap.data);
         }
+        // A lid is a way of looking, not an edit: a block that is still
+        // here after the restore keeps the lid it has now.
+        const lids = new Map([...blocks].map(([id, r]) => [id, r.open]));
+        restoreBlockState(snap.blocks);
+        for (const [id, r] of blocks) if (lids.has(id)) r.open = lids.get(id);
         pendingLinks = (snap.links || []).map((l) => l.slice());
         recomputeRoles();   // prunes anything the restored grid already satisfies
     }
@@ -1135,6 +2510,8 @@
         };
     }
 
+    // A block wholly inside the rectangle travels with the clip. One the
+    // rectangle cuts through does not: its cells inside come along loose.
     function copyRegion(x0, y0, x1, y1) {
         const r = normalizeRect(x0, y0, x1, y1);
         const w = r.x1 - r.x0 + 1, h = r.y1 - r.y0 + 1;
@@ -1142,14 +2519,75 @@
         for (let y = 0; y < h; y++)
             for (let x = 0; x < w; x++)
                 data[y * w + x] = stripId(cells[idx(r.x0 + x, r.y0 + y)]);
-        return { w, h, data };
+        const clip = { w, h, data };
+        const inside = blocksInside(r);
+        if (!inside.size) return clip;
+        const lid = new Map();
+        for (const id of inside) lid.set(id, lid.size + 1);
+        const up = (b) => { while (b && !inside.has(b)) b = blockParent(b); return b; };
+        clip.blocks = [...inside].map((id) => {
+            const rec = blocks.get(id);
+            return {
+                lid: lid.get(id), name: rec.name, source: rec.source, open: rec.open,
+                parent: lid.get(up(rec.parent)) || 0, pins: rec.pins.map((p) => ({ ...p })),
+            };
+        });
+        clip.bmap = new Int32Array(w * h);
+        clip.pmap = new Int16Array(w * h);
+        for (let y = 0; y < h; y++)
+            for (let x = 0; x < w; x++) {
+                const i = idx(r.x0 + x, r.y0 + y), b = up(blockAt[i]);
+                if (!b) continue;
+                clip.bmap[y * w + x] = lid.get(b);
+                if (b === blockAt[i]) clip.pmap[y * w + x] = pinAt[i];
+            }
+        return clip;
     }
 
+    // Blocks wholly inside go with the rectangle. One it only cuts through
+    // stays, whole — a part is one thing, and half of one is litter.
     function clearRegion(x0, y0, x1, y1) {
         const r = normalizeRect(x0, y0, x1, y1);
+        const inside = blocksInside(r);
         for (let y = r.y0; y <= r.y1; y++)
-            for (let x = r.x0; x <= r.x1; x++)
-                if (!isLocked(x, y)) cells[idx(x, y)] = ID_INSULATOR_PLAIN;
+            for (let x = r.x0; x <= r.x1; x++) {
+                const i = idx(x, y);
+                if (isLocked(x, y)) continue;
+                if (blockAt[i] && !inside.has(topBlockOf(blockAt[i]))) continue;
+                cells[i] = ID_INSULATOR_PLAIN;
+                blockAt[i] = 0;
+                pinAt[i] = 0;
+            }
+        recomputeRoles();
+    }
+
+    // Every cell of the mux material blob (4-connected) that (x,y) is part
+    // of, or [] if it is not mux material. What an eraser takes when it
+    // touches a mux: a part is one thing, and five-sixths of one is litter.
+    function grayBlob(x, y) {
+        if (!inBounds(x, y) || !isGrayId(cells[idx(x, y)])) return [];
+        return floodFill(x, y, (nx, ny) => isGrayId(cells[idx(nx, ny)]), new Set());
+    }
+
+    // Erase an arbitrary cell list ([[x,y],...]) — a Rearrange selection,
+    // which is a set of objects rather than a rectangle.
+    // A block goes only if every cell of it is in the list.
+    function clearCells(list) {
+        const set = new Set();
+        for (const [x, y] of list) if (inBounds(x, y)) set.add(idx(x, y));
+        const whole = new Set();
+        for (const i of set) {
+            if (!blockAt[i]) continue;
+            const t = topBlockOf(blockAt[i]);
+            if (!whole.has(t) && blockCellIdxs(t).every((j) => set.has(j))) whole.add(t);
+        }
+        for (const i of set) {
+            if (anyLocked && locked[i] === 1) continue;
+            if (blockAt[i] && !whole.has(topBlockOf(blockAt[i]))) continue;
+            cells[i] = ID_INSULATOR_PLAIN;
+            blockAt[i] = 0;
+            pinAt[i] = 0;
+        }
         recomputeRoles();
     }
 
@@ -1157,17 +2595,43 @@
     // top-left corner at (x0, y0), silently clipping whatever falls outside
     // the grid. Data is re-stripped on the way in since components come
     // back from localStorage as untrusted plain arrays.
+    //
+    // A block in the clip lands whole or not at all: if any cell of it would
+    // fall off the board or onto something protected, none of it is written
+    // (the count comes back as `skipped`). Pasted blocks get fresh ids.
     function pasteRegion(clip, x0, y0) {
+        const recs = clip.blocks && clip.bmap ? clip.blocks : [];
+        const parentOf = new Map(recs.map((b) => [b.lid, b.parent]));
+        const topOf = (l) => { let n = 0; while (parentOf.get(l) && n++ < recs.length) l = parentOf.get(l); return l; };
+        const skip = new Set();
+        for (const b of recs) if (!b.parent && clipBlockFits(clip, b.lid, x0, y0, false)) skip.add(b.lid);
+        const newId = new Map();
+        for (const b of recs) if (!skip.has(topOf(b.lid))) newId.set(b.lid, nextBlockId++);
+        for (const b of recs) {
+            if (!newId.has(b.lid)) continue;
+            blocks.set(newId.get(b.lid), {
+                id: newId.get(b.lid), name: b.name, source: b.source || '', open: !!b.open,
+                parent: b.parent && newId.has(b.parent) ? newId.get(b.parent) : 0,
+                pins: b.pins.map((p) => ({ name: p.name, dir: p.dir })),
+            });
+        }
         for (let y = 0; y < clip.h; y++) {
             const gy = y0 + y;
             if (gy < 0 || gy >= GRID_H) continue;
             for (let x = 0; x < clip.w; x++) {
-                const gx = x0 + x;
-                if (gx < 0 || gx >= GRID_W || isLocked(gx, gy)) continue;
-                cells[idx(gx, gy)] = stripId(clip.data[y * clip.w + x] & 0xff);
+                const gx = x0 + x, k = y * clip.w + x;
+                const l = recs.length ? clip.bmap[k] : 0;
+                if (l && !newId.has(l)) continue;
+                if (gx < 0 || gx >= GRID_W || isProtected(gx, gy)) continue;
+                const i = idx(gx, gy);
+                if (!l && isGrayId(clip.data[k]) && isTerminalCell(gx, gy)) continue;
+                cells[i] = stripId(clip.data[k] & 0xff);
+                blockAt[i] = l ? newId.get(l) : 0;
+                pinAt[i] = l && clip.pmap ? clip.pmap[k] : 0;
             }
         }
         recomputeRoles();
+        return { skipped: skip.size };
     }
 
     // Region rotate/mirror are pure pixel moves — cells here have no stored
@@ -1175,60 +2639,87 @@
     // pattern), so unlike simulation/pixelogic there is no per-cell
     // reorientation step. Rotation keeps the region's top-left anchor and
     // swaps its w/h; the new bounds (clipped to the grid) are returned so
-    // the caller can update its selection.
+    // the caller can update its selection, or null when it was refused.
     // A region holding any locked cell can't be rotated or mirrored: the
     // transform would slide a fixed I/O pad off its coordinates. Refusing the
     // whole operation is the honest answer — silently transforming everything
     // *except* the pad would scramble the circuit around it.
+    // A block counts as locked unless the whole of it is inside, in which
+    // case it simply turns with everything else.
     function regionHasLocked(r) {
-        if (!anyLocked) return false;
+        const inside = blocksInside(r);
         for (let y = r.y0; y <= r.y1; y++)
-            for (let x = r.x0; x <= r.x1; x++)
-                if (locked[idx(x, y)] === 1) return true;
+            for (let x = r.x0; x <= r.x1; x++) {
+                const i = idx(x, y);
+                if (anyLocked && locked[i] === 1) return true;
+                if (blockAt[i] && !inside.has(topBlockOf(blockAt[i]))) return true;
+            }
         return false;
+    }
+
+    // Turned, a w x h region is h wide and w tall from the same corner, so a
+    // non-square one reaches past its own rectangle — and everything it turns
+    // INTO has to be free: on the board, unlocked, and empty. Rotating used to
+    // write the clip straight over whatever was there, blank cells and all,
+    // which erased circuitry outside the selection (in a level, a locked pad
+    // too) and dropped whatever turned off the edge of the grid.
+    function rotateFits(r) {
+        const w = r.x1 - r.x0 + 1, h = r.y1 - r.y0 + 1;
+        for (let y = r.y0; y < r.y0 + w; y++)
+            for (let x = r.x0; x < r.x0 + h; x++) {
+                if (x <= r.x1 && y <= r.y1) continue; // inside the source: it moves anyway
+                if (!inBounds(x, y) || isProtected(x, y) || !isInsulatorId(cells[idx(x, y)])) return false;
+            }
+        return true;
     }
 
     function rotateRegionCW(x0, y0, x1, y1) {
         const r = normalizeRect(x0, y0, x1, y1);
-        if (regionHasLocked(r)) return { x0: r.x0, y0: r.y0, x1: r.x1, y1: r.y1 };
+        if (regionHasLocked(r) || !rotateFits(r)) return null;
+        const before = getStructuralSnapshot();
         const clip = copyRegion(r.x0, r.y0, r.x1, r.y1);
         for (let y = r.y0; y <= r.y1; y++)
-            for (let x = r.x0; x <= r.x1; x++)
-                cells[idx(x, y)] = ID_INSULATOR_PLAIN;
-        for (let y = 0; y < clip.h; y++) {
-            for (let x = 0; x < clip.w; x++) {
-                const gx = r.x0 + (clip.h - 1 - y), gy = r.y0 + x;
-                if (!inBounds(gx, gy)) continue;
-                cells[idx(gx, gy)] = clip.data[y * clip.w + x];
+            for (let x = r.x0; x <= r.x1; x++) {
+                const i = idx(x, y);
+                cells[i] = ID_INSULATOR_PLAIN;
+                blockAt[i] = 0;
+                pinAt[i] = 0;
             }
-        }
-        recomputeRoles();
-        return {
-            x0: r.x0, y0: r.y0,
-            x1: Math.min(GRID_W - 1, r.x0 + clip.h - 1),
-            y1: Math.min(GRID_H - 1, r.y0 + clip.w - 1),
-        };
+        recomputeRoles();   // the edges of what was lifted go with it
+        pasteRegion(rotateClipCW(clip), r.x0, r.y0);
+        // Turned, something may now sit where a part's edge keeps bare.
+        if (ringViolations().length) { restoreStructuralSnapshot(before); return null; }
+        return { x0: r.x0, y0: r.y0, x1: r.x0 + clip.h - 1, y1: r.y0 + clip.w - 1 };
     }
 
+    // Returns false when refused (the region holds a locked pad).
     function mirrorRegionH(x0, y0, x1, y1) {
         const r = normalizeRect(x0, y0, x1, y1);
-        if (regionHasLocked(r)) return;
+        if (regionHasLocked(r)) return false;
+        const before = getStructuralSnapshot();
         for (let y = r.y0; y <= r.y1; y++) {
             for (let lo = r.x0, hi = r.x1; lo <= hi; lo++, hi--) {
-                const a = stripId(cells[idx(lo, y)]), b = stripId(cells[idx(hi, y)]);
-                cells[idx(lo, y)] = b;
-                cells[idx(hi, y)] = a;
+                const li = idx(lo, y), hi2 = idx(hi, y);
+                const a = stripId(cells[li]), b = stripId(cells[hi2]);
+                cells[li] = b;
+                cells[hi2] = a;
+                const ba = blockAt[li], pa = pinAt[li];
+                blockAt[li] = blockAt[hi2]; pinAt[li] = mirrorPinCode(pinAt[hi2]);
+                blockAt[hi2] = ba; pinAt[hi2] = mirrorPinCode(pa);
             }
         }
         recomputeRoles();
+        if (ringViolations().length) { restoreStructuralSnapshot(before); return false; }
+        return true;
     }
 
     // ===== Rearrange: whole-object move/rotate that keeps connectivity =====
     //
     // objectAt identifies the movable "object" under a cell at the
-    // granularity a user actually thinks in: a whole 2x3 mux macro
-    // (including any +V/-V cells standing in for its pins), an isolated or
-    // a -V gray blob, an LED/switch/toggle pad (8-connected,
+    // granularity a user actually thinks in: a whole commissioned mux (with
+    // the contact soldered to each lead, see macroFootprint), a gray blob
+    // that is not a working part (an unwired package, or unfinished
+    // material), an LED/switch/toggle pad (8-connected,
     // matching how pads light/press as one), a lone +V/-V cell, or — for
     // wires — the straight SEGMENT under the cursor (see wireSegmentAt),
     // not the whole net: rearranging is about nudging one run at a time,
@@ -1276,7 +2767,8 @@
             const id = cells[idx(sx, sy)];
             const takeable = id === ID_POS || id === ID_NEG ||
                 (isConductorId(id) && !isCrossoverAt(sx, sy));
-            if (!takeable || leadsFacing(sx, sy) > 1) continue;
+            if (!takeable || leadsFacing(sx, sy) > 1 || blockAt[idx(sx, sy)]) continue;
+
             out.push([sx, sy]);
         }
         return out;
@@ -1300,13 +2792,16 @@
     // coarse to rearrange with), but the maximal STRAIGHT run of wire cells
     // through the clicked cell — including any elbow/tee cell it ends on, so
     // dragging a run perpendicular takes its corners along and the adjoining
-    // legs stretch/shrink via re-routing. Runs stop at crossovers: a crossing
-    // cell carries two separate nets, so it can't ride along with either;
-    // clicking the crossover itself grabs just that one cell. At a corner or
-    // tee the busier axis wins (ties go horizontal) — click one cell over to
-    // get the other leg.
+    // legs stretch/shrink via re-routing. At a corner or tee the busier axis
+    // wins (ties go horizontal) — click one cell over to get the other leg.
+    //
+    // A run goes on straight through a crossing, both sides of it: dragging
+    // one arm alone left the crossing a T, welding its two runs together.
+    // The crossing cell itself is shared — the move leaves it behind as
+    // plain wire for the run going the other way, and where the dragged run
+    // lands across that run, a new crossing forms (see moveObjects).
+    // Clicking the crossing itself grabs the horizontal run.
     function wireSegmentAt(x, y) {
-        if (isCrossoverAt(x, y)) return [[x, y]];
         const wireAt = (ax, ay) => isWireId(getCell(ax, ay));
         const hc = (wireAt(x - 1, y) ? 1 : 0) + (wireAt(x + 1, y) ? 1 : 0);
         const vc = (wireAt(x, y - 1) ? 1 : 0) + (wireAt(x, y + 1) ? 1 : 0);
@@ -1314,7 +2809,7 @@
         const out = [[x, y]];
         for (const s of [-1, 1]) {
             let cx = x + axis[0] * s, cy = y + axis[1] * s;
-            while (isWireId(getCell(cx, cy)) && !isCrossoverAt(cx, cy)) {
+            while (isWireId(getCell(cx, cy)) && !blockAt[idx(cx, cy)]) {
                 out.push([cx, cy]);
                 cx += axis[0] * s;
                 cy += axis[1] * s;
@@ -1325,6 +2820,12 @@
 
     function objectAt(x, y) {
         if (!inBounds(x, y)) return null;
+        // Anywhere on a block is the whole block, outermost first: its
+        // insides are not the player's to pick apart without decapping it.
+        if (blockAt[idx(x, y)]) {
+            const t = topBlockOf(blockAt[idx(x, y)]);
+            return { kind: 'block', id: t, cells: blockCellIdxs(t).map((i) => [i % GRID_W, (i - i % GRID_W) / GRID_W]) };
+        }
         const id = cells[idx(x, y)];
         if (isInsulatorId(id)) return null;
         const role = roles[idx(x, y)];
@@ -1369,21 +2870,25 @@
     // crossover by adjacency anyway. (entryDx/entryDy: the direction the
     // walk enters the first cell with, in case that cell is itself a
     // crossover.)
-    function floodNet(ax, ay, entryDx, entryDy) {
+    // `xo` says which cells are crossings (default: the board's own test); a
+    // move passes one that remembers the crossings it started with.
+    function floodNet(ax, ay, entryDx, entryDy, xo) {
+        const crossing = xo || isCrossoverAt;
         const cellsOut = new Set(), terminals = new Set(), seen = new Set();
         const stack = [[ax, ay, entryDx, entryDy]];
         while (stack.length) {
             const [x, y, dx2, dy2] = stack.pop();
             if (!inBounds(x, y)) continue;
             const i = idx(x, y);
-            if (!isWireId(cells[i])) {
+            // A block's pin is a terminal from out here (see walkNet).
+            if (!isWireId(cells[i]) || blockAt[i]) {
                 // Reached from (dx2,dy2), so this cell must connect on the
                 // face pointing back that way — a wire lying against a mux's
                 // package is not attached to it.
                 if (cellConnects(x, y, [-dx2, -dy2])) terminals.add(i);
                 continue;
             }
-            if (isCrossoverAt(x, y)) {
+            if (crossing(x, y)) {
                 const k = i + (dx2 !== 0 ? ':h' : ':v');
                 if (seen.has(k)) continue;
                 seen.add(k);
@@ -1402,6 +2907,58 @@
             key: 'w' + (min === Infinity ? idx(ax, ay) : min), cells: cellsOut, terminals,
             isNet: true, preTouch: new Set(), routed: new Set(), failed: false,
         };
+    }
+
+    // Every terminal on the board — anything that connects and is not wire:
+    // a mux's leads, a pad (as a whole), a source, a part's pin — with the
+    // group it is wired into: Map terminal id -> group id. Terminals join
+    // through a wire net they both touch (on a face that connects), or by
+    // touching each other directly. Ids go through `mapIdx`, so a board
+    // after a move can be compared cell for cell with the board before.
+    function terminalGroups(mapIdx) {
+        const parent = new Map();
+        const find = (a) => { while (parent.get(a) !== a) { parent.set(a, parent.get(parent.get(a))); a = parent.get(a); } return a; };
+        const union = (a, b) => { const ra = find(a), rb = find(b); if (ra !== rb) parent.set(ra, rb); };
+        const padKey = new Map();
+        const termId = (i) => {
+            const id = cells[i];
+            if (!(isLed(id) || isSwitch(id) || isToggle(id))) return 'c' + mapIdx(i);
+            if (!padKey.has(i)) {
+                const x = i % GRID_W, y = (i - x) / GRID_W, n = anchorNode(x, y);
+                let min = Infinity;
+                for (const c of n.cells) min = Math.min(min, mapIdx(c));
+                for (const c of n.cells) padKey.set(c, 'p' + min);
+            }
+            return padKey.get(i);
+        };
+        const add = (t) => { if (!parent.has(t)) parent.set(t, t); return t; };
+        const isTerm = (i) => !isInsulatorId(cells[i]) && (!isWireId(cells[i]) || blockAt[i]);
+        const seenWire = new Set();
+        for (let i = 0; i < cells.length; i++) {
+            const x = i % GRID_W, y = (i - x) / GRID_W;
+            if (isTerm(i)) {
+                if (!cellConnects(x, y)) continue;
+                const t = add(termId(i));
+                // Terminals touching one another directly: a source on a pin.
+                for (const [dx, dy] of [[1, 0], [0, 1]]) {
+                    const nx = x + dx, ny = y + dy;
+                    if (!inBounds(nx, ny) || !isTerm(idx(nx, ny))) continue;
+                    if (cellConnects(x, y, [dx, dy]) && cellConnects(nx, ny, [-dx, -dy])) union(t, add(termId(idx(nx, ny))));
+                }
+                continue;
+            }
+            if (seenWire.has(i) || !isWireId(cells[i]) || isCrossoverAt(x, y)) continue;
+            const net = floodNet(x, y, 0, 0);
+            for (const c of net.cells) seenWire.add(c);
+            let first = null;
+            for (const ti of net.terminals) {
+                const t = add(termId(ti));
+                if (first === null) first = t; else union(first, t);
+            }
+        }
+        const out = new Map();
+        for (const t of parent.keys()) out.set(t, find(t));
+        return out;
     }
 
     // The stationary electrical node a non-wire contact belongs to: a pad
@@ -1443,7 +3000,18 @@
             for (const [dx2, dy2] of DIRS) {
                 const nx = x + dx2, ny = y + dy2;
                 if (!inBounds(nx, ny)) continue;
-                if (set.has(idx(nx, ny))) { out.push(idx(nx, ny)); continue; }
+                // Touching a mux is not joining it: it meets wire only
+                // through a lead, so a run lying against its package on a
+                // dead face holds nothing on — read as attached, it was kept
+                // as a stub hugging the part. (Only a mux: anything else
+                // here is joined all round, or is an object cell lifted for
+                // the move, which reads as empty board.)
+                if (set.has(idx(nx, ny))) {
+                    const deadA = isGrayId(cells[ci]) && !cellConnects(x, y, [dx2, dy2]);
+                    const deadB = isGrayId(cells[idx(nx, ny)]) && !cellConnects(nx, ny, [-dx2, -dy2]);
+                    if (!deadA && !deadB) out.push(idx(nx, ny));
+                    continue;
+                }
                 // A crossover belonging to some OTHER net is a pass-through:
                 // the cell straight beyond it continues this same axis of
                 // this net. Without this a route that crosses something reads
@@ -1515,13 +3083,30 @@
                 const x = ci % GRID_W, y = (ci - x) / GRID_W;
                 return DIRS.some(([dx2, dy2]) => isCrossoverAt(x + dx2, y + dy2));
             };
-            const cand = [...live].filter((ci) => !held.has(ci) && !nearCrossing(ci))
+            // ...unless its partner across the crossing goes too: the
+            // crossing's other run then passes a plain wire. A dead branch
+            // that ran through a crossing used to be left standing, a stub
+            // on each side, because neither arm could go alone.
+            const across = (ci) => {
+                const x = ci % GRID_W, y = (ci - x) / GRID_W;
+                for (const [dx2, dy2] of DIRS) {
+                    if (!isCrossoverAt(x + dx2, y + dy2)) continue;
+                    const o = idx(x + 2 * dx2, y + 2 * dy2);
+                    return inBounds(x + 2 * dx2, y + 2 * dy2) && live.has(o) && !held.has(o) ? o : -1;
+                }
+                return -1;
+            };
+            const cand = [...live].filter((ci) => !held.has(ci) && (!nearCrossing(ci) || across(ci) >= 0))
                 .sort((a, b) => (dist.has(b) ? dist.get(b) : Infinity) - (dist.has(a) ? dist.get(a) : Infinity));
             let did = false;
             for (const ci of cand) {
+                const pair = nearCrossing(ci) ? across(ci) : -1;
+                if (nearCrossing(ci) && pair < 0) continue;
                 live.delete(ci);
-                if (holds(live)) { removed.add(ci); did = true; break; }
+                if (pair >= 0) live.delete(pair);
+                if (holds(live)) { removed.add(ci); if (pair >= 0) removed.add(pair); did = true; break; }
                 live.add(ci);
+                if (pair >= 0) live.add(pair);
             }
             if (!did) break;
         }
@@ -1579,7 +3164,8 @@
     // four of 1351 moves their automatic re-route.
     const ROUTE_SLACK = 3, ROUTE_STRETCH = 1.25;
     function routeNet(seedIdxs, targetSet, netCells, terminalCells, volatileCells) {
-        const free = (x, y) => inBounds(x, y) && isInsulatorId(cells[idx(x, y)]);
+        const free = (x, y) => inBounds(x, y) && isInsulatorId(cells[idx(x, y)]) && !blockAt[idx(x, y)]
+            && !(ringMask[idx(x, y)] & RING_R);
         // A mux gets a one-cell berth on EVERY face. All of them say what the
         // part is: a wire at a long side's middle declares that side COM, at
         // its end declares a pin, and one on a short side declares SELECT —
@@ -1590,11 +3176,12 @@
         // Routes may still END on a terminal: that is the `dOut` direction,
         // which is never side-checked. Hand-drawing alongside a package stays
         // legal; this only constrains what the re-router lays down unasked.
-        const bumpsPackage = (x, y) => {
-            if (!isGrayId(cells[idx(x, y)])) return false;
-            const role = roles[idx(x, y)];
-            return !!(role && role.macro);
-        };
+        //
+        // All mux material gets the berth, not only working parts. An unwired
+        // package is read by exactly this — a route past the middle of its
+        // long side would orient it — and unfinished material becomes a part
+        // the moment it is completed, reading whatever was laid beside it.
+        const bumpsPackage = (x, y) => isGrayId(cells[idx(x, y)]);
         const sidesClear = (x, y, dIn, dOut, allowed) => {
             for (let d = 0; d < 4; d++) {
                 if (d === OPP(dIn) || d === dOut) continue; // where the path came from / goes
@@ -1744,7 +3331,7 @@
             }
             const r = roles[idx(x, y)];
             const m = r && r.macro;
-            if (m && m.kind === 'box' && r.kind === 'comMiddle' && m.comCell[0] === x && m.comCell[1] === y)
+            if (m && r.kind === 'comMiddle' && m.comCell[0] === x && m.comCell[1] === y)
                 return 'm' + m.key + '|com';
             return 'm' + idx(x, y);
         };
@@ -1775,6 +3362,12 @@
                     return { ok: false, reason: 'locked' };
             }
         }
+        // A block moves whole or not at all.
+        {
+            const tops = new Set();
+            for (const i of objSet) if (blockAt[i]) tops.add(topBlockOf(blockAt[i]));
+            for (const t of tops) for (const i of blockCellIdxs(t)) if (!objSet.has(i)) return { ok: false, reason: 'block' };
+        }
         const rawIds = objCells.map(([x, y]) => cells[idx(x, y)]);
         const ids = rawIds.map(stripId);
         // Every rejection path restores wholesale from this: the checks that
@@ -1783,7 +3376,15 @@
         // cells by hand. The grid is small, so a copy is cheaper than the
         // bookkeeping.
         const savedCells = cells.slice();
-        const reject = (why) => { cells.set(savedCells); recomputeRoles(); return { ok: false, reason: why || 'blocked' }; };
+        const savedBlocks = blockState();
+        // Who is wired to whom, to hold the finished board to (see the end).
+        const joinedAtStart = terminalGroups((i) => i);
+        const reject = (why) => {
+            cells.set(savedCells);
+            restoreBlockState(savedBlocks);
+            recomputeRoles();
+            return { ok: false, reason: why || 'blocked' };
+        };
         // What every mux cell on the board currently is. A mux's connections
         // are integral to its identity — a wire against the middle of a long
         // side declares that side COM (see buildBoxMux) — so a drag that
@@ -1810,6 +3411,30 @@
             return [dx, dy];
         };
 
+        // Crossings the object runs through (see wireSegmentAt): shared
+        // with the run going the other way, which keeps the cell.
+        const sharedX = new Set();
+        for (const [cx, cy] of objCells) if (isCrossoverAt(cx, cy)) sharedX.add(idx(cx, cy));
+        // A mux's stub that is more than an end — a junction (the run going
+        // on past the pin as well as into it, a T) or one arm of a crossing
+        // — is carried, so the part keeps its leads and reads as itself
+        // where it lands, and ALSO left where it was, so the junction or
+        // the crossing stays whole. Carried off alone, it took the junction
+        // with it, or left the crossing a T welding its two runs, and on a
+        // tight board the pieces could not be joined up again.
+        const keptBehind = new Set();
+        objCells.forEach(([cx, cy], k) => {
+            if (!String(nodeKeys[k]).startsWith('m') || !isConductorId(cells[idx(cx, cy)])) return;
+            let others = 0, crossing = false;
+            for (const [ax, ay] of DIRS) {
+                const nx = cx + ax, ny = cy + ay;
+                if (!inBounds(nx, ny) || objSet.has(idx(nx, ny))) continue;
+                if (isCrossoverAt(nx, ny)) crossing = true;
+                if (cellConnects(nx, ny, [-ax, -ay])) others++;
+            }
+            if (crossing || others > 1) keptBehind.add(idx(cx, cy));
+        });
+
         // Raw contacts, collected against the pre-move grid.
         const contacts = [];
         for (const [cx, cy] of objCells) {
@@ -1821,6 +3446,9 @@
                 // recorded as a contact and then dragged along by it.
                 if (!inBounds(ax, ay) || objSet.has(idx(ax, ay))) continue;
                 if (!cellConnects(cx, cy, [ddx, ddy]) || !cellConnects(ax, ay, [-ddx, -ddy])) continue;
+                // A crossing the object runs through: the run going the
+                // other way only passes it, and is no contact of the object.
+                if (sharedX.has(idx(cx, cy)) && !objSet.has(idx(cx - ddx, cy - ddy))) continue;
                 contacts.push({ anchor: [ax, ay], objCell: [cx, cy], entry: [ddx, ddy] });
             }
         }
@@ -1849,9 +3477,8 @@
         const newIdxOf = new Map();
         objCells.forEach(([x, y], i) => newIdxOf.set(idx(x, y), idx(moved[i][0], moved[i][1])));
         // Moved cells that can carry a connection (for a mux, everything but
-        // its inert spacer — the band's mid control cell, the box's
-        // select-sense cell) — the trim step's notion of "flush against a
-        // node". Uses pre-move roles, captured before the lift below.
+        // its inert select-sense spacer) — the trim step's notion of "flush
+        // against a node". Uses pre-move roles, captured before the lift below.
         const capableMoved = new Set();
         objCells.forEach(([x, y], i) => {
             const r = roles[idx(x, y)];
@@ -1897,6 +3524,7 @@
             const [mx, my] = moved[i];
             if (!inBounds(mx, my)) return { ok: false };
             const di = idx(mx, my);
+            if (!objSet.has(di) && blockAt[di]) return { ok: false }; // nothing lands on a block
             if (objSet.has(di) || isInsulatorId(cells[di])) continue;
             if (isWireId(cells[di])) { overlaps.push({ di, movedIsWire: isWireId(ids[i]) }); continue; }
             return { ok: false }; // something solid in the way
@@ -1908,14 +3536,36 @@
         // know which orphans it inherited and which ones it made.
         const preOrphans = orphanWire();
 
+        // Crossings as they stand before anything moves. A mux carries the
+        // stub on each of its leads, so lifting it can take away one arm of
+        // a crossing right beside it — which then reads as a T, joining its
+        // two axes, and the floods below would make two nets one: the move
+        // then "kept" a connection between them, shorting them for good. So
+        // everything the move traces treats a cell that was a crossing as
+        // one still. (If it ends up a T after all, the check for joins at
+        // the end refuses the move.)
+        const preXover = new Set();
+        for (let i = 0; i < cells.length; i++)
+            if (isWireId(cells[i]) && isCrossoverAt(i % GRID_W, (i - i % GRID_W) / GRID_W)) preXover.add(i);
+        const xo = (x, y) => isWireId(cells[idx(x, y)]) && (preXover.has(idx(x, y)) || isCrossoverAt(x, y));
+
         // Lift the object so the net floods see only the stationary world.
-        for (const [x, y] of objCells) cells[idx(x, y)] = ID_INSULATOR_PLAIN;
+        // A block's record rides along in the side arrays.
+        const sideOf = objCells.map(([x, y]) => [blockAt[idx(x, y)], pinAt[idx(x, y)]]);
+        for (const [x, y] of objCells) {
+            const i = idx(x, y);
+            if (sharedX.has(i) || keptBehind.has(i)) { cells[i] = makeConductor(OFF); continue; }   // stays, see above
+            cells[i] = ID_INSULATOR_PLAIN;
+            blockAt[i] = 0;
+            pinAt[i] = 0;
+        }
 
         const components = new Map(); // key -> {cells:Set, terminals:Set}
         const contracts = new Map();  // key|node -> {compKey, targets:Set of moved idx}
         for (const ct of contacts) {
-            let comp = isWireId(cells[idx(ct.anchor[0], ct.anchor[1])])
-                ? floodNet(ct.anchor[0], ct.anchor[1], ct.entry[0], ct.entry[1])
+            const ai = idx(ct.anchor[0], ct.anchor[1]);
+            let comp = isWireId(cells[ai]) && !blockAt[ai]
+                ? floodNet(ct.anchor[0], ct.anchor[1], ct.entry[0], ct.entry[1], xo)
                 : anchorNode(ct.anchor[0], ct.anchor[1]);
             if (components.has(comp.key)) comp = components.get(comp.key);
             else components.set(comp.key, comp);
@@ -1938,18 +3588,25 @@
             comp.preDangling = reduceNet(comp.cells, new Set([...comp.terminals, ...comp.preTouch]), null, nodeIdFor(nodeOfOrig));
         }
 
-        // A non-wire cell may only absorb wire cells of an attached net.
+        // A part lands on wire by overwriting it — wire of its own nets,
+        // which it absorbs, or anyone else's, which it cuts. Refusing used to
+        // mean erasing a stub by hand before every drag on a tight board; a
+        // cut is owed instead (a dashed line, see the end), never silent. A
+        // moved WIRE landing on wire is a join, not a cut, and the check for
+        // joins at the end refuses that.
         const contractedWire = new Set();
         for (const comp of components.values()) for (const ci of comp.cells) contractedWire.add(ci);
-        for (const o of overlaps) {
-            if (!o.movedIsWire && !contractedWire.has(o.di)) return reject();
-        }
 
         // Place the object (overwriting overlapped wire cells) and drop the
         // absorbed cells from their nets' bookkeeping.
         for (const comp of components.values())
             for (const ci of [...comp.cells]) if (movedSet.has(ci)) comp.cells.delete(ci);
-        moved.forEach(([x, y], i) => { cells[idx(x, y)] = ids[i]; });
+        moved.forEach(([x, y], i) => {
+            const mi = idx(x, y);
+            cells[mi] = ids[i];
+            blockAt[mi] = sideOf[i][0];
+            pinAt[mi] = turnPinCode(sideOf[i][1], quarterTurns);
+        });
         recomputeRoles();
 
         // Trim: a surviving net cell flush against a node it is NOT
@@ -1968,11 +3625,15 @@
                 for (const ci of [...comp.cells]) {
                     if (!isWireId(cells[ci])) continue;
                     const cx2 = ci % GRID_W, cy2 = (ci - cx2) / GRID_W;
+                    // Flush on a face that CONNECTS: a wire running past a
+                    // part's package on a dead face is not on any of its
+                    // pins, and trimming it cut nets for nothing — on a
+                    // tight board even a move by nothing broke the circuit.
                     const bad = DIRS.some(([bdx, bdy]) => {
                         const nx = cx2 + bdx, ny = cy2 + bdy;
                         if (!inBounds(nx, ny)) return false;
                         const ni = idx(nx, ny);
-                        return capableMoved.has(ni) && !ok.has(ni);
+                        return capableMoved.has(ni) && !ok.has(ni) && cellConnects(nx, ny, [-bdx, -bdy]);
                     });
                     if (bad) { cells[ci] = ID_INSULATOR_PLAIN; comp.cells.delete(ci); }
                 }
@@ -1986,10 +3647,14 @@
         // last end into one node — every destination cell is empty, so
         // nothing above catches it. Identify each stationary node the object
         // now touches and reject anything that wasn't in contact before.
-        const nodeKeyAt = (nx, ny) => {
-            if (isWireId(cells[idx(nx, ny)])) {
+        // A crossing is no net's own cell: what the object meets through
+        // one is the run straight beyond it, so look through to that.
+        const nodeKeyAt = (nx, ny, ddx, ddy) => {
+            if (isWireId(cells[idx(nx, ny)]) && !blockAt[idx(nx, ny)]) {
+                let cx = nx, cy = ny;
+                while (xo(cx, cy) && inBounds(cx + ddx, cy + ddy)) { cx += ddx; cy += ddy; }
                 for (const [key, comp] of components)
-                    if (comp.cells.has(idx(nx, ny)) || comp.routed.has(idx(nx, ny))) return key;
+                    if (comp.cells.has(idx(cx, cy)) || comp.routed.has(idx(cx, cy))) return key;
                 return 'new:' + idx(nx, ny);
             }
             return anchorNode(nx, ny).key; // stationary, so its key is stable across the move
@@ -2002,6 +3667,12 @@
                 const nx = mx + ddx, ny = my + ddy;
                 if (!inBounds(nx, ny)) continue;
                 if (!cellConnects(mx, my, [ddx, ddy]) || !cellConnects(nx, ny, [-ddx, -ddy])) continue;
+                // A moved run that lands across a stationary one makes a
+                // crossing: that run only passes through.
+                if (isCrossoverAt(mx, my) && !movedSet.has(idx(nx, ny)) && !movedSet.has(idx(mx - ddx, my - ddy))) continue;
+                // The copy of a stub the move left behind (see keptBehind) is
+                // the part's own connection, not someone else's wire to cut.
+                if (keptBehind.has(idx(nx, ny)) && !movedSet.has(idx(nx, ny))) continue;
                 // Two cells that both moved: fine if they are the same node
                 // (a pad's own cells, a mux's COM row), a weld if they are
                 // not. A mux carries a contact stub per lead now, and a turn
@@ -2015,9 +3686,19 @@
                         joinedBefore.has(Math.min(a, b) + ':' + Math.max(a, b))) continue;
                     return reject('welded');
                 }
-                if (!components.has(nodeKeyAt(nx, ny))) return reject();
+                if (components.has(nodeKeyAt(nx, ny, ddx, ddy))) continue;
+                // Someone else's wire against a part's lead: cut it back
+                // rather than refuse the drag — as with wire it lands on, the
+                // cut is owed. Not for a dragged WIRE, though: meeting another
+                // wire end-on is a join, and cutting it chopped the other run
+                // in two. Nor anything else it would meet (a pad, a source,
+                // another part's lead), which cannot be cut.
+                const partCell = !isWireId(cells[mi]) || String(nodeOfMoved.get(mi)).startsWith('m');
+                if (partCell && isWireId(cells[idx(nx, ny)]) && !blockAt[idx(nx, ny)]) { cells[idx(nx, ny)] = ID_INSULATOR_PLAIN; continue; }
+                return reject();
             }
         }
+        recomputeRoles();
 
         // Re-route each contract until it is genuinely satisfied.
         //
@@ -2036,18 +3717,26 @@
         // Everything reachable from a set of cells through wire (a crossover
         // passes straight through): the wire covered, and the non-wire
         // connecting cells touched at the edges.
+        //
+        // Out of a start cell only through the faces it really connects on.
+        // A mux pin has one lead; a wire running past its package on another
+        // face is some other net, and flooding into it made that net part of
+        // this one — the router then took touching it as fine, and laid a
+        // cell against it that shorted the two. On a tight board, wires run
+        // against muxes' dead faces everywhere.
         const floodFrom = (startIdxs) => {
             const wires = new Set(), touched = new Set(), seen = new Set(), stack = [];
             for (const si of startIdxs) {
                 const sx = si % GRID_W, sy = (si - sx) / GRID_W;
-                for (const [dx2, dy2] of DIRS) stack.push([sx + dx2, sy + dy2, dx2, dy2]);
+                for (const [dx2, dy2] of DIRS)
+                    if (cellConnects(sx, sy, [dx2, dy2])) stack.push([sx + dx2, sy + dy2, dx2, dy2]);
             }
             while (stack.length) {
                 const [x, y, dx2, dy2] = stack.pop();
                 if (!inBounds(x, y)) continue;
                 const i = idx(x, y);
-                if (!isWireId(cells[i])) { if (cellConnects(x, y, [-dx2, -dy2])) touched.add(i); continue; }
-                if (isCrossoverAt(x, y)) {
+                if (!isWireId(cells[i]) || blockAt[i]) { if (cellConnects(x, y, [-dx2, -dy2])) touched.add(i); continue; }
+                if (xo(x, y)) {
                     const k = i + (dx2 !== 0 ? 'h' : 'v');
                     if (seen.has(k)) continue;
                     seen.add(k);
@@ -2092,7 +3781,7 @@
                 if (!want.length) break;
                 const from = want[0];
                 const island = floodFrom([from]);
-                const seeds = [...island.wires, from].filter((ci) => !isCrossoverAt(ci % GRID_W, Math.floor(ci / GRID_W)));
+                const seeds = [...island.wires, from].filter((ci) => !xo(ci % GRID_W, Math.floor(ci / GRID_W)));
                 const targetCells = new Set([...at.wires, ...c.targets]);
                 let path = routeNet(seeds, targetCells, new Set(seeds), comp.terminals, volatileCells);
                 // A route is only worth taking if it looks like the connection
@@ -2156,9 +3845,42 @@
             return failed;
         };
 
+        // Before routing to the part, clear what of the net now leads
+        // nowhere — the run that went to where the part WAS, past whatever
+        // still needs it. Left standing, it got in its own net's way (a
+        // route may not run alongside its own wire), the route went the
+        // long way round it, and it was then left as a stub with the detour
+        // beside it.
+        const clearDeadRuns = (c) => {
+            const comp = components.get(c.compKey);
+            if (!comp.isNet) return false;
+            const wire = [...comp.cells].filter((ci) => isWireId(cells[ci]) && !movedSet.has(ci));
+            if (!wire.length) return false;
+            const keep = new Set([...(comp.preDangling || []), ...keptBehind]);
+            const dead = [...reduceNet(new Set(wire), new Set(comp.terminals), keep, nodeIdFor(nodeOfMoved))]
+                .filter((ci) => isWireId(cells[ci]));
+            if (!dead.length) return false;
+            for (const ci of dead) { cells[ci] = ID_INSULATOR_PLAIN; comp.cells.delete(ci); }
+            return true;
+        };
+        // Both ways are tried — from what of the net is left, as always, and
+        // with its dead runs cleared first — and the one that lays less new
+        // wire is kept (the usual one on a tie, so the player's own wire is
+        // kept wherever it serves).
         const runContract = (c) => {
             const comp = components.get(c.compKey);
+            const snap = () => ({ cells: cells.slice(), compCells: new Set(comp.cells), routed: new Set(comp.routed) });
+            const back = (s0) => { cells.set(s0.cells); comp.cells = new Set(s0.compCells); comp.routed = new Set(s0.routed); };
+            const start = snap();
             let failed = attemptContract(c);
+            const usual = failed ? null : snap();
+            back(start);
+            let cleared = null;
+            if (clearDeadRuns(c) && !attemptContract(c)) cleared = snap();
+            const laid = (s0) => s0.routed.size - start.routed.size;
+            if (cleared && (!usual || laid(cleared) < laid(usual))) { back(cleared); failed = null; }
+            else if (usual) { back(usual); failed = null; }
+            else { back(start); failed = attemptContract(c); }
             if (failed) failed = ripAndRelay(c);
             if (failed) { unrouted++; comp.failed = true; owedPairs.push(failed); }
         };
@@ -2212,6 +3934,10 @@
                 for (const t of comp.terminals) required.add(t);
                 for (const ci of comp.preDangling || []) keep.add(ci);
             }
+            // The stubs left behind as copies (keptBehind) are wire of these
+            // nets too: without them a run reaching the part through one
+            // read as going nowhere, and was pruned.
+            for (const ci of keptBehind) if (isWireId(cells[ci])) net.add(ci);
             for (const ci of reduceNet(net, required, keep, nodeIdFor(nodeOfMoved))) {
                 if (!isWireId(cells[ci])) continue;
                 cells[ci] = ID_INSULATOR_PLAIN;
@@ -2265,12 +3991,22 @@
         {
             const gone = [];
             for (const ci of orphanWire())
-                if (!preOrphans.has(ci) && !movedSet.has(ci)) gone.push(ci);
+                if (!preOrphans.has(ci) && !movedSet.has(ci) && !blockAt[ci]) gone.push(ci);
             if (gone.length) {
                 for (const ci of gone) cells[ci] = ID_INSULATOR_PLAIN;
                 recomputeRoles();
             }
         }
+
+        // Nothing here may have reached inside a block that stood still. The
+        // walks stop at their pins and the router keeps out, so this should
+        // never fire — it is the backstop that keeps a missed case a refused
+        // drag instead of a quietly rewired part.
+        for (let i = 0; i < cells.length; i++)
+            if (blockAt[i] && !movedSet.has(i) && stripId(cells[i]) !== stripId(savedCells[i])) return reject('block');
+        // Nor may anything end up on a part's kept-bare edge — the part that
+        // moved, or one it moved up against.
+        if (ringViolations().length) return reject('edge');
 
         // Identity is not negotiable the way routing is: a part that ends up
         // reading as something else is not the part you dragged, so that one
@@ -2285,6 +4021,24 @@
             const got = r.lead || null;
             if (!want !== !got) return reject('reread');
             if (want && (want[0] !== got[0] || want[1] !== got[1])) return reject('reread');
+        }
+
+        // And nothing joined that was apart. Each step above is meant to
+        // keep to that — the trim, the routes, the rip-and-relay, the
+        // shrink — but a mistake in any of them is a short the player cannot
+        // see until the circuit stops working, so the finished board is held
+        // to it directly: every terminal on it (the moved ones by where they
+        // came from) with everything it is wired to, against the board
+        // before. Connections may be owed (dashed); never invented.
+        const groupsAfter = terminalGroups((i) => (origOfMoved.has(i) ? origOfMoved.get(i) : i));
+        {
+            const after = groupsAfter;
+            const wasOf = new Map();
+            for (const [t, g] of after) {
+                const was = joinedAtStart.has(t) ? joinedAtStart.get(t) : 'alone:' + t;
+                if (!wasOf.has(g)) wasOf.set(g, was);
+                else if (wasOf.get(g) !== was) return reject('short');
+            }
         }
 
         // Every connection the object had, re-checked against the finished
@@ -2310,22 +4064,28 @@
         // by its lowest cell index. Whatever else is on those nets, they owe
         // each other exactly one connection.
         const netKey = wireNetKey;
-        const oweLink = (a, b) => {
+        // `a`/`b` are cells of the board before the move, unless `placed`:
+        // the router's own failures name cells where the object now is, and
+        // mapping those again sent the line wherever that cell had moved to
+        // — on a one-cell drag, often a different pin of the same part.
+        const oweLink = (a, b, keep, placed) => {
             if (a === undefined || b === undefined) return;
-            const a2 = newIdxOf.has(a) ? newIdxOf.get(a) : a;
-            const b2 = newIdxOf.has(b) ? newIdxOf.get(b) : b;
+            const a2 = !placed && newIdxOf.has(a) ? newIdxOf.get(a) : a;
+            const b2 = !placed && newIdxOf.has(b) ? newIdxOf.get(b) : b;
             if (a2 === b2 || netReaches(a2, b2)) return false;
             const ax = a2 % GRID_W, ay = (a2 - ax) / GRID_W;
             const bx = b2 % GRID_W, by = (b2 - bx) / GRID_W;
             if (!cellConnects(ax, ay) || !cellConnects(bx, by)) return false; // an end was erased
             const ka = netKey(a2), kb = netKey(b2);
             if (ka === kb) return false;                                      // one net, already joined
-            owed.set(Math.min(ka, kb) + ':' + Math.max(ka, kb), [a2, b2]);
+            const k = Math.min(ka, kb) + ':' + Math.max(ka, kb);
+            if (keep && owed.has(k)) return true;
+            owed.set(k, [a2, b2]);
             return true;
         };
         // What the router itself reported it could not join, re-checked in
         // case another contract's path happened to satisfy it anyway.
-        for (const [a, b] of owedPairs) oweLink(a, b);
+        for (const [a, b] of owedPairs) oweLink(a, b, false, true);
         // ...and every terminal each contact was attached to, once per
         // (pre-move net, terminal). Several contacts on one net are one
         // connection however the move pulled its ends apart.
@@ -2338,6 +4098,55 @@
                 if (oweLink(ct.objCell, t0)) claimed.add(k);
             }
         }
+        // ...and whatever else came apart: wire the object overwrote or cut
+        // back from its leads, or any connection lost some other way. Every
+        // group of terminals wired together before that is now in pieces
+        // owes a link between them.
+        // Pieces a dashed line already joins (the object's own, filed above)
+        // are not owed twice.
+        {
+            const termCell = (t) => +t.slice(1);
+            const termAt = new Map();          // board cell -> terminal id, after
+            for (const t of groupsAfter.keys()) {
+                const c = termCell(t);
+                termAt.set(newIdxOf.has(c) ? newIdxOf.get(c) : c, t);
+            }
+            // The group an owed link's end is in: its own, for a terminal;
+            // for a wire, that of a terminal on its net.
+            const groupOfCell = (i) => {
+                if (termAt.has(i)) return groupsAfter.get(termAt.get(i));
+                const x = i % GRID_W, y = (i - x) / GRID_W, id = cells[i];
+                // Any cell of a pad stands for the pad, which is filed under
+                // its lowest cell (see terminalGroups).
+                if (isLed(id) || isSwitch(id) || isToggle(id)) {
+                    let min = Infinity;
+                    for (const c of anchorNode(x, y).cells) min = Math.min(min, origOfMoved.has(c) ? origOfMoved.get(c) : c);
+                    return groupsAfter.has('p' + min) ? groupsAfter.get('p' + min) : null;
+                }
+                if (!isWireId(id)) return null;
+                for (const ti of floodNet(x, y, 0, 0).terminals)
+                    if (termAt.has(ti)) return groupsAfter.get(termAt.get(ti));
+                return null;
+            };
+            const linked = new Map();
+            const find = (a) => { while (linked.has(a) && linked.get(a) !== a) a = linked.get(a); return a; };
+            const join = (a, b) => { if (a !== null && b !== null) linked.set(find(a), find(b)); };
+            for (const [a, b] of owed.values()) join(groupOfCell(a), groupOfCell(b));
+            const pieces = new Map();
+            for (const [t, g] of groupsAfter) {
+                const was = joinedAtStart.get(t);
+                if (was === undefined) continue;
+                if (!pieces.has(was)) pieces.set(was, new Map());
+                if (!pieces.get(was).has(g)) pieces.get(was).set(g, t);
+            }
+            for (const m of pieces.values()) {
+                const groups = [...m.keys()], reps = [...m.values()];
+                for (let k = 1; k < reps.length; k++) {
+                    if (find(groups[0]) === find(groups[k])) continue;
+                    if (oweLink(termCell(reps[0]), termCell(reps[k]), true)) join(groups[0], groups[k]);
+                }
+            }
+        }
         for (const link of owed.values()) pendingLinks.push(link);
 
         const out = [];
@@ -2346,8 +4155,62 @@
         return { ok: true, objects: out, cells: moved, unrouted, pending: [...owed.values()].length };
     }
 
+    // Blocks, when there are any, as their records plus the two cell arrays.
     function serialize() {
-        return JSON.stringify({ w: GRID_W, h: GRID_H, cells: Array.from(cells) });
+        const o = { w: GRID_W, h: GRID_H, cells: Array.from(cells) };
+        if (blocks.size) {
+            o.blocks = {
+                pv: 2, recs: [...blocks.values()].map(copyBlockRec),
+                at: Array.from(blockAt), pin: Array.from(pinAt),
+            };
+        }
+        return JSON.stringify(o);
+    }
+
+    // Far past any board anyone draws (2048x2048), but small enough that a
+    // mangled or hostile import is refused instead of allocating gigabytes.
+    const MAX_CELLS = 1 << 22;
+
+    // Replaces the board wholesale, so the old board's ratsnest goes with it
+    // (resizeGrid drops it): its flat indices would otherwise be read as
+    // cells of the new board, and could come back as a dashed line between
+    // two unrelated things there.
+    // Saved blocks, checked the way sanitizeClip checks a clip's.
+    function loadBlocks(b) {
+        blocks = new Map();
+        blockAt.fill(0);
+        pinAt.fill(0);
+        if (!b || !Array.isArray(b.recs) || !Array.isArray(b.at) || b.at.length !== blockAt.length) return;
+        for (const r of b.recs) {
+            if (!r || !Number.isInteger(r.id) || r.id <= 0 || blocks.has(r.id)) continue;
+            blocks.set(r.id, {
+                id: r.id, name: String(r.name || 'Part').slice(0, 40), source: r.source ? String(r.source) : '',
+                parent: Number.isInteger(r.parent) ? r.parent : 0, open: !!r.open,
+                pins: (Array.isArray(r.pins) ? r.pins : []).slice(0, 256).map((p) => ({
+                    name: String((p && p.name) || '?').slice(0, 12), dir: p && p.dir === 'out' ? 'out' : 'in',
+                })),
+            });
+        }
+        for (const r of blocks.values()) {
+            let p = r.parent, steps = 0;
+            while (p && blocks.has(p) && p !== r.id && steps++ < blocks.size) p = blocks.get(p).parent;
+            if (!blocks.has(r.parent) || p === r.id || steps >= blocks.size) r.parent = 0;
+        }
+        for (let i = 0; i < blockAt.length; i++) {
+            const id = b.at[i] | 0;
+            if (blocks.has(id)) blockAt[i] = id;
+        }
+        // Saved before pins recorded their face: every pin was on its
+        // block's edge, facing out.
+        const box = b.pv ? null : lidBoxes(blockAt, GRID_W, GRID_H);
+        for (let i = 0; i < blockAt.length; i++) {
+            const id = blockAt[i];
+            let p = id && Array.isArray(b.pin) ? b.pin[i] | 0 : 0;
+            if (p <= 0) continue;
+            if (box) p = pinCode(p - 1, outwardFace(box.get(id), i % GRID_W, Math.floor(i / GRID_W)));
+            if (pinIndex(p) < blocks.get(id).pins.length) pinAt[i] = p;
+        }
+        for (const id of blocks.keys()) if (id >= nextBlockId) nextBlockId = id + 1;
     }
 
     function deserialize(text) {
@@ -2357,13 +4220,15 @@
             // Restore the saved size (grids grow, so it may differ from now).
             const w = Number.isInteger(data.w) && data.w > 0 ? data.w : GRID_W;
             const h = Number.isInteger(data.h) && data.h > 0 ? data.h : GRID_H;
+            if (w * h > MAX_CELLS) return false;
             resizeGrid(w, h, 0, 0, false);
             const n = Math.min(data.cells.length, cells.length);
             for (let i = 0; i < n; i++) {
                 const v = data.cells[i] & 0xff;
                 cells[i] = isValidId(v) ? v : ID_INSULATOR_PLAIN;
             }
-            tickCount = 0;
+            loadBlocks(data.blocks);
+            restartTicks();
             recomputeRoles();
             return true;
         } catch (e) {
@@ -2378,24 +4243,30 @@
         get GRID_W() { return GRID_W; },
         get GRID_H() { return GRID_H; },
         OFF, ON, FALLING,
-        idx, inBounds, getCell, paintCell, colorOfCell, setSwitch, toggleAt, setToggle, expandForBorder,
+        idx, inBounds, getCell, paintCell, paintCells, colorOfCell, setSwitch, toggleAt, setToggle,
+        expandForBorder, growTo, growBy, growSnapshot,
         isLocked, setLockedCells, lockedCells,
+        getLiveSnapshot, restoreLiveSnapshot,
         // Raw cell array copy — the campaign verifier compares consecutive
         // ticks to decide a circuit has settled, which needs every bit of
         // live charge, not the structural (charge-stripped) snapshot.
         copyCells() { return cells.slice(); },
         isInsulatorId,
         isConductorId, conductorCharge,
-        isXover, xoverV, xoverH, isCrossoverAt, cellConnects,
+        isXover, xoverV, xoverH, isCrossoverAt, cellConnects, reaches, parts, muxCount,
         pendingLinks: pendingLinkList,
-        isGrayId, grayCharge,
+        isGrayId, isWireId, grayCharge,
         isLed, ledIsOn, isSwitch, switchIsPressed, isToggle, toggleIsOn,
         ID_POS, ID_NEG,
         get roles() { return roles; },
         stepSimulation, clearGrid, resetCharges,
         getStructuralSnapshot, restoreStructuralSnapshot,
-        copyRegion, clearRegion, pasteRegion,
+        copyRegion, clearRegion, clearCells, grayBlob, pasteRegion,
         rotateRegionCW, mirrorRegionH,
+        isProtected, isTerminalCell, blockAtCell, visibleBlockAt, topBlockOf, blockList, blockInfo, edgeAt,
+        clipRing, clipPins, decapClip, ringViolations,
+        setBlockOpen, removeBlock, decapBlock, captureBlock, fitPart, captureRect, capPart, blockFits,
+        sanitizeClip, clipToJSON, rotateClipCW, mirrorClipH,
         objectAt, moveObject, moveObjects,
         serialize, deserialize,
         get tickCount() { return tickCount; },

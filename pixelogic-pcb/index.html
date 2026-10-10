@@ -44,7 +44,7 @@
             <div class="bar-group zoom-group">
                 <button id="zoomOutBtn" class="icon-btn" title="Zoom out (-)">&minus;</button>
                 <span id="zoomValue" class="zoom-value"
-                    title="Scroll or arrow keys pan; Ctrl+scroll (or pinch) zooms at the cursor; Shift-drag or middle-drag also pans">100%</span>
+                    title="Scroll or arrow keys pan; Ctrl+scroll (or pinch) zooms at the cursor; middle-drag also pans">100%</span>
                 <button id="zoomInBtn" class="icon-btn" title="Zoom in (+)">+</button>
             </div>
 
@@ -58,11 +58,11 @@
             <div id="toolrail" role="toolbar" aria-label="Tools">
                 <div class="tool-group" aria-label="Materials">
                     <button class="tool-btn swatch-tool" data-tool="conductor" data-key="1"
-                        title="Conductor (1) — right-drag always erases" style="--swatch:#3fae4a">Conductor</button>
+                        title="Conductor (1) — drag to draw wire; hold Shift (or turn on Straight) for a straight line. Right-drag always erases" style="--swatch:#3fae4a">Conductor</button>
                     <button class="tool-btn swatch-tool" data-tool="insulator" data-key="2"
-                        title="Erase / Insulator (2)" style="--swatch:#0d3b0d">Erase</button>
+                        title="Erase (2) — touching any cell of a mux removes the whole part" style="--swatch:#0d3b0d">Erase</button>
                     <button class="tool-btn swatch-tool" data-tool="gray" data-key="3"
-                        title="MUX (3) — draw a solid 3x2 of it and you have a mux: a blank package until you wire it. The middle of a long side is always COM; the end of one is a pin. A wire on a corner of the COM row is SELECT and commissions it: the far row's ends are the pins, and that end is NO. Everything else is package, so wires can run alongside. Any other shape of it is a &minus;V pad"
+                        title="MUX (3) — click to place a mux, a solid 3x2 part; R or 3 again turns the next one, and clicking a blank one turns it. Wire the middle of a long side and that side is COM, the output; wire a corner of the COM side and that corner is SEL. The far side's ends are the pins: NO, on SEL's end, joins COM while SEL is on, NC while it is off"
                         style="--swatch:#2b2b2b">MUX</button>
                     <button class="tool-btn swatch-tool" data-tool="pos" data-key="4" title="+V source (4)"
                         style="--swatch:#ffffff">+V</button>
@@ -74,6 +74,18 @@
                         style="--swatch:#565b60">Toggle</button>
                     <button class="tool-btn swatch-tool" data-tool="switch" data-key="8"
                         title="Momentary switch input (8)" style="--swatch:#9aa0a6">Switch</button>
+                    <button class="tool-btn swatch-tool part-tool" data-tool="part" data-key="9"
+                        title="Parts (9) — put down a whole part: a circuit you solved, or made in the sandbox, under a lid naming it and its pins. R turns it, M flips it, 9 again picks another. Double-click a part to look inside; to change what is inside, select it with Rearrange and Decap it"
+                        style="--swatch:#1b1b1d">Parts</button>
+                </div>
+
+                <!-- A modifier on the paint tools rather than a tool: every
+                     stroke becomes a straight run while it is on. Shift does
+                     the same while held; this is the touchscreen's way. -->
+                <div class="tool-group" aria-label="Drawing">
+                    <button id="straightBtn" class="tool-btn glyph-tool" data-key="L" data-glyph="L"
+                        aria-pressed="false"
+                        title="Straight lines (L) — strokes run straight along a row or column. Or hold Shift while you drag">Straight</button>
                 </div>
 
                 <div class="tool-group" aria-label="Modes">
@@ -102,27 +114,34 @@
                      never resizes the canvas out from under a drag. Hidden
                      entirely in the sandbox. -->
                 <div id="levelBar" class="level-bar">
-                    <div class="level-bar-main">
-                        <button id="levelCollapseBtn" class="icon-btn collapse-btn"
-                            title="Minimize the level text (H)" aria-expanded="true">&#x25BE;</button>
-                        <div class="level-bar-text">
-                            <span id="levelTitle" class="level-title"></span>
-                            <span id="levelBrief" class="level-brief"></span>
-                        </div>
-                        <div class="level-bar-actions">
-                            <button id="hintBtn" class="tool-btn" title="Show a hint"
-                                aria-pressed="false">Hint</button>
-                            <button id="verifyBtn" class="tool-btn primary"
-                                title="Run this level's test vectors against your circuit">Verify</button>
-                            <button id="levelsBtn" class="tool-btn" title="Back to the level list">Levels</button>
-                        </div>
+                    <button id="levelCollapseBtn" class="icon-btn collapse-btn"
+                        title="Minimize the level text (H)" aria-expanded="true">&#x25BE;</button>
+                    <span id="levelTitle" class="level-title"></span>
+                    <div class="level-bar-actions">
+                        <button id="hintBtn" class="tool-btn" title="Show a hint"
+                            aria-pressed="false">Hint</button>
+                        <button id="verifyBtn" class="tool-btn primary"
+                            title="Run this level's test vectors against your circuit">Verify</button>
+                        <button id="levelsBtn" class="tool-btn" title="Back to the level list">Levels</button>
                     </div>
-                    <!-- Everything below the title row is what collapsing hides. -->
-                    <div id="levelDetail" class="level-detail">
-                        <ol id="levelSteps" class="level-steps"></ol>
-                        <div id="levelHint" class="level-hint"></div>
+                    <!-- Collapsing hides the brief (and the hint); the status
+                         line stays. -->
+                    <span id="levelBrief" class="level-brief"></span>
+                    <!-- One line of "what now": the next tutorial step, or how
+                         the last Verify went. A fixed height, so neither can
+                         move the board. -->
+                    <div id="levelStatus" class="status-line" aria-live="polite"></div>
+                    <div id="levelHint" class="level-hint"></div>
+                </div>
+
+                <!-- The full truth table, on demand. It floats over the board
+                     instead of growing the level bar. -->
+                <div id="levelTable" class="level-table" role="dialog" aria-label="Truth table">
+                    <div class="level-table-header">
+                        <span>Truth table · click a row to try it</span>
+                        <button id="levelTableCloseBtn" class="icon-btn" title="Close">&times;</button>
                     </div>
-                    <div id="levelResult" class="level-result"></div>
+                    <div id="levelTableBody"></div>
                 </div>
 
                 <!-- Only appears while there is something to act on, so five
@@ -134,8 +153,15 @@
                         disabled>Rotate</button>
                     <button id="mirrorBtn" class="tool-btn" title="Mirror selection left-right (M)"
                         disabled>Mirror</button>
+                    <button id="deleteBtn" class="tool-btn danger"
+                        title="Delete the selection, or discard a paste you have not placed yet (Del)"
+                        disabled>Delete</button>
+                    <button id="lidBtn" class="tool-btn" title="Lift the part's lid to see its circuit, or put it back (double-click does the same)"
+                        style="display:none">Open lid</button>
+                    <button id="decapBtn" class="tool-btn" title="Take the lid off for good: the part's circuit becomes loose parts you can change"
+                        style="display:none">Decap</button>
                     <button id="saveComponentBtn" class="tool-btn"
-                        title="Save the current clipboard as a named, reusable component" disabled>Save&hellip;</button>
+                        title="Make the selected circuit a part of your own, fitted to the smallest edge it allows; the wires crossing that edge are its terminals" disabled>Make part&hellip;</button>
                 </div>
             </div>
         </div>
@@ -153,11 +179,14 @@
         <button id="fitBtn" class="menu-item" role="menuitem">Fit to window<span class="menu-hint">F</span></button>
         <button id="gridToggleBtn" class="menu-item" role="menuitem" aria-pressed="true"
             title="Remembered separately for build vs. Interact">Grid lines<span class="menu-hint">G</span></button>
+        <button id="pinLabelsBtn" class="menu-item" role="menuitem" aria-pressed="false"
+            title="Print SEL, COM, NO and NC on every mux. On by default only in the mux tutorial">Pin labels<span
+                class="menu-hint">on muxes</span></button>
         <div class="menu-sep"></div>
         <button id="campaignBtn" class="menu-item" role="menuitem">Campaign&hellip;<span class="menu-hint">levels</span></button>
         <button id="sandboxToggleBtn" class="menu-item" role="menuitem">Sandbox<span class="menu-hint">free
                 board</span></button>
-        <button id="componentsBtn" class="menu-item" role="menuitem">Components&hellip;</button>
+        <button id="componentsBtn" class="menu-item" role="menuitem">Parts&hellip;<span class="menu-hint">9</span></button>
         <div class="menu-sep"></div>
         <button id="exportBtn" class="menu-item" role="menuitem">Export circuit<span class="menu-hint">to
                 clipboard</span></button>
@@ -172,16 +201,43 @@
         <button id="fullscreenBtn" class="menu-item" role="menuitem" aria-pressed="false">Fullscreen</button>
     </div>
 
-    <!-- ---- Components panel ---- -->
+    <!-- ---- Parts panel ---- -->
     <div id="componentsBackdrop" class="modal-backdrop"></div>
-    <div id="componentsPanel" class="modal-panel" role="dialog" aria-label="Components">
+    <div id="componentsPanel" class="modal-panel" role="dialog" aria-label="Parts">
         <div class="modal-panel-header">
-            <span>Components</span>
+            <span>Parts</span>
             <button id="componentsCloseBtn" class="icon-btn" title="Close">&times;</button>
         </div>
+        <p class="panel-intro">
+            A part is a whole circuit under a lid, its terminals named. <b>Place</b> one and wire its
+            terminals like anything else; double-click it to look inside. To <b>make</b> one, build the
+            circuit and select round it: Make part&hellip; does the rest. To <b>change</b> one, Decap it where it
+            is (select it with Rearrange) &mdash; or <b>Edit</b> here for a loose copy &mdash; then rework
+            it, select round it, and Make part&hellip; saves it back. A level&rsquo;s part must still pass its
+            level.
+        </p>
         <div id="componentsList" class="components-list"></div>
-        <div id="componentsEmpty" class="components-empty">No saved components yet. Select something, Copy it, then
-            Save&hellip;</div>
+        <div id="componentsEmpty" class="components-empty"></div>
+        <div class="modal-panel-footer">
+            <button id="newPartBtn" class="tool-btn">New part&hellip;</button>
+        </div>
+    </div>
+
+    <!-- ---- Make a part (sandbox) ---- -->
+    <div id="makePartBackdrop" class="modal-backdrop"></div>
+    <div id="makePartPanel" class="modal-panel" role="dialog" aria-label="Make a part">
+        <div class="modal-panel-header">
+            <span>Make a part</span>
+            <button id="makePartCloseBtn" class="icon-btn" title="Close">&times;</button>
+        </div>
+        <div id="makePartPins" class="part-preview-wrap"></div>
+        <div id="makePartSize" class="part-size"></div>
+        <label class="field">Save as <select id="makePartAs"></select></label>
+        <label class="field">Name <input id="makePartName" type="text" maxlength="24" placeholder="e.g. NOT2"></label>
+        <div id="makePartError" class="field-error" aria-live="polite"></div>
+        <div class="modal-panel-footer">
+            <button id="makePartOkBtn" class="tool-btn primary">Make part</button>
+        </div>
     </div>
 
     <!-- ---- Campaign level browser ---- -->
@@ -193,7 +249,7 @@
         </div>
         <p class="panel-intro">
             One part builds everything: a mux, wired as a relay. Start with a single inverter and work up
-            &mdash; each level you solve is saved as a component you can paste into the next.
+            &mdash; each level you solve becomes a part you can put down whole in the next.
         </p>
         <div id="levelsList" class="levels-list"></div>
         <div class="modal-panel-footer">

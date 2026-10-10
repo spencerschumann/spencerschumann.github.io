@@ -75,7 +75,7 @@ html, body {
 }
 .icon-btn:disabled:hover, .tool-btn:disabled:hover { background: var(--btn-bg); }
 
-.icon-btn[aria-pressed="true"], .tool-btn.selected {
+.icon-btn[aria-pressed="true"], .tool-btn[aria-pressed="true"], .tool-btn.selected {
     border-color: var(--accent);
     box-shadow: inset 0 0 0 1px var(--accent);
 }
@@ -186,6 +186,16 @@ html, body {
     border-radius: 3px;
     background: var(--swatch);
     border: 1px solid #555;
+}
+/* The MUX swatch is the part's own shape, 3:2, and turns with it: lying down
+   or standing up, whichever the next click will place. */
+.swatch-tool[data-tool="gray"]::before { width: 15px; height: 10px; margin: 2px 0; }
+.swatch-tool[data-tool="gray"].stands::before { width: 10px; height: 15px; margin: 0 2px; }
+/* Parts: a little package with a lead each side. */
+.swatch-tool[data-tool="part"]::before {
+    width: 12px; height: 12px; margin: 1px;
+    border-radius: 2px;
+    box-shadow: -3px 0 0 -1px #c3c8ce, 3px 0 0 -1px #c3c8ce;
 }
 
 .glyph-tool::before {
@@ -480,8 +490,10 @@ html, body {
     top: 50%;
     left: 50%;
     transform: translate(-50%, -50%);
-    min-width: 320px;
-    max-width: 90vw;
+    /* min() so a 320px phone gets a panel that fits: a bare 320px minimum
+       beat the 90vw maximum there and ran the panel off both edges. */
+    min-width: min(320px, 92vw);
+    max-width: 92vw;
     max-height: 80vh;
     overflow-y: auto;
     background: var(--panel-bg);
@@ -524,6 +536,94 @@ html, body {
     color: #888;
     font-size: 13px;
 }
+.components-empty:empty { display: none; }
+.part-meta { color: var(--text-dim); font-weight: 400; }
+.components-subhead {
+    margin-top: 10px;
+    color: var(--text-dim);
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+/* ---- Make a part ---- */
+.field {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    margin: 6px 0;
+}
+.field select {
+    flex: 1;
+    min-width: 0;
+    background: #111;
+    color: inherit;
+    border: 1px solid var(--panel-border);
+    border-radius: 4px;
+    padding: 5px 7px;
+    font: inherit;
+}
+.field input {
+    flex: 1;
+    min-width: 0;
+    background: #111;
+    color: inherit;
+    border: 1px solid var(--panel-border);
+    border-radius: 4px;
+    padding: 5px 7px;
+    font: inherit;
+}
+/* The part as it will be: a drawing, with its terminals' names on tags. */
+.part-preview-wrap { overflow: auto; max-height: 340px; margin: 4px 0 6px; }
+.part-preview {
+    position: relative;
+    margin: 0 auto;
+    background: #0b3a06;
+    border-radius: 6px;
+}
+.part-preview svg { position: absolute; inset: 0; }
+.part-preview .pp-body { fill: #1b1b1d; stroke: #77777d; stroke-width: 1.5; }
+.part-preview .pp-name {
+    fill: rgba(238, 238, 238, 0.92);
+    font-weight: 700;
+    text-anchor: middle;
+    dominant-baseline: central;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+.part-preview .pp-lead { stroke: #c3c8ce; stroke-width: 5; stroke-linecap: butt; }
+.part-preview .pp-arrow.in { fill: #7dffb3; }
+.part-preview .pp-arrow.out { fill: #ffd166; }
+.part-preview .pp-arrow.flip { cursor: pointer; }
+.part-preview .pp-arrow.flip:hover { filter: brightness(1.3); }
+.part-preview .pp-bare { stroke: rgba(255, 150, 120, 0.6); stroke-width: 1.2; }
+.part-preview .pp-free { fill: rgba(214, 222, 230, 0.45); }
+.part-chip { position: absolute; display: flex; }
+.part-chip input, .part-chip select {
+    width: 100%;
+    height: 100%;
+    box-sizing: border-box;
+    padding: 0 4px;
+    background: #111;
+    border: 1.5px solid;
+    border-radius: 11px;
+    font: 700 12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    text-align: center;
+}
+.part-chip.in input, .part-chip.in select { border-color: #7dffb3; color: #7dffb3; }
+.part-chip.out input, .part-chip.out select { border-color: #ffd166; color: #ffd166; }
+.part-size { color: var(--text-dim); font-size: 12px; margin-bottom: 6px; text-align: center; }
+.field-error { color: #ff8a8a; font-size: 13px; min-height: 1.3em; }
+/* Make part sits beside the board rather than over it, and does not dim it:
+   the edge it fitted is drawn there, and is the thing to look at. */
+#makePartPanel {
+    top: 64px;
+    right: 12px;
+    left: auto;
+    transform: none;
+    max-width: min(360px, 92vw);
+}
+#makePartBackdrop { background: transparent; }
 
 .tool-btn.danger:hover {
     background: #5a1f1f;
@@ -551,34 +651,80 @@ html, body {
     max-height: 60%;
     overflow-y: auto;
 }
-.level-bar.open { display: block; }
-
-.level-bar-main {
-    display: flex;
-    align-items: flex-start;
-    gap: 10px;
+/* Only the title shares its row with the buttons; the brief, the status line
+   and the hint run the full width beneath it. Sharing a column with the
+   buttons squeezed the brief into five lines on a phone. */
+.level-bar.open {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    column-gap: 10px;
+    row-gap: 4px;
+    align-items: center;
 }
 .collapse-btn {
-    flex: 0 0 auto;
+    grid-column: 1;
+    grid-row: 1;
     min-width: 26px;
     padding: 0 4px;
     font-size: 12px;
 }
+.level-title { grid-column: 2; grid-row: 1; font-weight: 600; min-width: 0; }
+.level-brief, .status-line, .level-hint { grid-column: 2 / 4; }
+.level-brief { color: var(--text-dim); }
 /* Collapsed keeps the title row — which says which level you are in and holds
-   Verify — and drops everything that was only worth reading once. */
+   Verify — and the status line, and drops what was only worth reading once. */
 .level-bar.collapsed .level-brief,
-.level-bar.collapsed .level-detail,
-.level-bar.collapsed .level-result { display: none; }
-.level-bar-text { flex: 1 1 auto; min-width: 0; }
-.level-title { font-weight: 600; display: block; }
-.level-brief { color: var(--text-dim); display: block; margin-top: 2px; }
+.level-bar.collapsed .level-hint { display: none; }
 
 /* The actions never wrap or shrink — Verify is the one control that must be
-   reachable at every width, so it keeps its size while the brief reflows. */
+   reachable at every width. */
 .level-bar-actions {
+    grid-column: 3;
+    grid-row: 1;
     display: flex;
     gap: 6px;
-    flex: 0 0 auto;
+}
+
+/* ---- The status line ----
+   The next tutorial step, or how the last Verify went, in a box of FIXED
+   height: two lines of text and a thin progress bar. Its content changes
+   while you build and while Verify plays, and a level bar that changed
+   height re-framed the board every time — Verify used to move the board
+   three times in one run. */
+.status-line {
+    height: 48px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 5px;
+    min-width: 0;
+}
+.status-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.status-text {
+    flex: 1 1 auto;
+    min-width: 0;
+    color: var(--text-dim);
+    line-height: 17px;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+.status-text b { color: var(--text); font-weight: 600; }
+.status-text .bits { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text); }
+.status-step { color: var(--pcb-accent); font-weight: 600; white-space: nowrap; }
+.status-actions { display: flex; gap: 6px; flex: 0 0 auto; }
+.status-actions .tool-btn { min-height: 28px; padding: 0 9px; font-size: 12px; }
+/* One segment per tutorial step, or per test case while Verify plays. */
+.case-bar { display: flex; gap: 2px; height: 5px; }
+.case-bar span { flex: 1 1 0; min-width: 2px; border-radius: 2px; background: #333; }
+.case-bar span.done, .case-bar span.ok { background: var(--accent); opacity: 0.75; }
+.case-bar span.active { background: var(--text); }
+.case-bar span.bad { background: #ff8a8a; }
+/* A phone's status line is narrow enough that a step takes three lines. */
+@media (max-width: 480px) {
+    .status-line { height: 64px; }
+    .status-text { -webkit-line-clamp: 3; }
 }
 .tool-btn.primary {
     background: #1f4b34;
@@ -587,22 +733,54 @@ html, body {
 }
 .tool-btn.primary:hover { background: #276044; }
 
-.level-hint, .level-result { display: none; margin-top: 8px; }
-.level-hint.open, .level-result.open { display: block; }
+.level-hint { display: none; }
+.level-hint.open { display: block; }
 .level-hint {
     color: var(--text-dim);
     border-left: 2px solid var(--pcb-accent);
     padding-left: 8px;
+    margin-bottom: 2px;
 }
 
-.result-line { font-weight: 600; }
-.result-pass { color: var(--accent); }
-.result-fail { color: #ff8a8a; }
-.result-note { color: var(--text-dim); font-weight: 400; margin-top: 4px; }
+.result-partial { color: #ffd166; font-weight: 700; white-space: nowrap; }
+.result-pass { color: var(--accent); font-weight: 600; white-space: nowrap; }
+.result-fail { color: #ff8a8a; font-weight: 600; white-space: nowrap; }
+.level-done { color: var(--accent); white-space: nowrap; }
+/* A single case's tick while Verify plays — not the verdict, which is .result-*. */
+.mark-ok { color: var(--accent); }
+.mark-bad { color: #ff8a8a; }
 
-/* The failing row of the truth table, laid out as a table so the expected and
-   actual columns line up bit for bit — the whole point is to see which output
-   differs, not merely that one does. */
+/* ---- The truth table popover ----
+   Floats over the board, above the level bar (ui.js sets `bottom`), and
+   scrolls inside itself. Opening it is a choice, so covering part of the
+   board while it is open is fine; growing the level bar was not. */
+.level-table {
+    display: none;
+    flex-direction: column;
+    position: absolute;
+    right: 8px;
+    max-width: calc(100% - 16px);
+    max-height: 55%;
+    padding: 6px 10px 8px;
+    background: rgba(20, 20, 20, 0.96);
+    border: 1px solid var(--panel-border);
+    border-radius: 8px;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.55);
+    font-size: 13px;
+    z-index: 7;
+}
+.level-table.open { display: flex; }
+#levelTableBody { overflow-y: auto; min-height: 0; }
+.level-table-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    color: var(--text-dim);
+    font-size: 12px;
+}
+.level-table-header .icon-btn { min-height: 26px; min-width: 26px; }
+
 .result-table {
     margin-top: 6px;
     border-collapse: collapse;
@@ -678,37 +856,17 @@ html, body {
    normally floats, so inside a level that bar moves to the top-centre — the
    one strip of the canvas nothing else claims (the cell readout sits
    top-left, the save status top-right). A fixed swap rather than an offset
-   measured from the level bar, whose height changes with the brief, the hint
-   and the result table. */
+   measured from the level bar, whose height changes with the brief and the
+   hint. */
 #app.in-level .selection-actions {
     bottom: auto;
     top: max(8px, env(safe-area-inset-top));
 }
 
-
-/* The numbered walk-through on the first couple of levels. Indented under the
-   brief and styled quietly: it is scaffolding, not the level. */
-.level-steps {
-    margin: 8px 0 0;
-    padding-left: 22px;
-    color: var(--text-dim);
-    display: none;
-}
-.level-steps:not(:empty) { display: block; }
-.level-steps li { margin-bottom: 4px; }
-.level-steps b { color: var(--text); font-weight: 600; }
-
 /* ---- Truth table ----
    Every row of the run, listed up front from the headless verdict, then marked
-   off as the animated replay reaches it. Scrolls inside itself so a fifty-row
-   table cannot push the level bar over the whole board. */
-.result-table.truth {
-    display: block;
-    max-height: 34vh;
-    overflow-y: auto;
-    margin-top: 8px;
-    border-collapse: collapse;
-}
+   off as the animated replay reaches it. Lives in the popover, which scrolls. */
+.result-table.truth { margin-top: 4px; border-collapse: collapse; }
 .result-table.truth th { position: sticky; top: 0; background: #141414; }
 .result-table.truth td, .result-table.truth th { padding: 1px 7px 1px 0; }
 .result-table.truth td.idx, .result-table.truth th.idx {
@@ -725,5 +883,9 @@ html, body {
 .result-table.truth tr.ok td.mark { color: var(--accent); }
 .result-table.truth tr.bad { background: rgba(255, 138, 138, 0.14); }
 .result-table.truth tr.bad td.mark { color: #ff8a8a; }
+/* Any row can be tried by hand: a click sets the switches to it. */
+.result-table.truth tr[data-row] { cursor: pointer; }
+.result-table.truth tr[data-row]:hover td { background: rgba(255, 255, 255, 0.06); }
+.result-table.truth tr.picked td { box-shadow: inset 0 1px 0 var(--accent), inset 0 -1px 0 var(--accent); }
 /* Rows not yet reached stay dim, so the eye lands on the live one. */
-.level-result.running .result-table.truth tr:not(.active):not(.ok):not(.bad) td { opacity: 0.45; }
+.level-table.running .result-table.truth tr:not(.active):not(.ok):not(.bad) td { opacity: 0.45; }
