@@ -307,6 +307,144 @@
         }
     }
 
+    // ---- Thick wire ----
+    //
+    // Wire laid two or more cells wide is one conductor, and is drawn as
+    // one: every 2x2 square of wire is filled solid between its four
+    // centres, so a clump reads as a pad and a doubled run as a thicker
+    // wire. Drawn cell by cell, each of the four turned its own corner and
+    // the four bends made a ring round a hole — a nest of spaghetti. An
+    // outer corner whose cell is a bend (nothing else meets it there) keeps
+    // the bend's own 45° cut, so the clump's outline is the wire's.
+    function isWireCell(x, y) {
+        if (!M.inBounds(x, y)) return false;
+        const id = M.getCell(x, y);
+        return M.isConductorId(id) || M.isXover(id);
+    }
+    // The 2x2 with (x, y) its top-left corner.
+    function isClump(x, y) {
+        return isWireCell(x, y) && isWireCell(x + 1, y) && isWireCell(x, y + 1) && isWireCell(x + 1, y + 1);
+    }
+    function inClump(x, y) {
+        return isClump(x - 1, y - 1) || isClump(x, y - 1) || isClump(x - 1, y) || isClump(x, y);
+    }
+    function addClumpShape(path, x, y, cs, half) {
+        const L = panX + (x + 0.5) * cs - half, T = panY + (y + 0.5) * cs - half;
+        const R = L + cs + 2 * half, B = T + cs + 2 * half;
+        // The bend's outer cut, measured along each edge from the corner
+        // (see elbowOutline: bevel + h - h(√2 - 1)).
+        const cut = cs * ELBOW_BEVEL + half * (2 - Math.SQRT2);
+        const c = (cx, cy) => (isElbow(wireArms(cx, cy)) ? cut : 0);
+        const tl = c(x, y), tr = c(x + 1, y), br = c(x + 1, y + 1), bl = c(x, y + 1);
+        path.moveTo(L + tl, T);
+        path.lineTo(R - tr, T);
+        path.lineTo(R, T + tr);
+        path.lineTo(R, B - br);
+        path.lineTo(R - br, B);
+        path.lineTo(L + bl, B);
+        path.lineTo(L, B - bl);
+        path.lineTo(L, T + tl);
+        path.closePath();
+    }
+    // Every clump in view, wire and charge. The charge fills it only where
+    // all four cells carry it — at the thinner falling width if any is
+    // falling — so a charge still spreading through a clump shows its
+    // cells lighting one by one.
+    function addClumps(layers, x0, y0, x1, y1, hidden) {
+        const cs = cellSize();
+        for (let y = y0 - 1; y <= y1; y++)
+            for (let x = x0 - 1; x <= x1; x++) {
+                if (!isClump(x, y)) continue;
+                const four = [[x, y], [x + 1, y], [x, y + 1], [x + 1, y + 1]];
+                if (four.some(([cx, cy]) => hidden(cx, cy))) continue;
+                addClumpShape(layers.wirePath, x, y, cs, cs * WIRE_THICKNESS / 2);
+                const charges = four.map(([cx, cy]) => wireCharge(M.getCell(cx, cy)));
+                if (!charges.every((q) => q === M.ON || q === M.FALLING)) continue;
+                const frac = charges.every((q) => q === M.ON) ? CHARGE_THICKNESS_ON : CHARGE_THICKNESS_FALLING;
+                addClumpShape(layers.chargePath, x, y, cs, cs * frac / 2);
+            }
+        const lit = (x, y) => isWireCell(x, y) && [M.ON, M.FALLING].includes(wireCharge(M.getCell(x, y)));
+        for (let y = y0; y <= y1; y++)
+            for (let x = x0; x <= x1; x++) {
+                if (!isWireCell(x, y) || hidden(x, y)) continue;
+                addInsideCuts(layers.wirePath, x, y, cs, cs * WIRE_THICKNESS / 2, isWireCell);
+                const q = wireCharge(M.getCell(x, y));
+                if (q === M.ON || q === M.FALLING)
+                    addInsideCuts(layers.chargePath, x, y, cs, cs * chargeThicknessFrac(q) / 2, lit);
+            }
+    }
+
+    // Where a clump meets wire leaving it, or another clump a step along
+    // the diagonal, its outline turns a sharp inside corner: at a corner of
+    // a clumped cell's hub, between two of its arms, with no clump in the
+    // angle between them. Each is filled with a 45° cut, as an elbow fills
+    // its inside corner — and as far as keeps the outline running straight
+    // on: a cut reaching the next corner's 45° cut lines up with it, so a
+    // clump turning a corner, or a staircase of clumps, reads as one
+    // straight diagonal, as a stair of thin wire does, and wire leaving a
+    // clump flares into it. It never runs past the edge of a cell the wire
+    // does not carry on into, nor over the corner of a cell holding
+    // something else. `on` says which cells count: wire, or for the charge
+    // overlay lit wire.
+    //
+    // And where three cells of wire and a source or a lamp make a little
+    // ring — the fourth of a 2x2, wired to from both sides — the hole in
+    // the middle is filled, as a clump's is, up to the edge of the pad's
+    // own cell: it is the same nest of spaghetti with a pad in one corner.
+    function addInsideCuts(path, x, y, cs, half, on) {
+        const clump = (ax, ay) => on(ax, ay) && on(ax + 1, ay) && on(ax, ay + 1) && on(ax + 1, ay + 1);
+        const clumped = clump(x - 1, y - 1) || clump(x, y - 1) || clump(x - 1, y) || clump(x, y);
+        const arms = wireArms(x, y);
+        const cut = cs * ELBOW_BEVEL + half * (2 - Math.SQRT2);
+        // How far the outline runs straight on past this cell's hub into
+        // the neighbour (nx, ny): to the next corner's 45° cut where the
+        // wire carries on there plainly; only to the cell's edge where it
+        // stops (a lead, a pad, unlit wire); and where it turns down a
+        // stair, as far as the stair's own outer edge runs straight before
+        // it turns (h(√2 − 1), see elbowOutline), so the cut lines up with
+        // the stair's diagonal. (The cut is always on the outside of that
+        // turn: a stair turning the other way would be wire in the angle.)
+        const run = (nx, ny) => {
+            if (!on(nx, ny)) return cs / 2 - half;
+            const na = wireArms(nx, ny);
+            if (isElbow(na) && !M.isCrossoverAt(nx, ny)) {
+                const p = elbowPorts(nx, ny, na);
+                if (p.first === 'diag' || p.second === 'diag') return cs / 2 - half + half * (Math.SQRT2 - 1);
+            }
+            return cs - cut;
+        };
+        const cx = panX + (x + 0.5) * cs, cy = panY + (y + 0.5) * cs;
+        const rectTo = (ax, ay, bx, by) => path.rect(Math.min(ax, bx), Math.min(ay, by), Math.abs(bx - ax), Math.abs(by - ay));
+        for (const [sx, sy] of [[1, 1], [1, -1], [-1, 1], [-1, -1]]) {
+            if (!(sx > 0 ? arms.e : arms.w) || !(sy > 0 ? arms.s : arms.n)) continue;
+            if (clump(Math.min(x, x + sx), Math.min(y, y + sy))) continue;     // filled already
+            const dx = x + sx, dy = y + sy;
+            if (on(dx, y) && on(x, dy) && M.inBounds(dx, dy) && !isWireCell(dx, dy) && !M.isInsulatorId(M.getCell(dx, dy))
+                && wireArms(dx, y)[sy > 0 ? 's' : 'n'] && wireArms(x, dy)[sx > 0 ? 'e' : 'w']) {
+                const qx = cx + sx * half, qy = cy + sy * half;
+                rectTo(qx, qy, cx + sx * (cs - half), cy + sy * cs / 2);
+                rectTo(qx, qy, cx + sx * cs / 2, cy + sy * (cs - half));
+                continue;
+            }
+            if (!clumped) continue;
+            let L = Math.min(run(x + sx, y), run(x, y + sy));
+            // The cell in the angle: bare board can take the cut's tip;
+            // anything else keeps its corner clear.
+            if (M.inBounds(x + sx, y + sy) && !M.isInsulatorId(M.getCell(x + sx, y + sy)) && !isWireCell(x + sx, y + sy))
+                L = Math.min(L, cs - 2 * half);
+            if (L <= 0) continue;
+            const qx = cx + sx * half, qy = cy + sy * half;
+            // Wound the same way as every other shape in the path (see
+            // elbowOutline), or the overlap would cancel under nonzero fill.
+            const a = [qx + sx * L, qy], b = [qx, qy + sy * L];
+            const [p1, p2] = sx * sy > 0 ? [a, b] : [b, a];
+            path.moveTo(qx, qy);
+            path.lineTo(p1[0], p1[1]);
+            path.lineTo(p2[0], p2[1]);
+            path.closePath();
+        }
+    }
+
     // `layers` bundles every shared Path2D (plus the mux-indicator list/set)
     // accumulated across the current drawGrid pass, all filled once after
     // the per-cell loop rather than per-cell — see the comment above
@@ -326,7 +464,10 @@
         if (M.isConductorId(id) || M.isXover(id)) {
             // The wire no longer fills the cell; the substrate base fill (see
             // drawGrid) already shows through the gaps around it.
-            if (M.isCrossoverAt(x, y)) {
+            // A crossing inside a clump is no crossing to look at: the
+            // clump joins two of its arms round the corner, so its two runs
+            // are one wire, and it is drawn as a plain junction.
+            if (M.isCrossoverAt(x, y) && !inClump(x, y)) {
                 addCrossoverWire(layers.wirePath, px, py, cs);
                 const vCharge = M.isXover(id) ? M.xoverV(id) : M.conductorCharge(id);
                 const hCharge = M.isXover(id) ? M.xoverH(id) : M.conductorCharge(id);
@@ -380,6 +521,13 @@
     }
 
     function isLedAt(x, y) { return M.inBounds(x, y) && M.isLed(M.getCell(x, y)); }
+    // Whether the pad at (x, y) has its (sx, sy) corner inside a little ring
+    // of wire: wired to from both sides, with wire in the cell between —
+    // where addInsideCuts fills the hole, up to this cell's edge.
+    function padCornerInRing(x, y, sx, sy, arms) {
+        return (sx > 0 ? arms.e : arms.w) && (sy > 0 ? arms.s : arms.n)
+            && isWireCell(x + sx, y) && isWireCell(x, y + sy) && isWireCell(x + sx, y + sy);
+    }
 
     // Output LED: a red cell, dark when off, bright when on — added to a
     // shared per-color path (see drawCell) rather than filled immediately,
@@ -391,11 +539,14 @@
     // shared with a same-blob neighbor.
     const LED_BEVEL_FRAC = 0.3;
     function addLedShape(path, x, y, px, py, cs) {
+        // A corner inside a ring of wire stays square, to meet the wire
+        // filling the ring (see addInsideCuts) rather than leave a notch.
+        const arms = wireArms(x, y);
         const cut = {
-            nw: !isLedAt(x - 1, y) && !isLedAt(x, y - 1),
-            ne: !isLedAt(x + 1, y) && !isLedAt(x, y - 1),
-            se: !isLedAt(x + 1, y) && !isLedAt(x, y + 1),
-            sw: !isLedAt(x - 1, y) && !isLedAt(x, y + 1),
+            nw: !isLedAt(x - 1, y) && !isLedAt(x, y - 1) && !padCornerInRing(x, y, -1, -1, arms),
+            ne: !isLedAt(x + 1, y) && !isLedAt(x, y - 1) && !padCornerInRing(x, y, 1, -1, arms),
+            se: !isLedAt(x + 1, y) && !isLedAt(x, y + 1) && !padCornerInRing(x, y, 1, 1, arms),
+            sw: !isLedAt(x - 1, y) && !isLedAt(x, y + 1) && !padCornerInRing(x, y, -1, 1, arms),
         };
         if (!cut.nw && !cut.ne && !cut.se && !cut.sw) { path.rect(px, py, cs, cs); return; }
         addChamferedRect(path, px, py, cs, cut, cs * LED_BEVEL_FRAC);
@@ -473,10 +624,25 @@
         ctx.fillRect(px, py, cs, cs);
         const cx = px + cs / 2, cy = py + cs / 2;
         const arms = wireArms(x, y);
+        // A corner inside a ring of wire is filled, wire and then charge,
+        // so the ring's middle (see addInsideCuts) is solid right up to the
+        // circle, which goes on top.
+        const corners = [[1, 1], [1, -1], [-1, 1], [-1, -1]].filter(([sx, sy]) => padCornerInRing(x, y, sx, sy, arms));
+        const cornerTo = (sx, sy, half) => {
+            const ax = cx + sx * cs / 2, ay = cy + sy * cs / 2, bx = cx + sx * half, by = cy + sy * half;
+            ctx.fillRect(Math.min(ax, bx), Math.min(ay, by), Math.abs(bx - ax), Math.abs(by - ay));
+        };
+        ctx.fillStyle = COLOR_CONDUCTOR;
+        for (const [sx, sy] of corners) cornerTo(sx, sy, cs * WIRE_THICKNESS / 2);
         if (arms.n) addSourceArmStub(px, py, cs, cx, cy, 0, -1, positive);
         if (arms.s) addSourceArmStub(px, py, cs, cx, cy, 0, 1, positive);
         if (arms.e) addSourceArmStub(px, py, cs, cx, cy, 1, 0, positive);
         if (arms.w) addSourceArmStub(px, py, cs, cx, cy, -1, 0, positive);
+        ctx.fillStyle = COLOR_CHARGE;
+        const lit = (ax, ay) => [M.ON, M.FALLING].includes(wireCharge(M.getCell(ax, ay)));
+        for (const [sx, sy] of corners)
+            if (lit(x + sx, y) && lit(x, y + sy) && lit(x + sx, y + sy))
+                cornerTo(sx, sy, cs * (positive ? CHARGE_THICKNESS_ON : CHARGE_THICKNESS_FALLING) / 2);
         drawSourceCircleGlyph(cx, cy, cs, positive);
     }
 
@@ -485,18 +651,13 @@
     // sitting on the board, with silvery SOIC leads at exactly the faces that
     // carry a connection.
     //
-    // The outline follows the model's three states (see buildBoxMux). Fresh
-    // out of the tool it is a plain rounded rectangle — six gray pixels with
-    // no orientation yet (`boxIdle`), so no leads and nothing printed on it.
-    // A wire on a long side settles which way round it goes (`boxFrame`):
-    // the package becomes the mux's trapezoid and grows the three leads that
-    // are now known — COM and both pins. The first wire to land on a corner
-    // is SELECT and fixes the rest, adding the fourth lead and the
-    // silkscreen.
+    // The package is the mux's trapezoid, tapering toward COM, with a lead
+    // at each of its four live faces — SELECT, COM and the two pins — and
+    // the silkscreen (or, with labels on, the pins' names).
     const BOX_PKG_INSET = 0.15;   // package edge, in from the footprint
     const BOX_PKG_RADIUS = 0.24;
-    // Once the axis is known the package tapers toward COM — the mux's own
-    // trapezoid, but softened into something that still reads as a part:
+    // It tapers toward COM — the mux's own trapezoid, but softened into
+    // something that still reads as a part:
     // a shallow taper, rounded corners, and a shallow notch in the middle of
     // the wide side, where nothing connects.
     const BOX_TAPER = 0.2;
@@ -510,8 +671,7 @@
     const BOX_PIN1_R = 0.13, BOX_PIN1_U = 0.58;
 
     // Queues one mux part, deduped by key: every cell of the macro hands over
-    // the same frame. An unwired package carries only a footprint (no
-    // orientation, hence no leads or silkscreen).
+    // the same frame.
     function queueBoxPart(layers, key, part) {
         if (layers.queuedBoxKeys.has(key)) return;
         layers.queuedBoxKeys.add(key);
@@ -535,19 +695,10 @@
         return p;
     }
 
-    // The package body. With no orientation yet it's a plain rounded
-    // rectangle over the footprint, inset so the leads have somewhere to
-    // emerge from; once the axis is known it tapers toward COM and picks up
-    // the notch (see BOX_TAPER).
+    // The package body: inset from the footprint so the leads have somewhere
+    // to emerge from, tapering toward COM, with the notch (see BOX_TAPER).
     function boxPackagePath(frame, cs) {
-        const I = BOX_PKG_INSET, rect = frame.rect;
-        if (!frame.toward) {
-            const p = new Path2D();
-            const w = rect.w * cs - 2 * I * cs, h = rect.h * cs - 2 * I * cs;
-            p.roundRect(panX + rect.x * cs + I * cs, panY + rect.y * cs + I * cs,
-                w, h, Math.min(BOX_PKG_RADIUS * cs, w / 2, h / 2));
-            return p;
-        }
+        const I = BOX_PKG_INSET;
         // (u, v) cell frame: u along the long axis from the first end, v
         // across from the COM side. The COM edge is pulled in at both ends.
         const along = frame.along, toward = frame.toward;
@@ -655,7 +806,7 @@
         ctx.strokeStyle = COLOR_BOX_OUTLINE;
         ctx.lineWidth = Math.max(1, cs * BOX_OUTLINE_FRAC);
         ctx.stroke(body);
-        const labelled = pinLabels && frame.toward && pinLabelPx(cs) * dpr >= PIN_LABEL_MIN_DEVICE_PX;
+        const labelled = pinLabels && pinLabelPx(cs) * dpr >= PIN_LABEL_MIN_DEVICE_PX;
         if (labelled) drawPinLabels(frame, part.macro, cs);
         else if (part.macro) drawBoxSilk(part.macro, cs);
     }
@@ -663,23 +814,15 @@
     function drawMuxPixel(x, y, id, px, py, cs, layers) {
         const role = M.roles[M.idx(x, y)];
 
-        // Mux material that isn't a 3x2 (yet) is plain dark body, whatever
-        // its size: inert, and drawn as the part it is not yet.
-        if (!role || role.kind === 'isolatedGray') {
+        // Mux cells that make up no whole mux are plain dark body: inert.
+        if (!role || !role.macro) {
             layers.muxBodyPath.rect(px, py, cs, cs);
             return;
         }
 
         // The whole macro draws as one surface-mount part rather than
         // per-cell squares, so its cells contribute nothing here — each just
-        // hands over the frame it belongs to. See drawBoxPart. Uncommissioned
-        // states carry a frame but no macro: a blank package with no
-        // orientation, or a trapezoid with three of its leads once a long
-        // side has said which way round it goes.
-        if (role.kind === 'boxIdle' || role.kind === 'boxFrame') {
-            queueBoxPart(layers, role.frame.key, { frame: role.frame, macro: null });
-            return;
-        }
+        // hands over the frame it belongs to. See drawBoxPart.
         const m = role.macro;
         queueBoxPart(layers, m.key, { frame: m, macro: m });
     }
@@ -722,6 +865,13 @@
         if (cs < 5) return;
         ctx.save();
         const hatch = new Path2D(), dots = new Path2D();
+        // A pin wired on one of its terminals needs no other one marked:
+        // the cells beside its lead that would also take it are only
+        // alternatives, and once it is connected they are just clutter.
+        const wired = new Set();
+        if (!strong)
+            for (const e of ring)
+                if (e.cls === 'T' && e.pin >= 0 && M.inBounds(e.x, e.y) && !M.isInsulatorId(M.getCell(e.x, e.y))) wired.add(e.pin);
         for (const e of ring) {
             const px = panX + e.x * cs, py = panY + e.y * cs;
             if (px > viewW || py > viewH || px + cs < 0 || py + cs < 0) continue;
@@ -731,7 +881,7 @@
                     else { hatch.moveTo(px + (t - 1) * cs, py + cs); hatch.lineTo(px + cs, py + (t - 1) * cs); }
                 }
             } else if (e.cls === 'T') {
-                if (!strong && M.inBounds(e.x, e.y) && !M.isInsulatorId(M.getCell(e.x, e.y))) continue;
+                if (!strong && (wired.has(e.pin) || (M.inBounds(e.x, e.y) && !M.isInsulatorId(M.getCell(e.x, e.y))))) continue;
                 ctx.strokeStyle = strong ? (bad ? '#ff8a8a' : COLOR_OUTLINE) : 'rgba(195, 200, 206, 0.7)';
                 ctx.lineWidth = Math.max(1, cs * 0.05);
                 ctx.setLineDash([Math.max(2, cs * 0.12), Math.max(2, cs * 0.1)]);
@@ -1022,6 +1172,7 @@
         for (let y = y0; y <= y1; y++)
             for (let x = x0; x <= x1; x++)
                 if (!shut.size || !underLid(x, y)) drawCell(x, y, layers);
+        addClumps(layers, x0, y0, x1, y1, (x, y) => shut.size > 0 && underLid(x, y));
         ctx.fillStyle = COLOR_GRAY_BODY;
         ctx.fill(layers.muxBodyPath);
         // Mux parts go in with the rest of the mux bodies — under the
@@ -1078,6 +1229,8 @@
             drawLid(partPreview, cs, { bad: !partPreview.ok });
         }
         if (partOutline) drawPartOutline(cs);
+        if (stampPreview && stampPreview.leads) drawLeadMarks(stampPreview.leads, cs,
+            stampPreview.ok ? 'rgba(195, 200, 206, 0.95)' : 'rgba(255, 138, 138, 0.9)');
         if (stampPreview) drawCellsOutline(stampPreview.cells, cs,
             stampPreview.ok ? 'rgba(52, 52, 52, 0.55)' : 'rgba(255, 90, 90, 0.18)',
             stampPreview.ok ? 'rgba(235, 235, 235, 0.9)' : '#ff8a8a', false);
@@ -1131,6 +1284,33 @@
         ctx.restore();
     }
 
+    // A mux's four leads, before it is there: a stub out of each lead's
+    // face, named when there is room — so the MUX tool's preview, and a
+    // tutorial's ghost, show which way round the part goes. `leads`:
+    // [{x, y, d, name}], d a direction (0 N, 1 E, 2 S, 3 W).
+    const LEAD_DIRS = [[0, -1], [1, 0], [0, 1], [-1, 0]];
+    function drawLeadMarks(leads, cs, color) {
+        ctx.save();
+        ctx.fillStyle = color;
+        const t = cs * 0.3, len = cs * 0.42;
+        for (const { x, y, d } of leads) {
+            const [dx, dy] = LEAD_DIRS[d];
+            const cx = panX + (x + 0.5) * cs, cy = panY + (y + 0.5) * cs;
+            const ex = cx + dx * cs / 2, ey = cy + dy * cs / 2;   // the face
+            if (dx) ctx.fillRect(Math.min(ex, ex + dx * len), ey - t / 2, len, t);
+            else ctx.fillRect(ex - t / 2, Math.min(ey, ey + dy * len), t, len);
+        }
+        const px = Math.min(cs * 0.34, 11);
+        if (px * dpr >= 8) {
+            ctx.font = `700 ${px}px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            for (const { x, y, name } of leads)
+                if (name) ctx.fillText(name, panX + (x + 0.5) * cs, panY + (y + 0.5) * cs);
+        }
+        ctx.restore();
+    }
+
     function drawTargetRect(cs) {
         const r = targetRect;
         const x = panX + r.x0 * cs, y = panY + r.y0 * cs;
@@ -1159,9 +1339,14 @@
     const GUIDE_FILL = { gray: 'rgba(52, 52, 52, 0.5)', conductor: 'rgba(10, 144, 0, 0.45)' };
     function drawGuide(cs) {
         const todo = guide.cells.filter(([x, y]) => M.colorOfCell(M.getCell(x, y)) !== guide.color);
-        if (!todo.length) return;
-        drawCellsOutline(todo, cs, GUIDE_FILL[guide.color] || 'rgba(255,255,255,0.1)',
+        if (todo.length) drawCellsOutline(todo, cs, GUIDE_FILL[guide.color] || 'rgba(255,255,255,0.1)',
             'rgba(235, 235, 235, 0.85)', true);
+        // A part's ghost says which way round it goes: its leads, until a
+        // mux there has each one where the ghost has it.
+        if (guide.leads) {
+            const unmet = guide.leads.filter(({ x, y, d }) => !(M.isGrayId(M.getCell(x, y)) && M.cellConnects(x, y, LEAD_DIRS[d])));
+            if (unmet.length) drawLeadMarks(guide.leads, cs, 'rgba(235, 235, 235, 0.8)');
+        }
     }
 
     // Translucent wash over each cell of the grabbed object, outlined only

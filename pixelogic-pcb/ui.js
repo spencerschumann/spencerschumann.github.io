@@ -453,13 +453,13 @@
     }
     function stampFloat() {
         M.restoreStructuralSnapshot(floatBase);
-        M.pasteRegion(clipboard, floatPos.x, floatPos.y); // may clip against the not-yet-grown grid
+        M.pasteRegion(clipboard, floatPos.x, floatPos.y, { replace: true }); // may clip against the not-yet-grown grid
         // Grow the grid immediately if the float reaches the border — waiting
         // until commit is too late, the grid would already be back to this
         // size by the next stampFloat. Then re-paste: growing just now may
         // have made room for the part the first paste above had to clip off.
         expandFloatBase(applyExpansion());
-        M.pasteRegion(clipboard, floatPos.x, floatPos.y);
+        M.pasteRegion(clipboard, floatPos.x, floatPos.y, { replace: true });
         setSelection({
             x0: floatPos.x, y0: floatPos.y,
             x1: Math.min(M.GRID_W - 1, floatPos.x + clipboard.w - 1),
@@ -737,6 +737,8 @@
         afterEdit();
     }
     function doMirror() {
+        // With the MUX tool out, M flips the part the next click places.
+        if (drawMode === 'gray') { mirrorStamp(); return; }
         if (drawMode === 'paste' && floatBase) { clipboard = mirrorClip(clipboard); stampFloat(); return; }
         if (drawMode === 'part') { turnPart(true); return; }
         if (drawMode !== 'select' || !selection) return;   // only a region you can see
@@ -1381,21 +1383,24 @@
     }
 
     // ---- The MUX tool: a whole part per click ----
-    // A mux is a solid 3x2 and nothing else is, so the tool places all six
-    // cells at once — a lone cell of mux material is never any use. It lies
-    // down (3 wide) or stands up (3 tall), and the MUX button's swatch shows
-    // which. R turns the next one, and so does picking MUX again — tapping
-    // its button, for a touchscreen, or pressing 3 once more; clicking a
-    // blank part already on the board turns that one. A tutorial's ghost
-    // outline does NOT snap the part into place: a part placed the wrong way
-    // round is how you find out it can be turned.
+    // A mux is six cells that say what each is — control, COM, the two pins,
+    // the switch and plain body — so the tool places a whole one, the way
+    // round it is set: R turns the next one a quarter, and so does picking
+    // MUX again (tapping its button, for a touchscreen, or pressing 3 once
+    // more); M flips it end for end, which puts its control on the other
+    // side. Those are all eight ways round. The preview shows its four
+    // leads, named, so it is plain where each wire goes before it is down,
+    // and the MUX button's swatch stands up with it. Clicking a mux with
+    // nothing wired to it turns that one. A tutorial's ghost outline does NOT
+    // snap the part into place: a part placed the wrong way round is how you
+    // find out it can be turned.
     //
     // The part is centred on the pointer, not hung off the cell under it:
     // along its 3-cell side the middle cell is the one under the pointer,
     // and along its 2-cell side the seam between its halves is the grid line
     // nearest the pointer. So the outline sits where the hand is, and moves
     // over by a cell as the pointer crosses a cell's middle.
-    let stampVertical = false;
+    let stampRot = 0, stampMirror = false;
     // Where the mouse is over the board, in canvas pixels; null once it has
     // left. Kept whatever the tool, so picking MUX shows the part at once,
     // under a mouse that has not moved.
@@ -1408,16 +1413,27 @@
         return { fx: (sx - V.panX) / cs, fy: (sy - V.panY) / cs };
     }
 
-    function setStampVertical(v) {
-        stampVertical = v;
-        document.querySelector('.tool-btn[data-tool="gray"]').classList.toggle('stands', v);
+    function setStampOrientation(rot, mirror) {
+        stampRot = ((rot % 4) + 4) % 4;
+        stampMirror = !!mirror;
+        document.querySelector('.tool-btn[data-tool="gray"]').classList.toggle('stands', stampRot % 2 === 1);
         refreshStampPreview();
         V.drawGrid();
     }
-
+    // Where the next mux's COM and control face, in words.
+    function stampWords() {
+        const side = ['up', 'right', 'down', 'left'];
+        const list = M.muxLayout(0, 0, stampRot, stampMirror);
+        const lead = (kind) => { const c = list.find(([, , id]) => M.muxCellKind(id) === kind); return side[M.muxLead(c[2])]; };
+        return `Mux: COM out ${lead('com')}, SEL out ${lead('sel')}`;
+    }
     function turnStamp() {
-        setStampVertical(!stampVertical);
-        flashStatus(stampVertical ? 'Mux: standing up' : 'Mux: lying down');
+        setStampOrientation(stampRot + 1, stampMirror);
+        flashStatus(stampWords());
+    }
+    function mirrorStamp() {
+        setStampOrientation(stampRot, !stampMirror);
+        flashStatus(stampWords());
     }
 
     // The tutorial's ghost part, if one is showing: its cells, and whether it
@@ -1429,44 +1445,32 @@
         return { cells: g.cells, stands: Math.max(...ys) - Math.min(...ys) > Math.max(...xs) - Math.min(...xs) };
     }
 
-    // The six cells a part centred on `p` (fractional cells) covers. The
-    // cell under the pointer is always one of them.
+    // The mux a click centred on `p` (fractional cells) puts down, the way
+    // round the tool is set: [[x, y, id]] (see M.muxLayout). The cell under
+    // the pointer is always one of them.
     function stampCells(p) {
-        // Turned to match a ghost and clicked anywhere on it: exactly the
-        // ghost. Turned the other way it lands as it is — how else would
+        // Standing the way a ghost stands and clicked anywhere on it: exactly
+        // on the ghost. The other way it lands as it is — how else would
         // anyone learn it turns?
         const cx = Math.floor(p.fx), cy = Math.floor(p.fy);
+        const stands = stampRot % 2 === 1, w = stands ? 2 : 3, h = stands ? 3 : 2;
         const ghost = ghostPart();
-        if (ghost && ghost.stands === stampVertical && ghost.cells.some(([x, y]) => x === cx && y === cy)) return ghost.cells;
-        const w = stampVertical ? 2 : 3, h = stampVertical ? 3 : 2;
-        const x0 = Math.round(p.fx - w / 2), y0 = Math.round(p.fy - h / 2);
-        const cells = [];
-        for (let y = y0; y < y0 + h; y++) for (let x = x0; x < x0 + w; x++) cells.push([x, y]);
-        return cells;
+        if (ghost && ghost.stands === stands && ghost.cells.some(([x, y]) => x === cx && y === cy))
+            return M.muxLayout(Math.min(...ghost.cells.map((c) => c[0])), Math.min(...ghost.cells.map((c) => c[1])), stampRot, stampMirror);
+        return M.muxLayout(Math.round(p.fx - w / 2), Math.round(p.fy - h / 2), stampRot, stampMirror);
     }
+    // Its four leads, for the preview.
+    const LEAD_NAMES = { sel: 'SEL', com: 'COM', no: 'NO', nc: 'NC' };
+    const stampLeads = (list) => list.filter(([, , id]) => M.muxLead(id) >= 0)
+        .map(([x, y, id]) => ({ x, y, d: M.muxLead(id), name: LEAD_NAMES[M.muxCellKind(id)] }));
 
-    // Why a part cannot go here, or null if it can. Touching another part's
-    // material would merge the two into one blob that is neither.
+    // Why a mux cannot go here, or null if it can. It goes where it is put,
+    // as a paste does: whatever is in its way is replaced (M.muxClearance)
+    // — a mux it covers, whole; a part under it, or whose edge it would sit
+    // on, whole — but a level's pad.
     function stampBlocked(list) {
-        const set = new Set(list.map(([x, y]) => x + ',' + y));
-        for (const [x, y] of list) {
-            if (!M.inBounds(x, y)) return 'No room for a mux here';
-            if (M.blockAtCell(x, y)) return 'That is a part — a mux cannot go on it';
-            if (M.isTerminalCell(x, y)) return 'That is a part’s terminal — a mux cannot go on it';
-            if (M.isProtected(x, y) && !M.isLocked(x, y)) return 'A part keeps that clear';
-            // Wire is overwritten: a mux goes where it is put, and the wire
-            // under it goes. Anything else is in the way.
-            const id = M.getCell(x, y);
-            if (M.isLocked(x, y) || !(M.isInsulatorId(id) || M.isWireId(id))) return 'A mux needs six cells of empty board or wire';
-        }
-        for (const [x, y] of list) {
-            for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-                const nx = x + dx, ny = y + dy;
-                if (set.has(nx + ',' + ny) || !M.inBounds(nx, ny)) continue;
-                if (M.isGrayId(M.getCell(nx, ny))) return 'Two muxes cannot touch — leave a gap';
-            }
-        }
-        return null;
+        const cl = M.muxClearance(list.map(([x, y]) => [x, y]));
+        return cl.why || null;
     }
 
     // Shows where the MUX tool would put its part, from the mouse's last
@@ -1482,7 +1486,7 @@
         let preview = null;
         if (c && M.inBounds(c.x, c.y) && !M.isGrayId(M.getCell(c.x, c.y))) {
             const list = stampCells(p);
-            preview = { cells: list, ok: !stampBlocked(list) };
+            preview = { cells: list.map(([x, y]) => [x, y]), leads: stampLeads(list), ok: !stampBlocked(list) };
         }
         V.setStampPreview(preview);
         let partPreview = null;
@@ -1511,16 +1515,16 @@
         const c = { x: Math.floor(p.fx), y: Math.floor(p.fy) };
         if (!M.inBounds(c.x, c.y)) return;
         if (M.isGrayId(M.getCell(c.x, c.y))) {
-            const role = M.roles[M.idx(c.x, c.y)];
-            if (role && role.kind === 'boxIdle') turnBlankPart(c);
-            else flashStatus('Already wired — Rearrange moves it, Erase removes it');
+            if (muxIsBare(c)) turnBareMux(c);
+            else flashStatus('Already wired — Rearrange moves it (R turns it as you drag), Erase removes it');
             return;
         }
         const list = stampCells(p);
         const why = stampBlocked(list);
         if (why) { flashStatus(why); return; }
         beginUndoBatch();
-        M.paintCells(list, 'gray');
+        M.applyClearance(M.muxClearance(list.map(([x, y]) => [x, y])));
+        M.stampMux(list);
         endUndoBatch();
         applyExpansion();
         refreshStampPreview();
@@ -1528,17 +1532,19 @@
     }
 
     // ---- The Parts tool: a whole part per click ----
-    // Centred on the pointer like the mux. It needs empty board under every
-    // cell; in the sandbox, a part reaching past the edge grows the board to
-    // take it, as drawing there would.
+    // Centred on the pointer like the mux. It replaces what is under it; in
+    // the sandbox, a part reaching past the edge grows the board to take it,
+    // as drawing there would.
     function partAnchor(p) {
         const c = placingPart.clip;
         return { x: Math.round(p.fx - c.w / 2), y: Math.round(p.fy - c.h / 2) };
     }
-    // The model says where a part may go — its core on empty board, its edge
-    // agreeing with what is round it (see M.blockFits). The sandbox grows to
-    // take one that reaches past its edge.
-    const partBlocked = (at) => M.blockFits(placingPart.clip, at.x, at.y, { grow: !gameLevel });
+    // The model says where a part may go — its edge agreeing with what is
+    // round it (see M.blockFits). The sandbox grows to take one that reaches
+    // past its edge. What is under it is replaced, as a paste replaces it
+    // (clearanceFor, in the model): only another part, a level's pad, or
+    // something solid against its edge is in the way.
+    const partBlocked = (at) => M.blockFits(placingPart.clip, at.x, at.y, { grow: !gameLevel, replace: true });
     function placePartAt(p) {
         if (!placingPartValid()) { openComponents(); return; }
         // A press on a part already there is the first half of a double-
@@ -1563,7 +1569,7 @@
             // A copy to work on: its circuit loose, remembered as the part it
             // came from, and the tool put down — one copy is what editing
             // wants.
-            M.pasteRegion(M.decapClip(placingPart.clip), at.x, at.y);
+            M.pasteRegion(M.decapClip(placingPart.clip), at.x, at.y, { replace: true });
             rememberEdit(placingPart.key, placingPart.pins.map((q) => ({ ...q, at: q.at && [at.x + q.at[0], at.y + q.at[1]] })),
                 { x0: at.x, y0: at.y, x1: at.x + placingPart.clip.w - 1, y1: at.y + placingPart.clip.h - 1 });
             endUndoBatch();
@@ -1574,7 +1580,7 @@
             afterEdit();
             return;
         }
-        M.pasteRegion(placingPart.clip, at.x, at.y);
+        M.pasteRegion(placingPart.clip, at.x, at.y, { replace: true });
         endUndoBatch();
         applyExpansion();
         afterEdit();
@@ -1652,24 +1658,31 @@
         return best;
     }
 
-    // A blank part turns a quarter in place — only a blank one, since a wired
-    // part's orientation is what its wires say it is.
-    function turnBlankPart(c) {
+    // Whether the mux at `c` has nothing on any of its leads.
+    function muxIsBare(c) {
+        const role = M.roles[M.idx(c.x, c.y)];
+        if (!role || !role.macro) return true;
+        return role.macro.leads.every(([[lx, ly], [dx, dy]]) => !M.inBounds(lx + dx, ly + dy) || M.isInsulatorId(M.getCell(lx + dx, ly + dy)));
+    }
+    // A mux with nothing wired to it turns a quarter in place — only a bare
+    // one: a wired one turned would take its wires with it, which is what
+    // Rearrange is for.
+    function turnBareMux(c) {
         beginUndoBatch();
         const res = M.moveObjects([{ cells: M.grayBlob(c.x, c.y) }], 0, 0, 1);
-        // Turned to match a ghost it overlaps, it settles onto the ghost: a
-        // quarter turn about its middle can leave it a cell off.
+        // Turned to stand the way a ghost it overlaps stands, it settles onto
+        // the ghost, keeping the way round it now is: a quarter turn about
+        // its middle can leave it a cell off.
         const ghost = ghostPart();
         if (res.ok && ghost) {
             const turned = res.objects[0].cells;
             const key = ([x, y]) => x + ',' + y, mine = new Set(turned.map(key));
-            const ys = turned.map((t) => t[1]), xs = turned.map((t) => t[0]);
+            const xs = turned.map((t) => t[0]), ys = turned.map((t) => t[1]);
             const stands = Math.max(...ys) - Math.min(...ys) > Math.max(...xs) - Math.min(...xs);
+            const gx = Math.min(...ghost.cells.map((g) => g[0])), gy = Math.min(...ghost.cells.map((g) => g[1]));
             const free = ghost.cells.every((g) => mine.has(key(g)) || M.isInsulatorId(M.getCell(g[0], g[1])));
-            if (stands === ghost.stands && free && ghost.cells.some((g) => mine.has(key(g)))) {
-                M.clearCells(turned);
-                M.paintCells(ghost.cells, 'gray');
-            }
+            if (stands === ghost.stands && free && ghost.cells.some((g) => mine.has(key(g))))
+                M.moveObjects([{ cells: turned }], gx - Math.min(...xs), gy - Math.min(...ys), 0);
         }
         endUndoBatch();
         if (!res.ok) {
@@ -2129,19 +2142,15 @@
         if (M.isSwitch(id)) return M.switchIsPressed(id) ? 'switch, held' : 'switch';
         if (M.isToggle(id)) return M.toggleIsOn(id) ? 'toggle, on' : 'toggle, off';
         const role = M.roles[M.idx(x, y)];
-        if (!role || role.kind === 'isolatedGray') return 'mux, unfinished — inert until it is a solid 3×2';
+        if (!role || !role.macro) return 'mux material — not part of a whole mux, so inert';
         const m = role.macro;
-        const at = (p) => p && p[0] === x && p[1] === y;
         switch (role.kind) {
-            case 'boxIdle': return 'mux, unwired — wire the middle of a long side for COM';
-            case 'boxFrame': return 'mux, no SELECT yet — wire a corner of the COM side';
             case 'end': return role.isFirst === m.selIsFirst
                 ? 'mux NO pin — joined to COM while SELECT is on'
                 : 'mux NC pin — joined to COM while SELECT is off';
-            case 'comMiddle':
-                if (at(m.comCell)) return 'mux COM';
-                if (at(m.selCorner)) return 'mux SELECT';
-                return 'mux';
+            case 'com': return 'mux COM';
+            case 'sel': return 'mux SELECT';
+            case 'switch': return 'mux switch — joins COM to NO or NC';
             default: return 'mux';
         }
     }

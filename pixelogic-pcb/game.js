@@ -74,13 +74,17 @@
     // The mux tutorial's circuit, as the ghosts it draws — paint by numbers.
     // The part stands on end in the middle of the board (pads at SEL (1,1),
     // A (1,3), B (1,5) and Q (9,4) — see the level's padRows), so COM faces
-    // Q and each pin faces its own switch. The MUX tool lays a part down by
-    // default, so matching the outline means turning one — which is the
+    // Q, SEL faces up toward its switch's row, and each pin faces its own
+    // switch. The MUX tool lays a part down by default, with COM out the top,
+    // so matching the outline means turning one a quarter — which is the
     // point: it is the moment to learn R. Once the part is in place, every
     // wire is ghosted at once, to be traced in any order. tests/game.test.js
     // traces them and verifies the result.
     const MUX_GHOST = [[5, 3], [6, 3], [5, 4], [6, 4], [5, 5], [6, 5]];
     const MUX_COM = [6, 4], MUX_SEL = [6, 3];
+    // Its leads, as the ghost draws them: d is 0 up, 1 right, 2 down, 3 left.
+    const MUX_LEADS = [{ x: 6, y: 3, d: 0, name: 'SEL' }, { x: 6, y: 4, d: 1, name: 'COM' },
+        { x: 5, y: 3, d: 3, name: 'NO' }, { x: 5, y: 5, d: 3, name: 'NC' }];
     const MUX_WIRES = {
         com: [[7, 4], [8, 4]],
         sel: [[6, 2], [6, 1], [5, 1], [4, 1], [3, 1], [2, 1]],
@@ -94,14 +98,16 @@
     // swaps NO and NC). Cells already drawn drop out in the view.
     function muxWireGhosts(b) {
         if (!b.is(MUX_GHOST, 'gray')) return null;
-        // The part on the outline, once its COM side is known: its COM is
-        // one of the outline's two long-side middles.
+        // The part on the outline: its COM is one of the outline's two
+        // long-side middles.
         const part = b.parts().find((p) => p.com && (b.same(p.com, MUX_COM) || b.same(p.com, [5, 4])));
         if (part && !b.same(part.com, MUX_COM)) return null;
         const wires = [MUX_WIRES.com];
         if (!part || part.state !== 'mux' || b.same(part.sel, MUX_SEL)) wires.push(MUX_WIRES.sel, MUX_WIRES.a, MUX_WIRES.b);
         return { cells: [].concat(...wires), color: 'conductor' };
     }
+    // Is the mux on the outline, the outline's way round?
+    const muxOnGhost = (b) => b.muxes().some((m) => b.same(m.com, MUX_COM) && b.same(m.sel, MUX_SEL));
 
     // ===== Levels =====
     //
@@ -222,22 +228,23 @@
                 + 'picks one of two inputs. Make Q follow A while SEL is on, and B while it is off.',
             pinLabels: true,
             tools: ['conductor', 'insulator', 'gray'],
-            // The part is placed on a ghost outline, standing up. The MUX
-            // tool lays parts down, so matching the outline means turning
-            // one — and a blank part that landed any other way is answered
-            // with how to turn it, not waved through.
+            // The part is placed on a ghost outline, standing up, its leads
+            // drawn. The MUX tool lays parts down, so matching the outline
+            // means turning one — and a part that landed any other way is
+            // answered with how to turn it, not waved through.
             coach: [
                 {
-                    text: (b) => (b.parts().length && !b.is(MUX_GHOST, 'gray')
-                        ? 'Not quite on the outline. Click the part to turn it, or erase it '
-                            + '(<b>2</b>) and place it again.'
-                        : 'A solid <b>3&times;2</b> of MUX is a mux. Pick <b>MUX</b> (<b>3</b>); '
-                            + 'this one stands up, so press <b>R</b> (or tap MUX again) to turn it, '
-                            + 'then click the outline.'),
-                    guide: () => ({ cells: MUX_GHOST, color: 'gray' }),
-                    // On the outline — or wired up wherever it is, for a
-                    // player who knows what they are doing.
-                    done: (b) => b.is(MUX_GHOST, 'gray') || b.parts().some((p) => p.state !== 'idle'),
+                    text: (b) => (b.parts().length && !muxOnGhost(b)
+                        ? 'Not quite the outline’s way round. Click the part to turn it (or erase '
+                            + 'it with <b>2</b> and place it again), until its leads match the outline’s.'
+                        : 'A mux is a 3&times;2 part with four leads: <b>SEL</b>, <b>COM</b>, '
+                            + '<b>NO</b> and <b>NC</b>. Pick <b>MUX</b> (<b>3</b>); this one stands up, '
+                            + 'COM toward Q, so press <b>R</b> (or tap MUX again) to turn it until '
+                            + 'its leads match the outline’s, then click the outline. (<b>M</b> flips it.)'),
+                    guide: () => ({ cells: MUX_GHOST, color: 'gray', leads: MUX_LEADS }),
+                    // On the outline the right way round — or COM wired to Q
+                    // wherever it is, for a player who knows what they are doing.
+                    done: (b) => muxOnGhost(b) || b.muxes().some((m) => b.reaches(m.com, 'Q')),
                 },
                 // From here the dashes show every wire, to trace in any order;
                 // each step says what one of them is for, and ticks off when
@@ -249,7 +256,7 @@
                     done: (b) => b.parts().some((p) => p.com && b.reaches(p.com, 'Q')),
                 },
                 {
-                    text: '<b>SEL</b>, a corner of the COM side, chooses. It comes from the '
+                    text: '<b>SEL</b>, on the end of the COM side, chooses. It comes from the '
                         + '<b>SEL</b> switch.',
                     guide: muxWireGhosts,
                     done: (b) => b.muxes().some((m) => b.reaches('SEL', m.sel)),
@@ -269,10 +276,10 @@
             ],
             coachDone: 'Now flip <b>SEL</b>, <b>A</b> and <b>B</b> and watch <b>Q</b> '
                 + 'follow. Then press <b>Verify</b>.',
-            hint: 'A mux is a solid 3×2 of MUX, either way round. A wire on the middle of '
-                + 'a long side makes that side COM, the output; a wire on one of its corners '
-                + 'is SEL. The far side’s two ends are the pins: NO, on SEL’s end, reaches '
-                + 'COM while SEL is on, and NC while it is off.',
+            hint: 'A mux has four leads. COM, the middle of a long side, is the output; SEL, '
+                + 'on the end of that side, chooses. The far side’s two ends are the pins: NO, '
+                + 'on SEL’s end, reaches COM while SEL is on, and NC while it is off. R turns '
+                + 'the MUX tool’s next part, and M flips it.',
             // A and B level with the pins they feed and Q level with COM, so
             // three of the four wires are straight runs.
             padRows: { SEL: 1, A: 3, B: 5, Q: 4 },
@@ -764,11 +771,12 @@
         const used = col.filter((q) => q.n);
         return { w: used.reduce((s, q) => s + q.w, 0) + PART_GAP * (used.length - 1), h: Math.max(...used.map((q) => q.h)) };
     }
-    function neededSize(level) {
-        let w = level.w || 40, h = level.h || 0;
-        const sl = stackLayout(level);
-        if (sl) return { w: sl.w, h: sl.h };
-        if (!level.uses) return { w, h };
+    // Every board the level's parts could be laid out on — each layout of
+    // them upright beside each layout turned, with room to route — and
+    // whether they are all made (the level's own w/h is the floor if not).
+    // Null for a board not built from parts.
+    function partBoards(level) {
+        if (stackLayout(level) || !level.uses) return null;
         const dims = [];
         let all = true;
         for (const [key, count] of Object.entries(level.uses)) {
@@ -776,19 +784,38 @@
             if (!p) { all = false; continue; }
             for (let k = 0; k < count; k++) dims.push({ w: p.clip.w, h: p.clip.h });
         }
-        if (!dims.length) return { w, h };
+        if (!dims.length) return null;
         const pads = Math.max((level.inputs || []).length, (level.outputs || []).length);
         const rw = PART_ROUTE_W + 2 * Math.max(0, pads - 3), rh = PART_ROUTE_H;
         const layouts = (ds) => ds.map((d, k) => stackSize(ds, k + 1));
         const upright = layouts(dims), turned = layouts(dims.map((d) => ({ w: d.h, h: d.w })));
+        const boards = [];
+        for (const u of upright)
+            for (const t of turned) boards.push({ w: Math.max(u.w, t.w) + rw, h: Math.max(u.h, t.h) + rh });
+        return { boards, all };
+    }
+    function neededSize(level) {
+        let w = level.w || 40, h = level.h || 0;
+        const sl = stackLayout(level);
+        if (sl) return { w: sl.w, h: sl.h };
+        const pb = partBoards(level);
+        if (!pb) return { w, h };
         const cost = (s) => Math.pow(Math.max(s.w, s.h), 1.5) * Math.sqrt(Math.min(s.w, s.h));
         let best = null;
-        for (const u of upright)
-            for (const t of turned) {
-                const s = { w: Math.max(u.w, t.w) + rw, h: Math.max(u.h, t.h) + rh };
-                if (!best || cost(s) < cost(best) || (cost(s) === cost(best) && s.w > best.w)) best = s;
-            }
-        return all ? best : { w: Math.max(w, best.w), h: Math.max(h, best.h) };
+        for (const s of pb.boards)
+            if (!best || cost(s) < cost(best) || (cost(s) === cost(best) && s.w > best.w)) best = s;
+        return pb.all ? best : { w: Math.max(w, best.w), h: Math.max(h, best.h) };
+    }
+    // Whether a w x h board holds what the level needs: the board neededSize
+    // picks, or any other layout of its parts — a part that shrinks can tip
+    // the pick from wide to tall without the old board getting any smaller.
+    function boardHolds(level, w, h) {
+        const need = neededSize(level);
+        if (w >= need.w && h >= need.h) return true;
+        const pb = partBoards(level);
+        if (!pb) return false;
+        const fw = pb.all ? 0 : level.w || 40, fh = pb.all ? 0 : level.h || 0;
+        return pb.boards.some((s) => w >= Math.max(fw, s.w) && h >= Math.max(fh, s.h));
     }
     // ===== More than the right answers =====
     //
@@ -1398,9 +1425,9 @@
             localStorage.setItem(circuitKey(id) + '.layout', layoutKey(id));
         } catch (e) { }
     }
-    // A save made on a board at least as big as the level now needs keeps
-    // that board (see chosenSize), so a level built from parts does not
-    // lose its save because a part it uses got smaller.
+    // A save made on a board that still holds what the level needs keeps
+    // that board (see chosenSize, boardHolds), so a level built from parts
+    // does not lose its save because a part it uses got smaller.
     function loadCircuit(id) {
         chosenSize.delete(id);
         try {
@@ -1408,8 +1435,8 @@
             if (saved !== null) {
                 const level = getLevel(id), m = /^(\d+)x(\d+):/.exec(saved);
                 if (level && m) {
-                    const need = neededSize(level), w = +m[1], h = +m[2];
-                    if (w >= need.w && h >= need.h) chosenSize.set(id, { w, h });
+                    const w = +m[1], h = +m[2];
+                    if (boardHolds(level, w, h)) chosenSize.set(id, { w, h });
                 }
                 if (saved !== layoutKey(id)) { chosenSize.delete(id); return null; }
             }
@@ -1430,7 +1457,7 @@
         layout, applyBoard, loadBoard, padLabels, coachState,
         vectorsFor, tableCases, verify, replay, settle, settleBudget, loadHoldScript,
         allParts, partsFor, getPart, makeLevelPart, replaceLevelPart, testPart, saveCustomPart, deletePart, clearLevelParts,
-        backfillParts, neededSize, stackLayout, slicePeriod, judge, packCheck,
+        backfillParts, neededSize, boardHolds, stackLayout, slicePeriod, judge, packCheck,
         loadProgress, saveProgress, isUnlocked,
         saveCircuit, loadCircuit, clearCircuit,
         busNames, busVal, busBits,
