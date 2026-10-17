@@ -8,7 +8,7 @@
     const COLOR_INSULATOR = '#065300';
     const COLOR_CONDUCTOR = '#0a9000';   // single conductor color; charge shown by the grey box
     // Mux material that is not a solid 3x2 yet: plain dark body.
-    const COLOR_GRAY_BODY = '#2b1b0b';
+    const COLOR_MUX_BODY = '#2b1b0b';
     // Sources are a filled disc: +V gold plating, -V black.
     const COLOR_POS_PAD = '#e6b800';
     // Output LED: red, dark when off, bright when on.
@@ -30,7 +30,7 @@
 
     var zoom = 1;
     var panX = 0, panY = 0;
-    // Whether the faint cell-grid overlay is drawn; ui.js drives this
+    // Whether the faint cell-grid overlay is drawn; ui/prefs.js drives this
     // per-mode (build vs. interact remember separate on/off preferences).
     var gridVisible = true;
 
@@ -62,6 +62,11 @@
 
     // Where the MUX tool would put a part: {cells, ok}, or null.
     var stampPreview = null;
+
+    // The scope's probes, clipped to cells: [{x, y, name, color}]. Each is
+    // a ring of its colour round the cell and its name on a tag above it,
+    // the colour its trace has in the scope.
+    var probes = [];
 
     function cellSize() { return M.CELL_SIZE * zoom; }
 
@@ -449,7 +454,7 @@
     // accumulated across the current drawGrid pass, all filled once after
     // the per-cell loop rather than per-cell — see the comment above
     // addWireShape for why (per-cell fillRect calls leave antialiased
-    // seams). The same reasoning applies to gray body fills and to LED
+    // seams). The same reasoning applies to mux body fills and to LED
     // cells, which is why those route into shared paths here too instead of
     // calling ctx.fillRect directly.
     function drawCell(x, y, layers) {
@@ -496,7 +501,7 @@
         if (M.isSwitch(id)) { drawSwitch(px, py, cs, M.switchIsPressed(id)); return; }
         if (M.isToggle(id)) { drawToggle(px, py, cs, M.toggleIsOn(id)); return; }
 
-        if (M.isGrayId(id)) {
+        if (M.isMuxId(id)) {
             drawMuxPixel(x, y, id, px, py, cs, layers);
             return;
         }
@@ -854,7 +859,7 @@
         if (M.isConductorId(t)) return M.conductorCharge(t) === M.ON;
         const h = M.getCell(p.host[0], p.host[1]);
         if (M.isConductorId(h)) return M.conductorCharge(h) === M.ON;
-        if (M.isGrayId(h)) return M.grayCharge(h) === M.ON;
+        if (M.isMuxId(h)) return M.muxCharge(h) === M.ON;
         return false;
     }
 
@@ -909,16 +914,63 @@
         };
     }
 
-    // A lead: from the footprint's edge in to just under the package.
-    function addLidLead(path, [cx, cy], [dx, dy], cs, halfFrac) {
-        const ccx = panX + (cx + 0.5) * cs, ccy = panY + (cy + 0.5) * cs;
+    // A lead: from the footprint's edge in to just under the package — one
+    // cell's, or (from host `a` to host `b`) one as wide as a pin's
+    // terminals run side by side along that edge.
+    function addLidLead(path, a, b, [dx, dy], cs, halfFrac) {
         const outer = 0.5, inner = 0.5 - LID_INSET - LID_LEAD_TUCK;
-        const ax = ccx + dx * inner * cs, ay = ccy + dy * inner * cs;
-        const bx = ccx + dx * outer * cs, by = ccy + dy * outer * cs;
-        const hx = -dy * halfFrac * cs, hy = dx * halfFrac * cs;
-        path.moveTo(ax + hx, ay + hy); path.lineTo(bx + hx, by + hy);
-        path.lineTo(bx - hx, by - hy); path.lineTo(ax - hx, ay - hy);
+        const ex = -dy, ey = dx;                     // along the edge
+        const mid = (c) => [panX + (c[0] + 0.5) * cs, panY + (c[1] + 0.5) * cs];
+        let [lo, hi] = [mid(a), mid(b)];
+        if (lo[0] * ex + lo[1] * ey > hi[0] * ex + hi[1] * ey) [lo, hi] = [hi, lo];
+        const h = halfFrac * cs;
+        const pt = (c, s, depth) => [c[0] + ex * s * h + dx * depth * cs, c[1] + ey * s * h + dy * depth * cs];
+        path.moveTo(...pt(lo, -1, inner)); path.lineTo(...pt(lo, -1, outer));
+        path.lineTo(...pt(hi, 1, outer)); path.lineTo(...pt(hi, 1, inner));
         path.closePath();
+    }
+    // Where two of a pin's runs meet round a corner of the core — the
+    // corner cell a host for both, one face each way — the corner is
+    // bevelled, as a wire's elbow is, rather than left a notch between two
+    // bars: a band from the end of one to the start of the other, its
+    // sides at 45 degrees. (`host` the corner cell, `f1` and `f2` its two
+    // faces; the band as wide as a lead is deep, and meeting each bar's
+    // end `halfFrac` along.)
+    function addLidBevel(path, host, f1, f2, cs, halfFrac) {
+        const outer = 0.5, inner = 0.5 - LID_INSET - LID_LEAD_TUCK;
+        const cx = panX + (host[0] + 0.5) * cs, cy = panY + (host[1] + 0.5) * cs;
+        const pt = (fa, da, fb, db) => [cx + (fa[0] * da + fb[0] * db) * cs, cy + (fa[1] * da + fb[1] * db) * cs];
+        path.moveTo(...pt(f1, outer, f2, halfFrac)); path.lineTo(...pt(f2, outer, f1, halfFrac));
+        path.lineTo(...pt(f2, inner, f1, halfFrac)); path.lineTo(...pt(f1, inner, f2, halfFrac));
+        path.closePath();
+    }
+    // The corners a pin's runs meet round: [{host, f1, f2}].
+    function leadCorners(runs) {
+        const out = [], same = (a, b) => a[0] === b[0] && a[1] === b[1];
+        for (let i = 0; i < runs.length; i++)
+            for (let j = i + 1; j < runs.length; j++) {
+                const r = runs[i], s = runs[j];
+                if (r.face[0] * s.face[0] + r.face[1] * s.face[1] !== 0) continue;
+                const host = [r.a, r.b].find((h) => same(h, s.a) || same(h, s.b));
+                if (host) out.push({ host, f1: r.face, f2: s.face });
+            }
+        return out;
+    }
+    // A pin's terminals — its own and its others — as runs of ones side by
+    // side on one face: [{a, b, face}], `a` and `b` the hosts at the ends.
+    function leadRuns(p) {
+        const all = [{ host: p.host, face: p.face }, ...(p.others || [])], runs = [];
+        for (const f of [[0, -1], [1, 0], [0, 1], [-1, 0]]) {
+            const along = (t) => (f[0] ? t.host[1] : t.host[0]);
+            const on = all.filter((t) => t.face[0] === f[0] && t.face[1] === f[1]).sort((s, t) => along(s) - along(t));
+            let run = null;
+            for (const t of on) {
+                if (run && along(t) === along({ host: run.b }) + 1) { run.b = t.host; continue; }
+                run = { a: t.host, b: t.host, face: f };
+                runs.push(run);
+            }
+        }
+        return runs;
     }
 
 
@@ -930,10 +982,19 @@
         const leads = new Path2D(), lit = new Path2D();
         for (const p of b.pins) {
             if (!p.host) continue;
-            addLidLead(leads, p.host, p.face, cs, BOX_LEAD_HALF);
+            // Its lead, as wide as its terminals run along the edge: the
+            // edge beside its wire is its terminal all along (a pad).
             // A pin carrying charge shows it, so signals can be followed
             // through a shut part without opening it.
-            if (!ghost && pinLit(p)) addLidLead(lit, p.host, p.face, cs, BOX_LEAD_HALF * 0.55);
+            const on = !ghost && pinLit(p), runs = leadRuns(p);
+            for (const r of runs) {
+                addLidLead(leads, r.a, r.b, r.face, cs, BOX_LEAD_HALF);
+                if (on) addLidLead(lit, r.a, r.b, r.face, cs, BOX_LEAD_HALF * 0.55);
+            }
+            for (const c of leadCorners(runs)) {
+                addLidBevel(leads, c.host, c.f1, c.f2, cs, BOX_LEAD_HALF);
+                if (on) addLidBevel(lit, c.host, c.f1, c.f2, cs, BOX_LEAD_HALF * 0.55);
+            }
         }
         ctx.fillStyle = COLOR_BOX_LEAD;
         ctx.fill(leads);
@@ -1062,6 +1123,18 @@
             ctx.strokeRect(panX + r.x0 * cs, panY + r.y0 * cs, (r.x1 - r.x0 + 1) * cs, (r.y1 - r.y0 + 1) * cs);
             ctx.setLineDash([]);
             if (o.edge) drawEdge(o.edge.filter((e) => e.cls !== 'T'), cs, true, false);
+            // A pin's other terminals — the edge beside the rest of its
+            // wire — ringed more lightly, unnamed.
+            const own = new Set((o.pins || []).map((p) => p.x + ',' + p.y));
+            ctx.lineWidth = Math.max(1, cs * 0.05);
+            ctx.globalAlpha = 0.7;
+            for (const e of o.edge || []) {
+                if (e.cls !== 'T' || own.has(e.x + ',' + e.y)) continue;
+                const p = (o.pins || [])[e.pin];
+                ctx.strokeStyle = p && p.dir === 'out' ? '#ffd166' : COLOR_OUTLINE;
+                ctx.strokeRect(panX + e.x * cs + cs * 0.2, panY + e.y * cs + cs * 0.2, cs * 0.6, cs * 0.6);
+            }
+            ctx.globalAlpha = 1;
             // Each terminal: its cell ringed, its name just outside the edge.
             const size = Math.max(9, Math.min(15, cs * 0.55));
             ctx.font = `700 ${size}px ${LID_FONT}`;
@@ -1089,6 +1162,204 @@
         ctx.textBaseline = 'alphabetic';
     }
     const EDGE_DIR = { n: [0, -1], s: [0, 1], w: [-1, 0], e: [1, 0] };
+
+    // ---- Make part, on the board (ui/makepart.js) ----
+    // The part as it is being drawn: its bounds, a handle at the middle of
+    // each side to drag; its edge, kept-bare cells hatched and free ones
+    // dotted; where a terminal could go, a dashed ring; what is wrong, the
+    // cells it is wrong at, red; and each terminal a lead out through its
+    // cell, an arrow in it the way its signal goes, and its name on a tag
+    // beyond — inputs green, outputs yellow. Tags on one side that would
+    // overlap are staggered outward. Where each tag and arrow is drawn is
+    // kept (partEditHits), for a click to find.
+    var partEdit = null, partEditHits = [];
+    function drawPartEdit(cs) {
+        const o = partEdit, r = o.rect, bad = o.problems.length > 0;
+        const X = (x) => panX + x * cs, Y = (y) => panY + y * cs;
+        partEditHits = [];
+        ctx.save();
+        drawEdge(o.edge.filter((e) => e.cls !== 'T'), cs, true, false);
+        for (const p of o.problems) {
+            ctx.fillStyle = 'rgba(255, 90, 90, 0.38)';
+            ctx.fillRect(X(p.x), Y(p.y), cs, cs);
+            ctx.strokeStyle = '#ff8a8a';
+            ctx.lineWidth = Math.max(1.5, cs * 0.06);
+            ctx.strokeRect(X(p.x), Y(p.y), cs, cs);
+        }
+        // The bounds.
+        const bx = X(r.x0), by = Y(r.y0), bw = (r.x1 - r.x0 + 1) * cs, bh = (r.y1 - r.y0 + 1) * cs;
+        ctx.strokeStyle = bad ? '#ff8a8a' : COLOR_OUTLINE;
+        ctx.lineWidth = Math.max(1.5, cs * 0.08);
+        ctx.setLineDash([Math.max(3, cs * 0.25), Math.max(2, cs * 0.15)]);
+        ctx.strokeRect(bx, by, bw, bh);
+        ctx.setLineDash([]);
+        const hs = Math.max(5, cs * 0.3);
+        ctx.fillStyle = bad ? '#ff8a8a' : COLOR_OUTLINE;
+        for (const [hx, hy] of [[bx + bw / 2, by], [bx + bw / 2, by + bh], [bx, by + bh / 2], [bx + bw, by + bh / 2]])
+            ctx.fillRect(hx - hs / 2, hy - hs / 2, hs, hs);
+        // Where a terminal could go.
+        ctx.strokeStyle = 'rgba(195, 200, 206, 0.8)';
+        ctx.lineWidth = Math.max(1, cs * 0.05);
+        ctx.setLineDash([Math.max(2, cs * 0.1), Math.max(2, cs * 0.1)]);
+        for (const c of o.candidates) {
+            ctx.beginPath();
+            ctx.arc(X(c.x) + cs / 2, Y(c.y) + cs / 2, cs * 0.28, 0, Math.PI * 2);
+            ctx.stroke();
+        }
+        ctx.setLineDash([]);
+        // The terminals.
+        const size = Math.max(10, Math.min(15, cs * 0.55));
+        ctx.font = `700 ${size}px ${LID_FONT}`;
+        const placed = [];
+        const order = o.terms.map((t, i) => i).sort((a, b) => {
+            const s = o.terms[a], t = o.terms[b];
+            return s.side.localeCompare(t.side) || (EDGE_DIR[s.side][0] ? s.y - t.y : s.x - t.x);
+        });
+        for (const i of order) {
+            const t = o.terms[i], [dx, dy] = EDGE_DIR[t.side];
+            const color = t.dir === 'out' ? '#ffd166' : COLOR_OUTLINE;
+            const cx = X(t.x) + cs / 2, cy = Y(t.y) + cs / 2;
+            ctx.strokeStyle = color;
+            ctx.lineWidth = Math.max(2, cs * 0.16);
+            ctx.beginPath();
+            ctx.moveTo(cx - dx * cs * 0.5, cy - dy * cs * 0.5);
+            ctx.lineTo(cx + dx * cs * 0.5, cy + dy * cs * 0.5);
+            ctx.stroke();
+            const s = t.dir === 'out' ? 1 : -1, a = cs * 0.3;
+            const tip = [cx + s * dx * a, cy + s * dy * a], base = [cx - s * dx * a, cy - s * dy * a];
+            ctx.fillStyle = color;
+            ctx.beginPath();
+            ctx.moveTo(...tip);
+            ctx.lineTo(base[0] - dy * a, base[1] + dx * a);
+            ctx.lineTo(base[0] + dy * a, base[1] - dx * a);
+            ctx.closePath();
+            ctx.fill();
+            partEditHits.push({ kind: 'arrow', term: i, x: X(t.x), y: Y(t.y), w: cs, h: cs });
+            const label = t.name || '?', tw = ctx.measureText(label).width + 10, th = size + 6;
+            let tx = dx < 0 ? X(t.x) - 3 - tw : dx > 0 ? X(t.x + 1) + 3 : cx - tw / 2;
+            let ty = dy < 0 ? Y(t.y) - 3 - th : dy > 0 ? Y(t.y + 1) + 3 : cy - th / 2;
+            // Staggered outward while it would sit on one already placed.
+            for (let n = 0; n < 8 && placed.some((q) => tx < q.x + q.w && tx + tw > q.x && ty < q.y + q.h && ty + th > q.y); n++) {
+                tx += dx * (tw + 2);
+                ty += dy * (th + 2);
+            }
+            placed.push({ x: tx, y: ty, w: tw, h: th });
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
+            ctx.beginPath();
+            ctx.roundRect(tx, ty, tw, th, 4);
+            ctx.fill();
+            ctx.strokeStyle = color;
+            ctx.lineWidth = o.editing === i ? 2.5 : 1.2;
+            ctx.stroke();
+            ctx.fillStyle = color;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(label, tx + tw / 2, ty + th / 2 + 1);
+            partEditHits.push({ kind: 'tag', term: i, x: tx, y: ty, w: tw, h: th });
+        }
+        ctx.restore();
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'alphabetic';
+    }
+
+    // ---- Repeating a part, on the board (ui/arrayedit.js) ----
+    // The copies where they will go: each a package with its bit number on
+    // it — bit 0's underlined, to click — the next one outlined blue, the
+    // handle for which way and how far; the array's own wire between them;
+    // its edge; and each pin of the array a lead out through its terminal,
+    // its name on a tag beyond, coloured by what it is: each copy's own
+    // (in green, out yellow), one for all (blue), joined copy to copy
+    // (grey), out of every copy (pink). Red where they do not go together,
+    // or cannot go down where they are. Where each copy, tag and bit 0 is
+    // drawn is kept (arrayEditHits), for a click to find.
+    // {copies: [{x0, y0, x1, y1, label, next, bad, bit0}], wire: [[x, y]],
+    //  rings: [[{x, y, cls}]], pins: [{name, dir, host, face, at, role}], blocked}
+    const ROLE_COLOR = { shared: '#9fd8ff', chain: '#c3c8ce', tap: '#ff9ad5' };
+    var arrayEdit = null, arrayEditHits = [];
+    function drawArrayEdit(cs) {
+        const o = arrayEdit, X = (x) => panX + x * cs, Y = (y) => panY + y * cs;
+        arrayEditHits = [];
+        ctx.save();
+        for (const ring of o.rings) drawEdge(ring, cs, true, o.blocked);
+        ctx.fillStyle = o.blocked ? 'rgba(255, 138, 138, 0.55)' : COLOR_CONDUCTOR;
+        for (const [x, y] of o.wire) ctx.fillRect(X(x), Y(y), cs, cs);
+        o.copies.forEach((b, k) => {
+            const r = lidRect(b, cs, LID_INSET);
+            ctx.beginPath();
+            ctx.roundRect(r.x, r.y, r.w, r.h, Math.min(LID_RADIUS * cs, r.w / 2, r.h / 2));
+            ctx.globalAlpha = 0.88;
+            ctx.fillStyle = b.bad ? '#3a1414' : COLOR_LID;
+            ctx.fill();
+            ctx.globalAlpha = 1;
+            ctx.strokeStyle = b.bad || (o.blocked && !b.next) ? '#ff8a8a' : b.next ? '#9fd8ff' : '#e8e8e8';
+            ctx.lineWidth = Math.max(1.5, cs * (b.next ? 0.1 : 0.07));
+            ctx.setLineDash(b.next || b.bad ? [Math.max(4, cs * 0.3), Math.max(3, cs * 0.18)] : []);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            arrayEditHits.push({ kind: 'copy', k, x: X(b.x0), y: Y(b.y0), w: (b.x1 - b.x0 + 1) * cs, h: (b.y1 - b.y0 + 1) * cs });
+            if (b.label == null) return;
+            const text = String(b.label);
+            const px = Math.max(10, Math.min(cs * 1.1, r.h * 0.5, r.w / Math.max(2, text.length * 0.62)));
+            ctx.font = `700 ${px}px ${LID_FONT}`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillStyle = b.bit0 ? '#ffffff' : 'rgba(238, 238, 238, 0.6)';
+            const tx = r.x + r.w / 2, ty = r.y + r.h / 2;
+            ctx.fillText(text, tx, ty);
+            if (!b.bit0) return;
+            const tw = ctx.measureText(text).width;
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth = 1.5;
+            ctx.setLineDash([2, 2]);
+            ctx.beginPath();
+            ctx.moveTo(tx - tw / 2, ty + px * 0.55);
+            ctx.lineTo(tx + tw / 2, ty + px * 0.55);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            arrayEditHits.push({ kind: 'bit0', x: tx - tw / 2 - 4, y: ty - px / 2 - 4, w: tw + 8, h: px + 8 });
+        });
+        // The pins, each side's in order along it, so that tags staggered
+        // outward to clear each other stagger the same way every time.
+        const size = Math.max(10, Math.min(14, cs * 0.5));
+        ctx.font = `700 ${size}px ${LID_FONT}`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        const side = (p) => p.face[0] * 2 + p.face[1], along = (p) => (p.face[0] ? p.at[1] : p.at[0]);
+        const pins = o.pins.filter((p) => p.at).sort((a, b) => side(a) - side(b) || along(a) - along(b));
+        const placed = [];
+        for (const p of pins) {
+            const [dx, dy] = p.face, color = ROLE_COLOR[p.role] || (p.dir === 'out' ? '#ffd166' : COLOR_OUTLINE);
+            const hx = X(p.host[0]) + cs / 2, hy = Y(p.host[1]) + cs / 2, ax = X(p.at[0]) + cs / 2, ay = Y(p.at[1]) + cs / 2;
+            ctx.strokeStyle = color;
+            ctx.lineWidth = Math.max(2, cs * 0.16);
+            ctx.beginPath();
+            ctx.moveTo(hx + dx * cs * 0.2, hy + dy * cs * 0.2);
+            ctx.lineTo(ax + dx * cs * 0.5, ay + dy * cs * 0.5);
+            ctx.stroke();
+            const tw = ctx.measureText(p.name).width + 10, th = size + 6;
+            let tx = dx < 0 ? X(p.at[0]) - 3 - tw : dx > 0 ? X(p.at[0] + 1) + 3 : ax - tw / 2;
+            let ty = dy < 0 ? Y(p.at[1]) - 3 - th : dy > 0 ? Y(p.at[1] + 1) + 3 : ay - th / 2;
+            for (let n = 0; n < 8 && placed.some((q) => tx < q.x + q.w && tx + tw > q.x && ty < q.y + q.h && ty + th > q.y); n++) {
+                tx += dx * (tw + 2);
+                ty += dy * (th + 2);
+            }
+            placed.push({ x: tx, y: ty, w: tw, h: th });
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
+            ctx.beginPath();
+            ctx.roundRect(tx, ty, tw, th, 4);
+            ctx.fill();
+            ctx.strokeStyle = color;
+            ctx.lineWidth = 1.2;
+            ctx.stroke();
+            ctx.fillStyle = color;
+            ctx.fillText(p.name, tx + tw / 2, ty + th / 2 + 1);
+            arrayEditHits.push({ kind: 'pin', name: p.name, x: tx, y: ty, w: tw, h: th });
+            arrayEditHits.push({ kind: 'pin', name: p.name, x: X(p.at[0]), y: Y(p.at[1]), w: cs, h: cs });
+        }
+        ctx.restore();
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'alphabetic';
+    }
 
     // ---- The ratsnest ----
     // A connection a rearrange could not keep is drawn as a straight dashed
@@ -1173,7 +1444,7 @@
             for (let x = x0; x <= x1; x++)
                 if (!shut.size || !underLid(x, y)) drawCell(x, y, layers);
         addClumps(layers, x0, y0, x1, y1, (x, y) => shut.size > 0 && underLid(x, y));
-        ctx.fillStyle = COLOR_GRAY_BODY;
+        ctx.fillStyle = COLOR_MUX_BODY;
         ctx.fill(layers.muxBodyPath);
         // Mux parts go in with the rest of the mux bodies — under the
         // wires, so a wire meeting a lead draws over the shared boundary.
@@ -1224,17 +1495,21 @@
 
         if (targetRect) drawTargetRect(cs);
         if (guide) drawGuide(cs);
-        if (partPreview) {
-            if (partPreview.ring) drawEdge(partPreview.ring, cs, true, !partPreview.ok);
-            drawLid(partPreview, cs, { bad: !partPreview.ok });
-        }
+        if (partPreview)
+            for (const p of partPreview.parts || [partPreview]) {
+                if (p.ring) drawEdge(p.ring, cs, true, !partPreview.ok);
+                drawLid(p, cs, { bad: !partPreview.ok });
+            }
         if (partOutline) drawPartOutline(cs);
+        if (partEdit) drawPartEdit(cs);
+        if (arrayEdit) drawArrayEdit(cs);
         if (stampPreview && stampPreview.leads) drawLeadMarks(stampPreview.leads, cs,
             stampPreview.ok ? 'rgba(195, 200, 206, 0.95)' : 'rgba(255, 138, 138, 0.9)');
         if (stampPreview) drawCellsOutline(stampPreview.cells, cs,
             stampPreview.ok ? 'rgba(52, 52, 52, 0.55)' : 'rgba(255, 90, 90, 0.18)',
             stampPreview.ok ? 'rgba(235, 235, 235, 0.9)' : '#ff8a8a', false);
         if (labels.length) drawLabels(cs);
+        if (probes.length) drawProbes(cs);
         if (selectionRect) drawOverlayRect(selectionRect, '#7dffb3', 'rgba(125, 255, 179, 0.12)');
         if (objectHighlight) drawObjectHighlight(objectHighlight);
     }
@@ -1259,6 +1534,33 @@
             ctx.fillText(l.text, cx, cy);
         }
         ctx.textAlign = 'left';
+    }
+
+    // A probe: a ring in its colour just inside the cell — the cell's own
+    // drawing still showing through — and a tag with its name above the
+    // cell's corner, sized like the pad labels.
+    function drawProbes(cs) {
+        const size = Math.max(9, Math.min(13, cs * 0.5));
+        ctx.save();
+        ctx.font = `600 ${size}px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
+        ctx.textBaseline = 'middle';
+        ctx.textAlign = 'left';
+        const lw = Math.max(1.5, cs * 0.1);
+        for (const p of probes) {
+            const px = panX + p.x * cs, py = panY + p.y * cs;
+            if (px > viewW + cs || py > viewH + cs || px < -cs * 4 || py < -cs * 2) continue;
+            ctx.strokeStyle = p.color;
+            ctx.lineWidth = lw;
+            ctx.strokeRect(px + lw / 2, py + lw / 2, cs - lw, cs - lw);
+            const tw = ctx.measureText(p.name).width + 6, th = size + 4;
+            const tx = px + cs * 0.5, ty = py - th - 1;
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.75)';
+            ctx.fillRect(tx, ty, tw, th);
+            ctx.fillStyle = p.color;
+            ctx.fillRect(tx, ty, 2, th);
+            ctx.fillText(p.name, tx + 4, ty + th / 2);
+        }
+        ctx.restore();
     }
 
     // A set of cells as one shape: a wash over each, and a dashed outline
@@ -1336,7 +1638,7 @@
     // outlined as one shape: a dashed 3x2 for a part, a dashed channel for a
     // wire. Cells already filled in drop out, so the ghost shrinks as you
     // trace it.
-    const GUIDE_FILL = { gray: 'rgba(52, 52, 52, 0.5)', conductor: 'rgba(10, 144, 0, 0.45)' };
+    const GUIDE_FILL = { mux: 'rgba(52, 52, 52, 0.5)', conductor: 'rgba(10, 144, 0, 0.45)' };
     function drawGuide(cs) {
         const todo = guide.cells.filter(([x, y]) => M.colorOfCell(M.getCell(x, y)) !== guide.color);
         if (todo.length) drawCellsOutline(todo, cs, GUIDE_FILL[guide.color] || 'rgba(255,255,255,0.1)',
@@ -1344,7 +1646,7 @@
         // A part's ghost says which way round it goes: its leads, until a
         // mux there has each one where the ghost has it.
         if (guide.leads) {
-            const unmet = guide.leads.filter(({ x, y, d }) => !(M.isGrayId(M.getCell(x, y)) && M.cellConnects(x, y, LEAD_DIRS[d])));
+            const unmet = guide.leads.filter(({ x, y, d }) => !(M.isMuxId(M.getCell(x, y)) && M.cellConnects(x, y, LEAD_DIRS[d])));
             if (unmet.length) drawLeadMarks(guide.leads, cs, 'rgba(235, 235, 235, 0.8)');
         }
     }
@@ -1447,6 +1749,8 @@
         },
         get labels() { return labels; },
         setLabels(list) { labels = list || []; },
+        get probes() { return probes; },
+        setProbes(list) { probes = list || []; },
         get guide() { return guide; },
         get targetRect() { return targetRect; },
         setTargetRect(r) { targetRect = r || null; },
@@ -1456,6 +1760,12 @@
         setPartPreview(p) { partPreview = p || null; },
         get partOutline() { return partOutline; },
         setPartOutline(o) { partOutline = o || null; },
+        setPartEdit(o) { partEdit = o || null; if (!partEdit) partEditHits = []; },
+        get partEdit() { return partEdit; },
+        get partEditHits() { return partEditHits; },
+        setArrayEdit(o) { arrayEdit = o || null; if (!arrayEdit) arrayEditHits = []; },
+        get arrayEdit() { return arrayEdit; },
+        get arrayEditHits() { return arrayEditHits; },
         setStampPreview(p) { stampPreview = p || null; },
         setSelection(r) { selectionRect = r; },
         setObjectHighlight(cellsList) { objectHighlight = cellsList; },

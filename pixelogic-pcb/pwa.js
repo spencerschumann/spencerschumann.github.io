@@ -6,7 +6,7 @@
     // opportunistically on the first pointerdown anywhere in the page; that
     // hijacked an ordinary tap into a jarring viewport change and had to be
     // undone, so now it happens only when the menu item asks for it. Exposed
-    // as window.PixelogicFullscreen for ui.js to drive.
+    // as window.PixelogicFullscreen for the editor (ui/toolbar.js) to drive.
     const doc = document;
     const el = doc.documentElement;
     const requestFn = el.requestFullscreen || el.webkitRequestFullscreen;

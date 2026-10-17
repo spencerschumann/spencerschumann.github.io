@@ -7,7 +7,7 @@
     //
     //   - a board of a fixed size, carrying input pads (toggles) down its left
     //     edge and output pads (LEDs) down its right edge. Those pads are
-    //     LOCKED (model.js's lock mask), so no paint stroke, paste, clear or
+    //     LOCKED (the model's lock mask), so no paint stroke, paste, clear or
     //     Rearrange drag can move them - which is what lets the verifier keep
     //     addressing them by coordinate for the life of the level;
     //   - a truth function over named bits, from which the test vectors are
@@ -19,534 +19,20 @@
     //     board stops changing, and reads the LEDs back.
     //
     // The campaign is deliberately data-only: adding a level is adding an entry
-    // to LEVELS, not writing code. That matters because the ladder above the
-    // shipped chapters (ALU, RAM, CPU, Tetris) is long.
+    // to LEVELS in levels.js, not writing code. That matters because the
+    // ladder above the shipped chapters (ALU, RAM, CPU, Tetris) is long.
     const M = window.PixelogicModel;
+    const S = window.PixelogicStorage;
+    const {
+        LEVELS, CHAPTERS, getLevel, levelIndex, levelsIn,
+        busNames, busVal, busBits, loadHoldScript,
+    } = window.PixelogicLevels;
 
-    // ===== Bit helpers used by the truth functions =====
-    // A bus is just named bits, MSB first: 'A3','A2','A1','A0'. A width-1 bus
-    // is the bare name ('D', not 'D0'), so a one-bit level and a four-bit one
-    // can share the same generators.
-    const busNames = (name, width) => {
-        if (width === 1) return [name];
-        const out = [];
-        for (let i = width - 1; i >= 0; i--) out.push(name + i);
-        return out;
-    };
-    // Read a bus out of a bit-valued object as a number.
-    const busVal = (v, name, width) => {
-        if (width === 1) return v[name] & 1;
-        let n = 0;
-        for (let i = width - 1; i >= 0; i--) n = (n << 1) | (v[name + i] & 1);
-        return n;
-    };
-    // Spread a number back across a bus's named bits.
-    const busBits = (name, width, n) => {
-        if (width === 1) return { [name]: n & 1 };
-        const out = {};
-        for (let i = 0; i < width; i++) out[name + i] = (n >> i) & 1;
-        return out;
-    };
-
-    // ===== Sequential test scripts =====
-    //
-    // A storage level is not a truth table — the answer depends on what came
-    // before — so it carries an ordered script of input vectors instead, and
-    // its `step` says what the outputs must be after each one, given what they
-    // were before.
-    //
-    // This walk is what a latch has to survive: load a value with the enable
-    // high, drop the enable, then CHANGE THE DATA while disabled. The last of
-    // those three is the whole property being tested — a circuit that merely
-    // passes its input through gets the first two right every time.
-    function loadHoldScript(dataName, width, enableName) {
-        const mask = (1 << width) - 1;
-        const values = width === 1 ? [1, 0, 1, 1, 0] : [0b1010, 0b0101, 0b1111, 0b0000, 0b1001];
-        const out = [];
-        for (const v of values) {
-            out.push({ ...busBits(dataName, width, v), [enableName]: 1 });
-            out.push({ ...busBits(dataName, width, v), [enableName]: 0 });
-            out.push({ ...busBits(dataName, width, ~v & mask), [enableName]: 0 });
-        }
-        return out;
-    }
-
-    // The mux tutorial's circuit, as the ghosts it draws — paint by numbers.
-    // The part stands on end in the middle of the board (pads at SEL (1,1),
-    // A (1,3), B (1,5) and Q (9,4) — see the level's padRows), so COM faces
-    // Q, SEL faces up toward its switch's row, and each pin faces its own
-    // switch. The MUX tool lays a part down by default, with COM out the top,
-    // so matching the outline means turning one a quarter — which is the
-    // point: it is the moment to learn R. Once the part is in place, every
-    // wire is ghosted at once, to be traced in any order. tests/game.test.js
-    // traces them and verifies the result.
-    const MUX_GHOST = [[5, 3], [6, 3], [5, 4], [6, 4], [5, 5], [6, 5]];
-    const MUX_COM = [6, 4], MUX_SEL = [6, 3];
-    // Its leads, as the ghost draws them: d is 0 up, 1 right, 2 down, 3 left.
-    const MUX_LEADS = [{ x: 6, y: 3, d: 0, name: 'SEL' }, { x: 6, y: 4, d: 1, name: 'COM' },
-        { x: 5, y: 3, d: 3, name: 'NO' }, { x: 5, y: 5, d: 3, name: 'NC' }];
-    const MUX_WIRES = {
-        com: [[7, 4], [8, 4]],
-        sel: [[6, 2], [6, 1], [5, 1], [4, 1], [3, 1], [2, 1]],
-        a: [[4, 3], [3, 3], [2, 3]],       // to NO, the top pin
-        b: [[4, 5], [3, 5], [2, 5]],       // to NC, the bottom pin
-    };
-
-    // The wires still to trace, while the part is on its outline. A ghost that
-    // stopped making sense goes: all of them if COM went on the other long
-    // side, and SEL's, A's and B's if SEL went on the other corner (which
-    // swaps NO and NC). Cells already drawn drop out in the view.
-    function muxWireGhosts(b) {
-        if (!b.is(MUX_GHOST, 'gray')) return null;
-        // The part on the outline: its COM is one of the outline's two
-        // long-side middles.
-        const part = b.parts().find((p) => p.com && (b.same(p.com, MUX_COM) || b.same(p.com, [5, 4])));
-        if (part && !b.same(part.com, MUX_COM)) return null;
-        const wires = [MUX_WIRES.com];
-        if (!part || part.state !== 'mux' || b.same(part.sel, MUX_SEL)) wires.push(MUX_WIRES.sel, MUX_WIRES.a, MUX_WIRES.b);
-        return { cells: [].concat(...wires), color: 'conductor' };
-    }
-    // Is the mux on the outline, the outline's way round?
-    const muxOnGhost = (b) => b.muxes().some((m) => b.same(m.com, MUX_COM) && b.same(m.sel, MUX_SEL));
-
-    // ===== Levels =====
-    //
-    // Each level: {id, chapter, title, subtitle, brief, coach, hint, inputs,
-    // outputs, truth, w, h, settle}. `truth` maps an object of input bits to an
-    // object of output bits; every declared output must be assigned.
-    //
-    // A storage level instead sets `sequential: true` and carries `script`
-    // (ordered input vectors) and `step(inputs, prev)`, where `prev` is the
-    // outputs after the previous step. The two forms are exclusive.
-    //
-    // `w`/`h` are the board, and they are deliberately TIGHT. Room to sprawl is
-    // not neutral: it turns "find the arrangement that fits" — most of the
-    // actual puzzle, and the thing a real board makes you care about — into
-    // "drop the parts anywhere and join the dots". Each board here is sized so
-    // a known solution fits with a little slack and not much more; the
-    // reference solutions in tests/game.test.js are what keeps that honest, and
-    // they fail loudly if a board is shrunk past what can be built in it.
-    //
-    // The Basics boards are the exception: they are sized for someone who has
-    // never drawn a wire, so the distance between pads is short and the part
-    // count is one or two — a first level is about the tools, not the fit.
-    //
-    // `coach` is a walk-through shown ONE step at a time, in the level bar's
-    // status line: each step is a line of text and a `done(b)` test against
-    // the board (see coachBoard), and the bar shows the first step not yet
-    // done — so it moves on by itself as you build, and back if you undo.
-    // A step's `text` may be a function of the board, to answer what the
-    // player just did. A step may also carry a `guide(b)`: cells drawn as a
-    // dashed ghost on the board, paint-by-numbers, showing where a piece
-    // goes — the mux tutorial's part, and then all of its wires at once, so
-    // they can be traced in any order.
-    // `coachDone` is what the line says once every step is done. The three
-    // tutorials have a coach — a wire, a crossing, the mux. It is
-    // scaffolding for someone who has never seen this world; once every part
-    // has been met, working out how to use them is the game. The exceptions
-    // are the first levels built from parts (XOR, the half adder), whose
-    // coach is about the parts — where they are, what the lid is — and
-    // leaves the gate to the player.
-    //
-    // `tools` lists the materials a level allows; the others are disabled
-    // while it is open (ui.js). The first levels need only a couple, and a
-    // rail of parts nobody has met yet is noise.
-    //
-    // `pinLabels: true` prints SEL/COM/NO/NC on every mux while the level is
-    // open, unless the player has switched labels off in the menu (ui.js).
-    //
-    // `part` names the part a solution becomes (see Parts, below): from the
-    // next level on it can be put down whole instead of built again. `uses`
-    // is what a level is meant to be built from — part keys and how many —
-    // and sizes its board to fit the player's own parts (see neededSize).
-    const LEVELS = [
-        {
-            id: 'first-light', chapter: 'basics', title: 'First light', subtitle: 'a wire',
-            brief: 'Light the lamp when the switch is ON. One wire is all this takes — '
-                + 'the point is to meet the tools.',
-            coach: [
-                {
-                    text: 'Pick <b>Conductor</b> (<b>1</b>) and drag a wire from the <b>A</b> '
-                        + 'switch to the <b>Q</b> lamp. Touching cells connect.',
-                    done: (b) => b.reaches('A', 'Q'),
-                },
-                {
-                    text: 'Click <b>A</b> to switch it on, and watch the charge run down the '
-                        + 'wire to <b>Q</b>.',
-                    done: (b) => b.lit('Q'),
-                },
-            ],
-            hint: 'A straight run of conductor from the switch to the lamp. If nothing '
-                + 'lights, look for a one-cell gap: cells connect only edge to edge, '
-                + 'never diagonally. Made a mess? Erase (2) or right-drag removes wire, '
-                + 'and the switch and lamp are fixed, so nothing can damage them.',
-            tools: ['conductor', 'insulator'],
-            inputs: ['A'], outputs: ['Q'], w: 8, h: 5,
-            truth: (v) => ({ Q: v.A }),
-        },
-        {
-            // Nobody would guess that wires can cross, and everything later
-            // depends on it. One pair runs left to right and the other top to
-            // bottom, each lamp straight across from its switch, so the two
-            // straight wires meet in the middle and have to cross there: one
-            // + at the centre of the board. There is no way round — a wire
-            // that touches a switch or lamp joins it. (With both pairs on the
-            // sides, the lamps swapped, the two had to be routed round each
-            // other, and the shape that made came out uncomfortably close to
-            // a swastika.)
-            id: 'cross', chapter: 'basics', title: 'Crossing', subtitle: 'wires that pass',
-            brief: 'QA should follow A, and QB follow B. The two wires have to cross — and '
-                + 'crossing wires do not connect.',
-            coach: [
-                {
-                    text: 'Wire <b>A</b> straight across to <b>QA</b>. Holding <b>Shift</b> '
-                        + '(or turning on Straight) keeps a wire straight.',
-                    done: (b) => b.reaches('A', 'QA'),
-                },
-                {
-                    text: (b) => (b.reaches('A', 'B')
-                        ? 'The two wires touch, so A and B are joined. They may only meet in '
-                            + 'a clean <b>+</b>: four wire cells around the crossing.'
-                        : 'Now <b>B</b> straight down to <b>QB</b>, through A’s wire. Where '
-                            + 'four wires meet in a <b>+</b>, they pass over each other.'),
-                    done: (b) => b.reaches('B', 'QB') && !b.reaches('A', 'B'),
-                },
-            ],
-            coachDone: 'Flip <b>A</b> and <b>B</b>: each lamp follows its own switch. '
-                + 'Then press <b>Verify</b>.',
-            hint: 'Draw A’s wire straight across, then B’s straight down through it. The '
-                + 'crossing cell needs wire on all four sides — a plus — and the two wires must '
-                + 'not touch anywhere else.',
-            tools: ['conductor', 'insulator'],
-            padAt: { A: ['w', 4], QA: ['e', 4], B: ['n', 4], QB: ['s', 4] },
-            inputs: ['A', 'B'], outputs: ['QA', 'QB'], w: 9, h: 9,
-            truth: (v) => ({ QA: v.A, QB: v.B }),
-        },
-        {
-            id: 'mux', chapter: 'basics', title: 'The mux', subtitle: 'SEL ? A : B',
-            brief: 'Everything from here on is built from one part: the mux, a switch that '
-                + 'picks one of two inputs. Make Q follow A while SEL is on, and B while it is off.',
-            pinLabels: true,
-            tools: ['conductor', 'insulator', 'gray'],
-            // The part is placed on a ghost outline, standing up, its leads
-            // drawn. The MUX tool lays parts down, so matching the outline
-            // means turning one — and a part that landed any other way is
-            // answered with how to turn it, not waved through.
-            coach: [
-                {
-                    text: (b) => (b.parts().length && !muxOnGhost(b)
-                        ? 'Not quite the outline’s way round. Click the part to turn it (or erase '
-                            + 'it with <b>2</b> and place it again), until its leads match the outline’s.'
-                        : 'A mux is a 3&times;2 part with four leads: <b>SEL</b>, <b>COM</b>, '
-                            + '<b>NO</b> and <b>NC</b>. Pick <b>MUX</b> (<b>3</b>); this one stands up, '
-                            + 'COM toward Q, so press <b>R</b> (or tap MUX again) to turn it until '
-                            + 'its leads match the outline’s, then click the outline. (<b>M</b> flips it.)'),
-                    guide: () => ({ cells: MUX_GHOST, color: 'gray', leads: MUX_LEADS }),
-                    // On the outline the right way round — or COM wired to Q
-                    // wherever it is, for a player who knows what they are doing.
-                    done: (b) => muxOnGhost(b) || b.muxes().some((m) => b.reaches(m.com, 'Q')),
-                },
-                // From here the dashes show every wire, to trace in any order;
-                // each step says what one of them is for, and ticks off when
-                // that one is in.
-                {
-                    text: 'Trace the dashed wires, in any order. <b>COM</b>, the middle of a '
-                        + 'long side, is the output: it goes to <b>Q</b>.',
-                    guide: muxWireGhosts,
-                    done: (b) => b.parts().some((p) => p.com && b.reaches(p.com, 'Q')),
-                },
-                {
-                    text: '<b>SEL</b>, on the end of the COM side, chooses. It comes from the '
-                        + '<b>SEL</b> switch.',
-                    guide: muxWireGhosts,
-                    done: (b) => b.muxes().some((m) => b.reaches('SEL', m.sel)),
-                },
-                {
-                    text: '<b>NO</b>, the pin on SEL’s end, joins COM while SEL is on. '
-                        + 'It takes <b>A</b>.',
-                    guide: muxWireGhosts,
-                    done: (b) => b.muxes().some((m) => b.reaches('A', m.no)),
-                },
-                {
-                    text: '<b>NC</b>, the other pin, joins COM while SEL is off. '
-                        + 'It takes <b>B</b>.',
-                    guide: muxWireGhosts,
-                    done: (b) => b.muxes().some((m) => b.reaches('B', m.nc)),
-                },
-            ],
-            coachDone: 'Now flip <b>SEL</b>, <b>A</b> and <b>B</b> and watch <b>Q</b> '
-                + 'follow. Then press <b>Verify</b>.',
-            hint: 'A mux has four leads. COM, the middle of a long side, is the output; SEL, '
-                + 'on the end of that side, chooses. The far side’s two ends are the pins: NO, '
-                + 'on SEL’s end, reaches COM while SEL is on, and NC while it is off. R turns '
-                + 'the MUX tool’s next part, and M flips it.',
-            // A and B level with the pins they feed and Q level with COM, so
-            // three of the four wires are straight runs.
-            padRows: { SEL: 1, A: 3, B: 5, Q: 4 },
-            inputs: ['SEL', 'A', 'B'], outputs: ['Q'], w: 11, h: 7,
-            truth: (v) => ({ Q: v.SEL ? v.A : v.B }),
-        },
-        {
-            // The first level with no coach. The tutorials have shown every
-            // part; from here the player works out how to use them, and the
-            // Hint is there for anyone who asks.
-            id: 'not', chapter: 'basics', title: 'Inverter', subtitle: 'NOT',
-            brief: 'Light the lamp when the switch is OFF, and only then. Every tool is '
-                + 'yours from here, the +V and −V sources included.',
-            hint: 'SEL is the input. −V goes on the NO pin (the one on SEL’s end) and +V '
-                + 'on NC, so SEL on pulls COM down and SEL off drives it high.',
-            inputs: ['A'], outputs: ['Q'], w: 11, h: 7, part: 'NOT',
-            truth: (v) => ({ Q: v.A ? 0 : 1 }),
-        },
-        {
-            id: 'and', chapter: 'basics', title: 'And', subtitle: 'A · B',
-            brief: 'Light the lamp only when both switches are ON.',
-            hint: 'A mux is a switch: let A choose between B and −V. When A is off '
-                + 'the output is pulled down; when A is on it follows B.',
-            inputs: ['A', 'B'], outputs: ['Q'], w: 12, h: 8, part: 'AND',
-            truth: (v) => ({ Q: v.A & v.B }),
-        },
-        {
-            id: 'or', chapter: 'basics', title: 'Or', subtitle: 'A + B',
-            brief: 'Light the lamp when either switch is ON.',
-            hint: 'The mirror of And: let A choose between +V and B.',
-            inputs: ['A', 'B'], outputs: ['Q'], w: 12, h: 8, part: 'OR',
-            truth: (v) => ({ Q: v.A | v.B }),
-        },
-        {
-            // The first level with parts to use, so it has a coach again —
-            // for the parts, not the gate: where they are, what the lid is,
-            // and that a pin is wired like anything else. The gate itself
-            // is still the player's to work out.
-            id: 'xor', chapter: 'basics', title: 'Exclusive or', subtitle: 'A ⊕ B',
-            brief: 'Light the lamp when the switches disagree. Every level you solve '
-                + 'becomes a part, and this is the first that can use one.',
-            coach: [
-                {
-                    text: 'Your inverter is a <b>part</b> now. Pick <b>Parts</b> (<b>9</b>) and '
-                        + 'put a <b>NOT</b> on the board.',
-                    done: (b) => !!b.block('not') || !b.hasPart('not'),
-                },
-                {
-                    text: 'That is your inverter under a lid — double-click it to look inside. '
-                        + 'Its pins are <b>A</b> in and <b>Q</b> out: wire a switch to its A.',
-                    done: (b) => !b.block('not') || b.reaches('A', b.pinOf(b.block('not'), 'A'))
-                        || b.reaches('B', b.pinOf(b.block('not'), 'A')),
-                },
-            ],
-            coachDone: 'Now one more mux, choosing between B and NOT B. <b>Verify</b> when it is built.',
-            hint: 'A chooses between B and NOT B: B into your NOT part, then one mux with '
-                + 'A on SEL, B on one pin and the NOT’s Q on the other.',
-            inputs: ['A', 'B'], outputs: ['Q'], w: 20, h: 12, part: 'XOR',
-            truth: (v) => ({ Q: v.A ^ v.B }),
-        },
-
-        {
-            id: 'half-adder', chapter: 'arith', title: 'Half adder', subtitle: 'S, C',
-            brief: 'Add two bits. S is the sum bit, C the carry out.',
-            coach: [
-                {
-                    text: 'This one is two parts. From <b>Parts</b> (<b>9</b>), put down an '
-                        + '<b>XOR</b> and an <b>AND</b>.',
-                    done: (b) => (!!b.block('xor') || !b.hasPart('xor')) && (!!b.block('and') || !b.hasPart('and')),
-                },
-            ],
-            coachDone: 'Now wire them: A and B to both parts, and each Q to its lamp. <b>Verify</b> when it is built.',
-            hint: 'S is A ⊕ B and C is A · B — and both are parts: an XOR and an AND, '
-                + 'each fed by both switches.',
-            inputs: ['A', 'B'], outputs: ['S', 'C'], w: 40, h: 26, part: 'HALF ADD', uses: { xor: 1, and: 1 },
-            truth: (v) => ({ S: v.A ^ v.B, C: v.A & v.B }),
-        },
-        {
-            id: 'full-adder', chapter: 'arith', title: 'Full adder', subtitle: 'A + B + Cin',
-            brief: 'Add three bits: two operands and a carry in.',
-            hint: 'Two half adders and an Or. The first adds A and B, the second '
-                + 'adds Cin to that sum; either carry out sets Cout.',
-            inputs: ['A', 'B', 'Cin'], outputs: ['S', 'Cout'], w: 42, h: 26,
-            part: 'FULL ADD', uses: { 'half-adder': 2, or: 1 },
-            truth: (v) => {
-                const n = v.A + v.B + v.Cin;
-                return { S: n & 1, Cout: n > 1 ? 1 : 0 };
-            },
-        },
-        // The full adder again, for building with, in two stages on one
-        // board. First make it work with five muxes (A ⊕ B worked out once
-        // and used twice), with all the room in the world. Then pack it: an
-        // outline appears, and the circuit has to fit in it — everything but
-        // the wires running in from the switches and out to the lamps — with
-        // A and B coming in on its left, S going out on its right, the carry
-        // in at the bottom and out at the top. That makes a slice, which
-        // stands on the next with the carry running up through them.
-        //
-        // What counts is how often slices repeat stacked (slicePeriod), not
-        // the area: height is what a stack of them costs, and the outline is
-        // wide so a flat slice has room. It asks for a period of 13 — a
-        // 12x12 that stacks directly, the player's first, does it — and the
-        // best known is 8, the player's flat 17x7, which beat the 18x8 a
-        // search found (PLAN.md). (It began as
-        // an 11x11 square, the search's smallest, and that was more than a
-        // puzzle should ask.)
-        {
-            id: 'full-adder-tight', chapter: 'arith', title: 'Tight full adder', subtitle: 'five muxes, packed',
-            brief: 'The full adder again, from five muxes — then packed tight. First make it work, with '
-                + 'all the room you like. Then pack it into the outline that appears, so that it makes a '
-                + 'slice: one stands on the next, the carry running up through them.',
-            hint: 'Work out A ⊕ B once and use it twice. S is (A ⊕ B) ⊕ Cin. And when A ⊕ B is 1, '
-                + 'the carry out is just Cin; when it is 0, A and B are the same, and the carry out is A. '
-                + 'Two XORs and one more mux — five muxes in all.',
-            inputs: ['A', 'B', 'Cin'], outputs: ['S', 'Cout'],
-            w: 28, h: 21,
-            padAt: { A: ['w', 8], B: ['w', 12], Cin: ['s', 10], S: ['e', 14], Cout: ['n', 10] },
-            maxMuxes: 5,
-            pack: {
-                rect: { x0: 4, y0: 5, x1: 23, y1: 16 },
-                sides: { A: 'w', B: 'w', S: 'e', Cin: 's', Cout: 'n' },
-                maxPeriod: 13,
-                record: 8,
-                text: 'It works. Now pack it into the dashed outline — everything but the wires running in from '
-                    + 'the switches and out to the lamps — with <b>A</b> and <b>B</b> coming in on its left, '
-                    + '<b>S</b> going out on its right, <b>Cin</b> in at the bottom and <b>Cout</b> out at the '
-                    + 'top. Height is what counts: stacked, it must repeat every 13 rows or fewer — its height '
-                    + 'and one row shared with the next, when <b>Cin</b> is straight under <b>Cout</b>. '
-                    + '<b>Rearrange</b> (A) moves things whole.',
-            },
-            part: 'FA',
-            truth: (v) => {
-                const n = v.A + v.B + v.Cin;
-                return { S: n & 1, Cout: n > 1 ? 1 : 0 };
-            },
-        },
-        {
-            id: 'adder4', chapter: 'arith', title: '4-bit adder', subtitle: 'A + B',
-            brief: 'Add two 4-bit numbers. Bit 3 is the most significant; Cout is '
-                + 'the carry out of the top bit.',
-            hint: 'Four full adders stacked, bit 0 at the bottom, each one’s Cout '
-                + 'running straight up into the next one’s Cin. The bottom one’s Cin '
-                + 'is tied to −V.',
-            inputs: [...busNames('A', 4), ...busNames('B', 4)],
-            outputs: [...busNames('S', 4), 'Cout'],
-            w: 56, h: 32, part: 'ADD4', uses: { 'full-adder-tight': 4 },
-            stack: { part: 'full-adder-tight', bits: 4 },
-            truth: (v) => {
-                const n = busVal(v, 'A', 4) + busVal(v, 'B', 4);
-                return { ...busBits('S', 4, n & 15), Cout: n > 15 ? 1 : 0 };
-            },
-        },
-        {
-            id: 'inc4', chapter: 'arith', title: '4-bit incrementer', subtitle: 'A + 1',
-            brief: 'Add one to a 4-bit number. The top carry out wraps to Cout.',
-            hint: 'You could use the 4-bit adder with B tied to 1 — but a chain of '
-                + 'half adders is far smaller, since one operand is a constant.',
-            inputs: busNames('A', 4), outputs: [...busNames('S', 4), 'Cout'],
-            w: 44, h: 26, part: 'INC4', uses: { 'half-adder': 4 },
-            truth: (v) => {
-                const n = busVal(v, 'A', 4) + 1;
-                return { ...busBits('S', 4, n & 15), Cout: n > 15 ? 1 : 0 };
-            },
-        },
-
-        {
-            id: 'select4', chapter: 'control', title: '4-bit selector', subtitle: 'SEL ? A : B',
-            brief: 'Pass A through when SEL is ON, B when it is OFF.',
-            hint: 'One mux per bit, all four sharing the same control signal. '
-                + 'This is the mux you have been using, widened to a bus.',
-            inputs: ['SEL', ...busNames('A', 4), ...busNames('B', 4)],
-            outputs: busNames('Q', 4), w: 48, h: 30, part: 'SEL4',
-            truth: (v) => busBits('Q', 4, v.SEL ? busVal(v, 'A', 4) : busVal(v, 'B', 4)),
-        },
-        {
-            id: 'zero4', chapter: 'control', title: 'Zero detector', subtitle: 'A = 0',
-            brief: 'Light the lamp when every input bit is OFF. This is the flag a '
-                + 'processor branches on.',
-            hint: 'Or the four bits together, then invert. A tree of Ors is shallower '
-                + 'than a chain, though either passes.',
-            inputs: busNames('A', 4), outputs: ['Z'], w: 36, h: 22, part: 'ZERO4', uses: { or: 3, not: 1 },
-            truth: (v) => ({ Z: busVal(v, 'A', 4) === 0 ? 1 : 0 }),
-        },
-        {
-            id: 'negate4', chapter: 'control', title: 'Two’s complement', subtitle: '−A',
-            brief: 'Negate a 4-bit number: invert every bit, then add one.',
-            hint: 'Four inverters feeding the incrementer you already built.',
-            inputs: busNames('A', 4), outputs: busNames('Q', 4), w: 46, h: 26, part: 'NEG4', uses: { not: 4, inc4: 1 },
-            truth: (v) => busBits('Q', 4, (-busVal(v, 'A', 4)) & 15),
-        },
-
-        // Storage. These levels carry a `script` and a `step` instead of a
-        // `truth`: the answer depends on what came before, so the board is
-        // reset once and then walked through the script in order.
-        {
-            id: 'd-latch', chapter: 'memory', title: 'D latch', subtitle: 'follow, then hold',
-            brief: 'While E is ON, Q follows D. When E goes OFF, Q keeps whatever it '
-                + 'was holding — even if D changes afterwards.',
-            hint: 'Feed Q back in. A mux picks between the new D and the latch’s own '
-                + 'output, under the control of E: enabled it takes D, disabled it '
-                + 'takes itself, which is what makes it remember. You will want an '
-                + 'inverter in the loop.',
-            sequential: true,
-            inputs: ['D', 'E'], outputs: ['Q'], w: 28, h: 20, part: 'D LATCH',
-            script: loadHoldScript('D', 1, 'E'),
-            step: (v, prev) => ({ Q: v.E ? v.D : prev.Q }),
-        },
-        {
-            id: 'register4', chapter: 'memory', title: '4-bit register', subtitle: 'store a number',
-            brief: 'Four latches sharing one enable: load D into Q while E is ON, hold '
-                + 'the stored number when E goes OFF.',
-            hint: 'Four D latch parts, with E run to all of them. This is the first '
-                + 'thing in the campaign that is genuinely just copies.',
-            sequential: true,
-            inputs: [...busNames('D', 4), 'E'], outputs: busNames('Q', 4), w: 54, h: 34,
-            part: 'REG4', uses: { 'd-latch': 4 },
-            script: loadHoldScript('D', 4, 'E'),
-            step: (v, prev) => (v.E ? busBits('Q', 4, busVal(v, 'D', 4)) : { ...prev }),
-        },
-    ];
-
-    // Chapters group the ladder in the level browser. `roadmap` chapters have
-    // no levels yet - they are the stated destination (a CPU that runs Tetris),
-    // shown so the shipped chapters read as the first rungs of a ladder rather
-    // than as the whole thing.
-    const CHAPTERS = [
-        {
-            id: 'basics', title: 'Basics',
-            blurb: 'Everything is built from one part: a mux, wired as a relay. '
-                + 'Start by meeting the tools, then make that one part behave '
-                + 'like the gates you already know.',
-        },
-        {
-            id: 'arith', title: 'Arithmetic',
-            blurb: 'Gates become adders. From here on, each level is mostly a '
-                + 'matter of putting down the parts you already built.',
-        },
-        {
-            id: 'control', title: 'Selection & flags',
-            blurb: 'Choosing between buses and testing them — the pieces an '
-                + 'instruction decoder and an ALU are assembled from.',
-        },
-        {
-            id: 'memory', title: 'Memory',
-            blurb: 'A circuit that feeds its own output back can remember. From here '
-                + 'the answer depends on what came before, so these levels are '
-                + 'checked as a sequence rather than a truth table.',
-        },
-        {
-            id: 'machine', title: 'The machine', roadmap: [
-                'Register file', 'Arithmetic logic unit', 'Random-access memory',
-                'Program counter', 'Instruction decoder', 'Processor',
-                'Video output', 'Tetris',
-            ],
-            blurb: 'Where this is going.',
-        },
-    ];
-
-    const levelById = new Map(LEVELS.map((l) => [l.id, l]));
-    const getLevel = (id) => levelById.get(id) || null;
-    const levelIndex = (id) => LEVELS.findIndex((l) => l.id === id);
-    const levelsIn = (chapterId) => LEVELS.filter((l) => l.chapter === chapterId);
 
     // ===== Parts =====
     //
     // A part is a circuit dropped onto a board whole, at full size, under a
-    // lid that names it and its pins (model.js's blocks). Solving a level
+    // lid that names it and its pins (the model's blocks). Solving a level
     // that makes one (`part: 'XOR'`) captures the board as that part — its
     // switches and lamps become the part's pins, named as the level named
     // them — and from the next level on it is on the Parts shelf, so the
@@ -567,40 +53,30 @@
     // full adder is not a way to solve the half adder. The sandbox offers
     // every part, the player's own included (`user:<name>`), which are made
     // from a selection there.
-    const PARTS_KEY = 'pixelogic-pcb.parts.v1';
-    // Which way level parts were cut. Parts made before fitting existed are
-    // remade once from their levels' saved boards (see backfillParts). 5:
-    // a pad the part has to take in becomes a junction in it, where it used
-    // to fail the fit and make the part the whole board.
-    const FIT_VERSION = 5;
-    // Parts fitted this far back are cut the way parts are now (a core and
-    // its edge), and one of them that is smaller than a refit — refined by
-    // hand, most likely — is kept.
-    const FIT_KEEP = 4;
+    // Each entry: its key, name and source level, its clip, and `fit`, 1 if
+    // it was fitted to its core and edge (compact), 0 if it is the whole
+    // board it was made on.
     let partsCache = null;
     function partStore() {
         if (partsCache) return partsCache;
         partsCache = {};
-        try {
-            const raw = JSON.parse(localStorage.getItem(PARTS_KEY) || 'null');
-            if (raw && typeof raw === 'object') {
-                for (const [k, p] of Object.entries(raw)) {
-                    const clip = p && M.sanitizeClip(p.clip);
-                    if (!clip || !clip.blocks) continue;
-                    partsCache[k] = {
-                        key: k, name: String(p.name || k), source: p.source || '', clip,
-                        fit: p.fit | 0, fitTried: p.fitTried | 0,
-                    };
-                }
+        const raw = S.getJSON(S.KEYS.parts, null);
+        if (raw && typeof raw === 'object')
+            for (const [k, p] of Object.entries(raw)) {
+                const clip = p && M.sanitizeClip(p.clip);
+                if (!clip || !clip.blocks) continue;
+                partsCache[k] = {
+                    key: k, name: String(p.name || k), source: p.source || '', clip, fit: p.fit ? 1 : 0,
+                    made: typeof p.made === 'string' ? p.made : undefined,
+                };
             }
-        } catch (e) { }
         return partsCache;
     }
     function writeParts() {
         const out = {};
         for (const [k, p] of Object.entries(partStore()))
-            out[k] = { name: p.name, source: p.source, clip: M.clipToJSON(p.clip), fit: p.fit | 0, fitTried: p.fitTried | 0 };
-        try { localStorage.setItem(PARTS_KEY, JSON.stringify(out)); } catch (e) { }
+            out[k] = { name: p.name, source: p.source, clip: M.clipToJSON(p.clip), fit: p.fit ? 1 : 0, made: p.made };
+        S.setJSON(S.KEYS.parts, out);
     }
     // A part as the UI wants it: name, size, and its pins in clip
     // coordinates (the outermost block's).
@@ -619,12 +95,16 @@
             .sort((a, b) => a.name.localeCompare(b.name)).map(describePart);
         return lvl.concat(own);
     }
+    // In a level, the shelf holds what the levels before it made — and the
+    // player's own parts made in it or a level before it (`made`): a slice
+    // made here, to repeat with Array, as the 4-bit adder's full adders are
+    // the tight level's. Parts made in the sandbox stay there.
     function partsFor(level) {
         if (!level) return allParts();
-        const i = levelIndex(level.id);
+        const i = levelIndex(level.id), store = partStore();
         return allParts().filter((p) => {
-            const src = levelIndex(p.key);
-            return src >= 0 && src < i;
+            const src = levelIndex(p.key), made = store[p.key] && store[p.key].made;
+            return (src >= 0 && src < i) || (!!made && levelIndex(made) >= 0 && levelIndex(made) <= i);
         });
     }
     // The board as it stands, as this level's part. The board must be this
@@ -632,9 +112,8 @@
     // Returns {ok, compact, why, kept}: `why` says what kept a part from being
     // compact; `kept`, that the shelf already had a smaller one — refined by
     // hand, perhaps — which a solution that makes a bigger part does not
-    // replace. A `refit` (the shelf being brought up to a new FIT_VERSION,
-    // not a new solution) keeps one the same size, too.
-    function makeLevelPart(level, refit) {
+    // replace.
+    function makeLevelPart(level) {
         if (!level.part) return { ok: false };
         const g = layout(level);
         const FACE = { n: 0, e: 1, s: 2, w: 3 };
@@ -649,36 +128,28 @@
         }
         const had = partStore()[level.id];
         const area = (c) => c.w * c.h;
-        if (had && had.fit >= FIT_KEEP && (area(had.clip) < area(clip) || (refit && area(had.clip) === area(clip)))) {
-            had.fitTried = FIT_VERSION;
-            writeParts();
-            return { ok: true, kept: true, compact: true, why: null };
-        }
-        partStore()[level.id] = {
-            key: level.id, name: level.part, source: level.id, clip,
-            fit: fit.core ? FIT_VERSION : 0, fitTried: FIT_VERSION,
-        };
+        if (had && had.fit && area(had.clip) < area(clip)) return { ok: true, kept: true, compact: true, why: null };
+        partStore()[level.id] = { key: level.id, name: level.part, source: level.id, clip, fit: fit.core ? 1 : 0 };
         writeParts();
         return { ok: true, compact: !!fit.core, why: fit.core ? null : fit.error };
     }
     // A level's part, replaced by one made by hand — which must pass the
-    // level's tests first (testPart). Its pins are put in the level's order.
+    // level's tests first (testPart, or `tested`: its result, already run —
+    // testPartOff). Its pins are put in the level's order.
     // Returns {ok} or {error, failure}.
-    function replaceLevelPart(level, clip) {
-        const t = testPart(level, clip);
+    function replaceLevelPart(level, clip, tested) {
+        const t = tested || testPart(level, clip);
         if (t.error) return { ok: false, error: t.error };
         if (!t.passed) return { ok: false, failure: t.failure };
-        partStore()[level.id] = {
-            key: level.id, name: level.part, source: level.id, clip,
-            fit: FIT_VERSION, fitTried: FIT_VERSION,
-        };
+        partStore()[level.id] = { key: level.id, name: level.part, source: level.id, clip, fit: 1 };
         writeParts();
         return { ok: true };
     }
     // A part of the player's own, from the sandbox. Returns its key.
-    function saveCustomPart(name, clip) {
+    // `made`: the level it was made in, if any (see partsFor).
+    function saveCustomPart(name, clip, made) {
         const key = 'user:' + name;
-        partStore()[key] = { key, name, source: '', clip };
+        partStore()[key] = { key, name, source: '', clip, made: made || undefined };
         writeParts();
         return key;
     }
@@ -686,6 +157,114 @@
         delete partStore()[key];
         writeParts();
     }
+    // One of the player's own parts, renamed. Its key is its name, so it
+    // moves to the new one — in its place on the shelf — taking how it
+    // repeats with it, and its lid says the new name wherever it is put
+    // down from now on. (Copies already down are copies, and keep the name
+    // they went down with.) A level's part is named by its level, and
+    // solving the level again would name it so again. {ok, key} or {error}.
+    function renamePart(key, name) {
+        const store = partStore(), p = store[key];
+        name = String(name || '').trim().slice(0, 24);
+        if (!p || !key.startsWith('user:')) return { error: 'Only a part of your own can be renamed: a level’s part is named by its level' };
+        if (!name) return { error: 'A part needs a name' };
+        const to = 'user:' + name;
+        if (to === key) return { ok: true, key };
+        if (store[to]) return { error: `There is already a part called “${name}”` };
+        const clip = { ...p.clip, blocks: p.clip.blocks.map((b) => (b.parent ? b : { ...b, name })) };
+        const next = {};
+        for (const [k, v] of Object.entries(store)) next[k === key ? to : k] = k === key ? { ...p, key: to, name, clip } : v;
+        partsCache = next;
+        writeParts();
+        const arrays = arrayStore();
+        if (arrays[key]) {
+            arrays[to] = arrays[key];
+            delete arrays[key];
+            S.setJSON(S.KEYS.arrays, arrays);
+        }
+        return { ok: true, key: to };
+    }
+    // ---- Arrays: a part, repeated ----
+    // How a part repeats — which way, how far apart, which pins are shared
+    // or tapped, which end is bit 0 (model.arrayClip's spec) — is the
+    // part's own, set once and kept by part key beside the shelf, so a level
+    // part solved again keeps it for as long as it still repeats that way.
+    // How many is not: that is chosen each time copies are put down. A part
+    // repeated is a part like any other once it is down: a lid over its
+    // copies, its pins named by bit. It can also repeat apart (`apartWay`:
+    // {dir, pitch}, kept the same way): copies side by side, each its own
+    // part, nothing joined — four latches for a register, to wire by hand —
+    // which may want another way and spacing than its joined copies do.
+    let arraysCache = null;
+    function arrayStore() {
+        if (arraysCache) return arraysCache;
+        arraysCache = {};
+        const raw = S.getJSON(S.KEYS.arrays, null);
+        if (raw && typeof raw === 'object')
+            for (const [k, v] of Object.entries(raw)) {
+                if (!v || typeof v !== 'object') continue;
+                arraysCache[k] = {
+                    dir: v.dir & 3, pitch: v.pitch | 0, reverse: !!v.reverse,
+                    shared: Array.isArray(v.shared) ? v.shared.map(String) : [],
+                    taps: Array.isArray(v.taps) ? v.taps.map(String) : [],
+                    tapSide: Number.isInteger(v.tapSide) ? v.tapSide & 3 : undefined,
+                    apartWay: readApart(v.apartWay),
+                };
+            }
+        return arraysCache;
+    }
+    const readApart = (a) => (a && typeof a === 'object' && Number.isInteger(a.dir) && Number.isInteger(a.pitch)
+        ? { dir: a.dir & 3, pitch: a.pitch | 0 } : undefined);
+    function arraySpec(key) {
+        const s = arrayStore()[key];
+        return s ? { ...s, shared: [...s.shared], taps: [...s.taps], apartWay: s.apartWay && { ...s.apartWay } } : null;
+    }
+    function saveArraySpec(key, spec) {
+        arrayStore()[key] = {
+            dir: spec.dir & 3, pitch: spec.pitch | 0, reverse: !!spec.reverse,
+            shared: [...(spec.shared || [])], taps: [...(spec.taps || [])],
+            tapSide: Number.isInteger(spec.tapSide) ? spec.tapSide & 3 : undefined,
+            apartWay: readApart(spec.apartWay),
+        };
+        S.setJSON(S.KEYS.arrays, arrayStore());
+    }
+    // How the part `key` repeats apart ({dir, pitch, apart: true}, for
+    // arrayPart): as it was set, or else the way its joined copies go (or
+    // the first way that works), as close as they will sit. `spec` is the
+    // part's spec as it stands, if not the one kept.
+    function apartSpec(key, spec) {
+        const s = spec || arraySpec(key);
+        if (s && s.apartWay) return { ...s.apartWay, apart: true };
+        const plan = planArray(key, { apart: true });
+        if (!plan) return null;
+        const way = (s && !plan.ways[s.dir].error && plan.ways[s.dir]) || plan.best;
+        return way ? { dir: way.dir, pitch: way.pitch, apart: true } : null;
+    }
+    // The part no longer repeats.
+    function clearArraySpec(key) {
+        delete arrayStore()[key];
+        S.setJSON(S.KEYS.arrays, arrayStore());
+    }
+    // The part `key` repeated n times as `spec` says (model.arrayClip), or
+    // {error}. Joined up, the array's lid records how it repeats (`rep`),
+    // so that once it is down it can be set out again as it was.
+    function arrayPart(key, spec, n) {
+        const p = partStore()[key];
+        if (!p) return { error: 'No such part' };
+        const r = M.arrayClip(p.clip, { ...spec, name: spec.name || p.name }, n);
+        if (!r.error && !r.apart) {
+            const rep = { key, dir: spec.dir, pitch: spec.pitch, reverse: !!spec.reverse, shared: [...(spec.shared || [])], taps: [...(spec.taps || [])] };
+            if (Number.isInteger(spec.tapSide)) rep.tapSide = spec.tapSide;
+            r.clip.blocks[0].rep = rep;
+        }
+        return r;
+    }
+    // Which ways the part `key` could repeat (model.arrayPlan).
+    function planArray(key, opts) {
+        const p = partStore()[key];
+        return p ? M.arrayPlan(p.clip, opts || {}) : null;
+    }
+
     // Resetting progress takes the level parts with it — they are earned by
     // solving — and leaves the player's own.
     function clearLevelParts() {
@@ -694,37 +273,6 @@
         writeParts();
     }
 
-    // Levels solved before parts existed have a solution saved but no part,
-    // and parts made before fitting are the size of their whole board.
-    // Where the saved board still passes, make its part now, so the shelf is
-    // what the progress says it should be; where it does not, what is on the
-    // shelf stays, and is not tried again. The board in the model is put
-    // back exactly as it was.
-    function backfillParts(progress) {
-        const store = partStore();
-        const todo = LEVELS.filter((l) => l.part && progress.completed[l.id]
-            && (!store[l.id] || store[l.id].fitTried !== FIT_VERSION));
-        if (!todo.length) return 0;
-        const saved = M.getLiveSnapshot();
-        const locks = M.lockedCells();
-        let made = 0;
-        try {
-            for (const level of todo) {
-                const text = loadCircuit(level.id);
-                if (text) {
-                    loadBoard(level, text);
-                    if (verify(level).passed && makeLevelPart(level, true).ok) { made++; continue; }
-                }
-                if (store[level.id]) store[level.id].fitTried = FIT_VERSION;
-            }
-            writeParts();
-        } finally {
-            M.setLockedCells([]);
-            M.restoreLiveSnapshot(saved);
-            M.setLockedCells(locks);
-        }
-        return made;
-    }
 
     // ===== Board size, for levels built from parts =====
     //
@@ -775,24 +323,59 @@
     // them upright beside each layout turned, with room to route — and
     // whether they are all made (the level's own w/h is the floor if not).
     // Null for a board not built from parts.
+    //
+    // A level whose hint offers another way (`alt`, parts as `uses` has
+    // them) — the incrementer's "you could use the 4-bit adder" — has room
+    // for that too, once those parts are made: every board holds either.
+    // (The incrementer's board held four half adders and not the 4-bit
+    // adder its own hint suggested.)
     function partBoards(level) {
         if (stackLayout(level) || !level.uses) return null;
-        const dims = [];
-        let all = true;
-        for (const [key, count] of Object.entries(level.uses)) {
-            const p = partStore()[key];
-            if (!p) { all = false; continue; }
-            for (let k = 0; k < count; k++) dims.push({ w: p.clip.w, h: p.clip.h });
-        }
-        if (!dims.length) return null;
         const pads = Math.max((level.inputs || []).length, (level.outputs || []).length);
         const rw = PART_ROUTE_W + 2 * Math.max(0, pads - 3), rh = PART_ROUTE_H;
-        const layouts = (ds) => ds.map((d, k) => stackSize(ds, k + 1));
-        const upright = layouts(dims), turned = layouts(dims.map((d) => ({ w: d.h, h: d.w })));
+        const boardsFor = (uses) => {
+            const dims = [];
+            let all = true;
+            for (const [key, count] of Object.entries(uses)) {
+                const p = partStore()[key];
+                if (!p) { all = false; continue; }
+                for (let k = 0; k < count; k++) dims.push({ w: p.clip.w, h: p.clip.h });
+            }
+            if (!dims.length) return null;
+            const layouts = (ds) => ds.map((d, k) => stackSize(ds, k + 1));
+            const upright = layouts(dims), turned = layouts(dims.map((d) => ({ w: d.h, h: d.w })));
+            const boards = [];
+            for (const u of upright)
+                for (const t of turned) boards.push({ w: Math.max(u.w, t.w) + rw, h: Math.max(u.h, t.h) + rh });
+            return { boards, all };
+        };
+        const main = boardsFor(level.uses), alt = level.alt && boardsFor(level.alt);
+        const row = rowBoard(level, rw, rh);
+        const both = (bs, extra) => (extra ? bs.map((b) => ({ w: Math.max(b.w, extra.w), h: Math.max(b.h, extra.h) })) : bs);
+        if (!alt || !alt.all) return main && { boards: both(main.boards, row), all: main.all };
+        if (!main) return { boards: alt.boards, all: false };
         const boards = [];
-        for (const u of upright)
-            for (const t of turned) boards.push({ w: Math.max(u.w, t.w) + rw, h: Math.max(u.h, t.h) + rh });
-        return { boards, all };
+        for (const m of main.boards)
+            for (const a of alt.boards) boards.push({ w: Math.max(m.w, a.w), h: Math.max(m.h, a.h) });
+        return { boards: both(boards, row), all: main.all };
+    }
+    // A level that asks for it (`row`: the register, built from four
+    // copies of one part) has room for its copies in a straight row as
+    // well, the way Array puts them down — with a lane above the row for
+    // every pin of every copy facing up, and one below for every one facing
+    // down, for the wires to them to run out to the side in — whichever way
+    // round the part is turned. (The register's board held its four latches
+    // two by two, and not in a row with their wiring.) Null if not, or the
+    // part is not made.
+    function rowBoard(level, rw, rh) {
+        const uses = Object.entries(level.uses);
+        if (!level.row || uses.length !== 1 || uses[0][1] < 2) return null;
+        const p = partStore()[uses[0][0]], n = uses[0][1];
+        if (!p) return null;
+        const pins = M.clipPins(p.clip).filter((q) => q.face);
+        const row = (w, h, across) => ({ w: n * w + (n - 1) * PART_GAP + rw, h: h + n * pins.filter(across).length + rh });
+        const upright = row(p.clip.w, p.clip.h, (q) => q.face[1] !== 0), turned = row(p.clip.h, p.clip.w, (q) => q.face[0] !== 0);
+        return { w: Math.max(upright.w, turned.w), h: Math.max(upright.h, turned.h) };
     }
     function neededSize(level) {
         let w = level.w || 40, h = level.h || 0;
@@ -847,12 +430,8 @@
         // it would make, stacked on itself.
         const sp = slicePeriod(M.captureRect(c, fit.pins, level.part, level.id, fit.junctions));
         const max = level.pack.maxPeriod;
-        if (max && sp && sp.period > max) {
-            const why = !sp.aligned
-                ? 'Cin is not straight under Cout, so stacked slices need a row between them for the carry to step across'
-                : 'stacked on one another, its top edge clashes with its bottom one — a terminal against a cell the other keeps bare — so they need a row between them';
-            return { ok: false, core: c, period: sp.period, why: `It fits, but ${why}: one every ${sp.period} rows, where the outline asks for ${max}.` };
-        }
+        if (max && sp && sp.period > max)
+            return { ok: false, core: c, period: sp.period, why: `It fits, but Cin is not straight under Cout, so stacked slices need room between them for the carry to step across: one every ${sp.period} rows, where the outline asks for ${max}.` };
         return { ok: true, core: c, period: sp && sp.period };
     }
     function judge(level, result) {
@@ -883,61 +462,147 @@
     // cell of wire; there are two columns of wire on the left and one on
     // the right.
     const STACK_X0 = 4, STACK_TOP = 4;
-    // How often a slice repeats, stacked on itself ({period, aligned,
-    // direct}, or null for a part with no carry in and out). What matters
-    // is the period, not the height: a slice whose carry in is straight
-    // under its carry out, and whose top edge sits on its bottom edge
-    // without a terminal landing on a cell the other keeps bare, shares that
-    // row with the next — the carry is one cell, both terminals at once —
-    // and repeats every height + 1 rows. Edges that clash need a row
-    // between them (height + 2, the carry two cells); a carry that has to
-    // step across needs a row of its own to do it in (height + 3).
-    function slicePeriod(clip) {
+    // How often a slice repeats, stacked on itself ({period, aligned}, or
+    // null for a part with no carry in and out — `up`, the pins that run up
+    // the stack, [out on top, in below]: the carry by default). What
+    // matters is the period, not the height. A slice whose carry in is
+    // straight under its carry out can sit flush on the next, every height
+    // rows, the carry out's pin on the carry in's with no wire between — if nothing else
+    // of one joins the other where it keeps bare (the arrays judge that,
+    // arrayClip). If something would, the two share the row between
+    // instead — the carry is one cell, both terminals at once — every
+    // height + 1 rows: whatever else the two edges say about that row, it
+    // is bare but for the carry, which is all either asks. (This once
+    // wanted a row more where a terminal of one met a cell the other keeps
+    // bare, as the arrays did; placing a part by hand never minded, and a
+    // stack of the player's full adder built every 8 rows proved it.) A
+    // carry that has to step across needs a row of its own to do it in
+    // (height + 3).
+    function slicePeriod(clip, up) {
+        const [outName, inName] = up || ['Cout', 'Cin'];
         const pins = M.clipPins(clip), pin = (n) => pins.find((q) => q.name === n && q.at);
-        const ci = pin('Cin'), co = pin('Cout'), H = clip.h;
+        const ci = pin(inName), co = pin(outName), H = clip.h;
         if (!ci || !co) return null;
-        if (!(ci.at[1] === H && co.at[1] === -1 && ci.at[0] === co.at[0])) return { period: H + 3, aligned: false, direct: false };
-        const top = new Map(), bottom = new Map();
-        for (const e of M.clipRing(clip)) {
-            if (e.y === -1) top.set(e.x, e.cls);
-            if (e.y === H) bottom.set(e.x, e.cls);
-        }
-        // The rule placing a part keeps (blockFits): a terminal on a cell
-        // the other keeps bare clashes; terminal on terminal does not — the
-        // shared row is bare but for the carry, so two wires that would
-        // each take a wire there just have a bare cell between them. (This
-        // once counted terminal on terminal as a clash too, and so put a
-        // row between slices that stack fine without one.)
-        let direct = true;
-        for (let x = -1; x <= clip.w; x++) {
-            if (x === co.at[0]) continue;             // the carry: Cout on Cin
-            const a = top.get(x) || 'X', b = bottom.get(x) || 'X';
-            if ((a === 'T' && b === 'R') || (a === 'R' && b === 'T')) direct = false;
-        }
-        return { period: H + (direct ? 1 : 2), aligned: true, direct };
+        const aligned = ci.at[1] === H && co.at[1] === -1 && ci.at[0] === co.at[0];
+        if (!aligned) return { period: H + 3, aligned };
+        const flush = !M.arrayClip(clip, { dir: 0, pitch: H }, 2).error;
+        return { period: H + (flush ? 0 : 1), aligned };
     }
+    // `stack`: {part, bits, each, up, ends, top} — the slice's level part; how
+    // many; its pins every slice has its own of, by the side their pads go
+    // on (the adder's {A: 'w', B: 'w', S: 'e'}: A0..A3 down the left); the
+    // pins that run up the stack, [out on top, in below] (its carry, or a
+    // selector's SELo and SEL); and which of those the stack's ends have a
+    // pad for, by the edge it is on (the adder's Cout at the top, the
+    // selector's SEL at the bottom); and the rows above it, if not
+    // STACK_TOP. A slice not laid out that way — a per-bit pin on the wrong
+    // side, two of a side's pads touching — gets the ordinary board.
+    //
+    // Or the slice is the player's own (`slice` in place of `part`): the
+    // register's, a latch carrying its enable up through it, made in the
+    // level or before it — the newest on the level's shelf that is one,
+    // turned and flipped whichever of the eight ways makes it one, its
+    // carried-out enable called whatever the player called it (`up`'s out
+    // left null: the one output left). Its pads then lie level with each
+    // slice, as the adder's do. (The register's were bunched in the middle
+    // of a board sized for a row of plain latches, and four of the player's
+    // slices stood on end did not fit it.)
+    //
+    // Every part that is a slice, newest first, the first way round it is
+    // one: {clip, up, name}.
+    const WAYS_ROUND = [[], ['t'], ['t', 't'], ['t', 't', 't'], ['m'], ['m', 't'], ['m', 't', 't'], ['m', 't', 't', 't']];
+    function stackSlices(level) {
+        const st = level.stack;
+        if (!st) return [];
+        const store = partStore();
+        const cands = st.part ? [store[st.part]].filter(Boolean)
+            : partsFor(level).filter((q) => q.key.startsWith('user:')).map((q) => store[q.key]).filter(Boolean).reverse();
+        const found = [];
+        for (const p of cands)
+            for (const ops of st.part ? [[]] : WAYS_ROUND) {
+                let clip = p.clip;
+                for (const op of ops) clip = op === 'm' ? M.mirrorClipH(clip) : M.rotateClipCW(clip);
+                const up = sliceShape(clip, st);
+                if (up) { found.push({ clip, up, name: p.name }); break; }
+            }
+        return found;
+    }
+    // Is a clip a slice the stack's way up — `each` pins on their sides,
+    // `up`'s in at the bottom and its out at the top? Its [out, in], or null.
+    function sliceShape(clip, st) {
+        const pins = M.clipPins(clip), pin = (n) => pins.find((q) => q.name === n && q.at);
+        const W = clip.w, H = clip.h, [outName, inName] = st.up;
+        const into = pin(inName);
+        if (!into || into.at[1] !== H) return null;
+        const named = new Set([...Object.keys(st.each), inName]), rest = pins.filter((q) => q.dir === 'out' && q.at && !named.has(q.name));
+        const out = outName ? pin(outName) : rest.length === 1 ? rest[0] : null;
+        if (!out || out.at[1] !== -1) return null;
+        for (const [name, side] of Object.entries(st.each)) {
+            const q = pin(name);
+            if (!q || q.at[0] !== (side === 'w' ? -1 : W)) return null;
+        }
+        return [out.name, inName];
+    }
+    // The stack a level's board is laid out for — kept while the board is
+    // out (see chosenSize): a part made meanwhile must not move its pads.
+    const chosenStack = new Map();
     function stackLayout(level) {
-        const st = level.stack, p = st && partStore()[st.part];
-        if (!p) return null;
-        const pins = M.clipPins(p.clip), pin = (n) => pins.find((q) => q.name === n && q.at);
-        const a = pin('A'), b = pin('B'), s = pin('S'), ci = pin('Cin'), co = pin('Cout');
-        const W = p.clip.w, H = p.clip.h;
-        if (!a || !b || !s || !ci || !co) return null;
-        if (a.at[0] !== -1 || b.at[0] !== -1 || s.at[0] !== W || co.at[1] !== -1 || ci.at[1] !== H) return null;
-        if (Math.abs(a.at[1] - b.at[1]) < 2) return null;     // their switches would touch
+        return chosenStack.has(level.id) ? chosenStack.get(level.id) : stackFor(level);
+    }
+    // The stack a fresh board would be laid out for: the first slice that
+    // makes one.
+    function stackFor(level) {
+        for (const s of stackSlices(level)) {
+            const sl = stackFrom(level, s);
+            if (sl) return sl;
+        }
+        return null;
+    }
+    // Every board a level built of the player's slices could have been
+    // laid out for — each slice's, then the plain one (null) — for a save
+    // to be matched to the one it was made on (see loadCircuit).
+    function stackChoices(level) {
+        if (!level.stack || !level.stack.slice) return [stackFor(level)];
+        return [...stackSlices(level).map((s) => stackFrom(level, s)).filter(Boolean), null];
+    }
+    // A slice made since the board was laid: the slice the board would be
+    // laid out for now, where the board that is out is not — so the level
+    // can offer to lay it out afresh (see relayBoard). Null if none.
+    function stackOffer(level) {
+        if (!level.stack || !level.stack.slice || !chosenStack.has(level.id)) return null;
+        const now = stackFor(level), out = chosenStack.get(level.id);
+        if (!now || (out && JSON.stringify(out.padAt) === JSON.stringify(now.padAt) && out.w === now.w && out.h === now.h)) return null;
+        return { name: now.name };
+    }
+    function stackFrom(level, s) {
+        const st = level.stack;
+        const pins = M.clipPins(s.clip), pin = (n) => pins.find((q) => q.name === n && q.at);
+        const W = s.clip.w, H = s.clip.h, [upName, downName] = s.up;
+        const out = pin(upName), into = pin(downName);
+        const each = Object.entries(st.each).map(([name, side]) => ({ name, side, q: pin(name) }));
         // As often as the slice repeats (slicePeriod).
-        const n = st.bits, pitch = slicePeriod(p.clip).period;
-        const padAt = { Cout: ['n', STACK_X0 + co.at[0]] };
+        const n = st.bits, pitch = slicePeriod(s.clip, s.up).period;
+        // A side's switches and lamps two rows apart at least — in a
+        // slice, and across to the next one up — or they would touch.
+        for (const side of ['w', 'e']) {
+            const rows = each.filter((e) => e.side === side).map((e) => e.q.at[1]).sort((u, v) => u - v);
+            for (let i = 1; i < rows.length; i++) if (rows[i] - rows[i - 1] < 2) return null;
+            if (rows.length && rows[0] + pitch - rows[rows.length - 1] < 2) return null;
+        }
+        // The rows above the stack (`top`): room for a pad there, the
+        // adder's Cout; the register's carried-out E goes nowhere, and
+        // needs only the edge and its terminal's row.
+        const top = st.top === undefined ? STACK_TOP : st.top;
+        const padAt = {};
+        for (const [name, side] of Object.entries(st.ends || {})) padAt[name] = [side, STACK_X0 + (name === upName ? out : into).at[0]];
         for (let k = 0; k < n; k++) {
-            const y = STACK_TOP + (n - 1 - k) * pitch;
-            padAt['A' + k] = ['w', y + a.at[1]];
-            padAt['B' + k] = ['w', y + b.at[1]];
-            padAt['S' + k] = ['e', y + s.at[1]];
+            const y = top + (n - 1 - k) * pitch;
+            for (const e of each) padAt[e.name + k] = [e.side, y + e.q.at[1]];
         }
         return {
-            w: STACK_X0 + W + 4, h: STACK_TOP + (n - 1) * pitch + H + 3, padAt,
+            w: STACK_X0 + W + 4, h: top + (n - 1) * pitch + H + 3, padAt, name: s.name,
             // Where slice k's core goes, for whoever wants to show or build it.
-            slice: (k) => ({ x: STACK_X0, y: STACK_TOP + (n - 1 - k) * pitch }),
+            slice: (k) => ({ x: STACK_X0, y: top + (n - 1 - k) * pitch }),
         };
     }
 
@@ -975,7 +640,8 @@
     // A level can pin its pads to rows of its own (`padRows`, name -> y) when
     // the automatic spacing is wrong for it: a tutorial whose wires should
     // run straight, or whose crossing should sit in the middle. Its `h` is
-    // then taken as given.
+    // then taken as given. Or only say the order its outputs go down the
+    // right in (`outputOrder`), where their own order is the wrong one.
     //
     // Or it can put each pad on any edge (`padAt`, name -> [edge, at]: 'w' or
     // 'e' with a row, 'n' or 's' with a column): the stackable adder takes
@@ -985,7 +651,10 @@
     // board whose every cell is meant to count. Every pad says which edge it
     // is on (`edge`).
     function layout(level) {
-        const inL = rowsFor(level.inputs), outL = rowsFor(level.outputs);
+        // `outputOrder`: the order the output pads go down the right, where
+        // it is not the outputs' own (the incrementer's carry out above S3,
+        // where a stack carrying up puts it out).
+        const inL = rowsFor(level.inputs), outL = rowsFor(level.outputOrder || level.outputs);
         const size = sizeFor(level);
         const w = size.w;
         const padAt = level.padAt || (stackLayout(level) || {}).padAt;
@@ -1017,8 +686,15 @@
 
     // Lay a level's board into the model: right size, empty, pads placed and
     // locked. Any existing circuit is replaced, so callers save first.
+    // A fresh board is the size the level needs now, and keeps that size
+    // while it is out (see chosenSize): a part made meanwhile may change what
+    // the level would need, not the board already laid.
     function applyBoard(level) {
-        const g = layout(level);
+        chosenSize.delete(level.id);
+        chosenStack.delete(level.id);
+        const sl = stackLayout(level), g = layout(level);
+        chosenSize.set(level.id, { w: g.w, h: g.h });
+        chosenStack.set(level.id, sl);
         M.setLockedCells([]);          // paintCell refuses locked cells
         M.deserialize(JSON.stringify({ w: g.w, h: g.h, cells: new Array(g.w * g.h).fill(0) }));
         for (const p of g.inputs) M.paintCell(p.x, p.y, 'toggle');
@@ -1042,19 +718,11 @@
         M.setLockedCells([]);
         if (!serialized || !M.deserialize(serialized)) return applyBoard(level);
         if (M.GRID_W !== g.w || M.GRID_H !== g.h) return applyBoard(level);
-        const padAt = new Set(g.pads.map((p) => p.x + ',' + p.y));
-        const lanes = [[1, null], [g.w - 2, null]];
-        for (const p of g.pads) lanes.push(p.edge === 'w' || p.edge === 'e' ? [p.x, null] : [null, p.y]);
-        for (const [lx, ly] of lanes) {
-            for (let k = 0; k < (lx !== null ? g.h : g.w); k++) {
-                const x = lx !== null ? lx : k, y = lx !== null ? k : ly;
-                const c = M.colorOfCell(M.getCell(x, y));
-                if ((c === 'toggle' || c === 'led') && !padAt.has(x + ',' + y)) return applyBoard(level);
-            }
-        }
         for (const p of g.inputs) if (M.colorOfCell(M.getCell(p.x, p.y)) !== 'toggle') M.paintCell(p.x, p.y, 'toggle');
         for (const p of g.outputs) if (M.colorOfCell(M.getCell(p.x, p.y)) !== 'led') M.paintCell(p.x, p.y, 'led');
         M.setLockedCells(g.pads.map((p) => [p.x, p.y]));
+        chosenSize.set(level.id, { w: g.w, h: g.h });
+        chosenStack.set(level.id, stackLayout(level));
         return g;
     }
 
@@ -1189,17 +857,32 @@
         return { settled: false, ticks: maxTicks };
     }
 
+    // What a storage level wants at step i of its script: its `step`, given
+    // the outputs before (`prev`), the inputs before (`was`, all off before
+    // the first step — a cold board's switches) and the run's own `mem`. A
+    // level that `wakes` leaves its first step unjudged: that is whatever the
+    // circuit woke up as, and the steps after are judged from there.
+    function stepWants(level, i, v, prev, was, mem) {
+        if (level.wakes && i === 0) return Object.fromEntries(level.outputs.map((n) => [n, null]));
+        return level.step(v, prev, was, mem);
+    }
+    const coldInputs = (level) => Object.fromEntries(level.inputs.map((n) => [n, 0]));
+
     // Every row of a level's truth table — inputs and what the outputs must
     // be — without running anything, for showing the table before a Verify.
     // A storage level's rows follow its script, each expected value given
-    // the ones before.
+    // the ones before; one not known (null: nothing stored there yet) is
+    // carried on as not known.
     function tableCases(level) {
         const vectors = vectorsFor(level);
         if (!level.sequential) return vectors.map((v) => ({ inputs: v, expected: level.truth(v) }));
-        let prev = Object.fromEntries(level.outputs.map((n) => [n, 0]));
+        let prev = Object.fromEntries(level.outputs.map((n) => [n, null]));
+        let was = coldInputs(level);
+        const mem = {};
         return vectors.map((v, i) => {
-            const expected = level.step(v, prev);
-            prev = expected;
+            const expected = stepWants(level, i, v, prev, was, mem);
+            prev = Object.fromEntries(level.outputs.map((n) => [n, expected[n] == null ? null : expected[n]]));
+            was = v;
             return { step: i, inputs: v, expected };
         });
     }
@@ -1218,23 +901,30 @@
         return { got, settled: s.settled, ticks: s.ticks };
     }
 
-    const matches = (level, got, want) => level.outputs.every((name) => got[name] === (want[name] & 1));
+    // An output a step does not judge (null) matches whatever it is.
+    const matches = (level, got, want) => level.outputs.every((name) => want[name] == null || got[name] === (want[name] & 1));
 
-    // Runs the level's vectors against whatever is currently on the board and
-    // restores the board's exact prior state (charge, locks and any owed
-    // rearrange connections included) afterwards, so verifying is never
-    // destructive to a circuit the player is mid-way through debugging.
-    // Returns the first failure plus a full case list, so the UI can show a
-    // truth table with the wrong row marked.
+    // Runs the level's vectors against a copy of what is on the board —
+    // charge, locks and any owed rearrange connections included — so
+    // verifying never touches a circuit the player is mid-way through
+    // debugging. Returns the first failure plus a full case list, so the UI
+    // can show a truth table with the wrong row marked.
     function verify(level, opts) {
         const g = layout(level);
         const budget = (opts && opts.settle) || settleBudget(level);
-        const saved = M.getLiveSnapshot();
-        try {
+        return M.withBoard(M.cloneBoard(M.activeBoard()), () => runVectors(level, g, budget));
+    }
+
+    // The level's tests on a board given as a save (serialize's JSON), its
+    // pads at `g` — {inputs, outputs}: [{name, x, y}] — on a board of their
+    // own. Every case resets the charge before it runs, so the save's
+    // structure is all they need. What the verifier's worker runs, and what
+    // is run here when there is none (see Off the page's thread).
+    function runSaved(level, board, g, budget) {
+        return M.withBoard(M.createBoard(1, 1), () => {
+            if (!M.deserialize(board)) throw new Error('the board to verify would not load');
             return runVectors(level, g, budget);
-        } finally {
-            M.restoreLiveSnapshot(saved);
-        }
+        });
     }
 
     // The level's tests, run on whatever is in the model, its inputs and
@@ -1248,27 +938,51 @@
         };
         {
             if (level.sequential) {
-                // ONE reset, at the start; the whole point is that what came
-                // before is carried forward. A cold board has every lamp off,
-                // which is the defined starting state the scripts assume.
-                M.resetCharges();
-                settle(budget);
-                let prev = {};
-                for (const name of level.outputs) prev[name] = 0;
-                level.script.forEach((v, i) => {
-                    const r = applyVector(g, level, v, budget);
-                    const want = level.step(v, prev);
-                    record({
-                        step: i, inputs: v, expected: want, actual: r.got,
-                        ok: r.settled && matches(level, r.got, want),
-                        ticks: r.ticks, settled: r.settled,
+                // ONE start, and the whole script from it; the whole point is
+                // that what came before is carried forward. What it holds
+                // before anything is stored is not known — nothing has told
+                // it — so the outputs start unknown (null) and a step that
+                // only holds them is not judged until something has been
+                // stored. It is run from rest, and then, if that passes, from
+                // a charged start (see below), the run that fails taking the
+                // place of the one that passed: from rest, a circuit whose
+                // state was never stored reads 0, and one leaning on that
+                // passed.
+                const run = (primed) => {
+                    const out = [];
+                    let bad = null;
+                    if (primed) M.primeCharges(); else M.resetCharges();
+                    settle(budget);
+                    let prev = Object.fromEntries(level.outputs.map((name) => [name, null]));
+                    let was = coldInputs(level);
+                    const mem = {};
+                    level.script.forEach((v, i) => {
+                        const r = applyVector(g, level, v, budget);
+                        const want = stepWants(level, i, v, prev, was, mem);
+                        const entry = {
+                            step: i, inputs: v, expected: want, actual: r.got,
+                            ok: r.settled && matches(level, r.got, want),
+                            ticks: r.ticks, settled: r.settled,
+                        };
+                        if (primed) entry.primed = true;
+                        out.push(entry);
+                        if (!entry.ok && !bad) bad = entry;
+                        // The next step is judged against what the circuit
+                        // ACTUALLY did, not against what it should have done:
+                        // once it has gone wrong, reporting every later step
+                        // as a failure too buries the one that matters.
+                        prev = r.got;
+                        was = v;
                     });
-                    // The next step is judged against what the circuit ACTUALLY
-                    // did, not against what it should have done: once it has
-                    // gone wrong, reporting every later step as a failure too
-                    // buries the one that matters.
-                    prev = r.got;
-                });
+                    return { out, bad };
+                };
+                let r = run(false);
+                if (!r.bad) {
+                    const charged = run(true);
+                    if (charged.bad) r = charged;
+                }
+                for (const entry of r.out) record(entry);
+                if (r.out.some((c) => c.primed)) return { passed: !failure, cases, failure, level: level.id, primed: true };
             } else {
                 // Every vector from a cold start. A mux feedback loop can hold
                 // state whether or not the player meant it to, so testing
@@ -1284,6 +998,25 @@
                         ticks: r.ticks, settled: r.settled,
                     });
                 }
+                // Then again, each from a charged start (M.primeCharges):
+                // what is driven comes out the same, and what nothing
+                // drives keeps its charge. A circuit that passes from rest
+                // and not from there leans on a pin left unwired reading 0
+                // — the player's 4-bit adder with its carry in left open —
+                // which works until something charges it. The case it fails
+                // is put in place of the one that passed (`primed`, so that
+                // its replay starts charged too).
+                if (!failure) {
+                    const list = vectorsFor(level);
+                    for (let i = 0; i < list.length && !failure; i++) {
+                        M.primeCharges();
+                        const r = applyVector(g, level, list[i], budget);
+                        const want = level.truth(list[i]);
+                        if (r.settled && matches(level, r.got, want)) continue;
+                        cases[i] = { inputs: list[i], expected: want, actual: r.got, ok: false, ticks: r.ticks, settled: r.settled, primed: true };
+                        failure = cases[i];
+                    }
+                }
             }
         }
         return { passed: !failure, cases, failure, level: level.id };
@@ -1294,17 +1027,20 @@
     // run through the level's own tests — the same vectors, the same
     // settling. The part's pins must be named for the level's inputs and
     // outputs, each once. Returns the verify result, or {error}. The board
-    // in the model is put back exactly as it was.
+    // being edited is never touched.
     function testPart(level, clip) {
+        const bench = partBench(level, clip);
+        return bench.error ? bench : runSaved(level, bench.board, bench.g, bench.budget);
+    }
+    // The scratch board testPart runs on, as a save, with its pads: {board,
+    // g, budget}, or {error}.
+    function partBench(level, clip) {
         const pins = M.clipPins(clip);
         const names = (dir) => pins.filter((q) => q.dir === dir).map((q) => q.name).sort().join(',');
         if (names('in') !== [...level.inputs].sort().join(',') || names('out') !== [...level.outputs].sort().join(','))
             return { error: `The ${level.part} part’s terminals are ${level.inputs.join(', ')} in and ${level.outputs.join(', ')} out` };
-        const saved = M.getLiveSnapshot(), locks = M.lockedCells();
-        try {
-            M.setLockedCells([]);
-            const m = 3, w = clip.w + 2 * m, h = clip.h + 2 * m;
-            M.deserialize(JSON.stringify({ w, h, cells: new Array(w * h).fill(0) }));
+        const m = 3;
+        return M.withBoard(M.createBoard(clip.w + 2 * m, clip.h + 2 * m), () => {
             M.pasteRegion(clip, m, m);
             if (!M.blockList().length) return { error: 'It would not go down on a board of its own' };
             const g = { inputs: [], outputs: [] };
@@ -1313,12 +1049,112 @@
                 M.paintCell(x, y, q.dir === 'in' ? 'toggle' : 'led');
                 (q.dir === 'in' ? g.inputs : g.outputs).push({ name: q.name, x, y });
             }
-            return runVectors(level, g, settleBudget(level));
-        } finally {
-            M.setLockedCells([]);
-            M.restoreLiveSnapshot(saved);
-            M.setLockedCells(locks);
-        }
+            return { board: M.serialize(), g, budget: settleBudget(level) };
+        });
+    }
+
+    // ===== Off the page's thread =====
+    //
+    // A level's tests take as long as its board takes to settle, case after
+    // case — near half a second for the parallel-to-serial register, and
+    // longer for every rung above it — and while they run on the page it can
+    // neither draw nor answer a click. So the editor runs them in a worker
+    // (verify-worker.js), which loads the same model, levels and game code
+    // and runs `runSaved` on a copy of the board sent as a save; the answer
+    // comes back as a promise. Where there is no worker — in Node, or one
+    // that fails to start — the same `runSaved` runs here, so the answer is
+    // the same either way, only later or sooner. So does a level that is not
+    // one of LEVELS (a test's own): the worker knows levels by their ids.
+    //
+    // The worker takes its jobs one at a time, in order. One that may run
+    // away — a timing report — comes with a limit, counted from when it is
+    // the one being worked on: past it, the worker is stuck. It is replaced,
+    // that job answers with its `late` answer, and the jobs behind it go to
+    // the new one. Nothing waits behind a stuck job for ever.
+    let worker = null, workerFailed = false, jobSeq = 0;
+    const jobs = new Map();     // id -> {resolve, reject, local, msg, limit, late, timer}: `local` runs the job here instead
+    const runHere = (j) => { try { j.resolve(j.local()); } catch (err) { j.reject(err); } };
+    // The job being worked on is the oldest not answered: its limit runs.
+    function watchHead() {
+        const head = jobs.entries().next().value;
+        if (!head) return;
+        const [id, j] = head;
+        if (!j.limit || j.timer) return;
+        j.timer = setTimeout(() => {
+            if (jobs.get(id) !== j) return;
+            jobs.delete(id);
+            if (worker) worker.terminate();
+            worker = null;
+            j.resolve(j.late);
+            const rest = [...jobs.values()];
+            jobs.clear();
+            const w = startVerifier();
+            for (const r of rest) {
+                if (!w) { runHere(r); continue; }
+                clearTimeout(r.timer);
+                r.timer = null;
+                const rid = ++jobSeq;
+                jobs.set(rid, r);
+                w.postMessage({ ...r.msg, id: rid });
+            }
+            watchHead();
+        }, j.limit);
+    }
+    function startVerifier() {
+        if (worker || workerFailed || typeof Worker === 'undefined') return worker;
+        // A worker that cannot start, or stops, hands what it had back.
+        const fail = () => {
+            workerFailed = true;
+            if (worker) worker.terminate();
+            worker = null;
+            const pending = [...jobs.values()];
+            jobs.clear();
+            pending.forEach((j) => { clearTimeout(j.timer); runHere(j); });
+        };
+        try { worker = new Worker('verify-worker.js', { type: 'module' }); }
+        catch (e) { fail(); return null; }
+        worker.onmessage = (e) => {
+            const j = jobs.get(e.data.id);
+            if (!j) return;
+            jobs.delete(e.data.id);
+            clearTimeout(j.timer);
+            if (e.data.failed) runHere(j); else j.resolve(e.data.result);
+            watchHead();
+        };
+        worker.onerror = (e) => { if (e && e.preventDefault) e.preventDefault(); fail(); };
+        worker.onmessageerror = fail;
+        return worker;
+    }
+    // A job for the worker — its `kind` says which (a level's tests by
+    // default; 'timing', timing.js's measure) — or for `local`, here, where
+    // there is none. Either way, a promise of the answer. `opts.limit`: how
+    // long it may take, in ms, before it is taken to be stuck; `opts.late`,
+    // its answer then.
+    function offThread(level, job, local, opts) {
+        return new Promise((resolve, reject) => {
+            const j = { resolve, reject, local, msg: job, limit: opts && opts.limit, late: opts && opts.late, timer: null };
+            const w = getLevel(level.id) === level && startVerifier();
+            if (!w) { Promise.resolve().then(() => runHere(j)); return; }
+            const id = ++jobSeq;
+            jobs.set(id, j);
+            w.postMessage({ id, ...job });
+            watchHead();
+        });
+    }
+    function runOff(level, board, g, budget) {
+        const pads = (list) => list.map((p) => ({ name: p.name, x: p.x, y: p.y }));
+        const job = { level: level.id, board, g: { inputs: pads(g.inputs), outputs: pads(g.outputs) }, budget };
+        return offThread(level, job, () => runSaved(level, job.board, job.g, job.budget));
+    }
+    // verify, off the page's thread: the board as it is now.
+    function verifyOff(level, opts) {
+        const budget = (opts && opts.settle) || settleBudget(level);
+        return runOff(level, M.serialize(), layout(level), budget);
+    }
+    // testPart, off the page's thread.
+    function testPartOff(level, clip) {
+        const bench = partBench(level, clip);
+        return bench.error ? Promise.resolve(bench) : runOff(level, bench.board, bench.g, bench.budget);
     }
 
     // ===== Watching it run =====
@@ -1341,16 +1177,18 @@
         return {
             total: vectors.length,
             get index() { return index; },
-            // Cold start. Sequential levels reset here and only here; for
-            // everything else each vector gets its own reset in begin().
-            start() {
-                M.resetCharges();
+            // Cold start — or charged, for a storage level whose verdict
+            // came from there. Sequential levels reset here and only here;
+            // for everything else each vector gets its own in begin().
+            start(primed) {
+                if (primed) M.primeCharges(); else M.resetCharges();
                 prevCells = null; quietFor = 0; elapsed = 0; index = -1;
             },
-            // Move to vector n and drive the input pads to it.
-            begin(n) {
+            // Move to vector n and drive the input pads to it — from a
+            // charged start (`primed`) for a case the verdict ran so.
+            begin(n, primed) {
                 index = n;
-                if (!level.sequential) M.resetCharges();
+                if (!level.sequential) { if (primed) M.primeCharges(); else M.resetCharges(); }
                 for (const p of g.inputs) M.setToggle(p.x, p.y, !!vectors[n][p.name]);
                 prevCells = null; quietFor = 0; elapsed = 0;
             },
@@ -1377,24 +1215,17 @@
     }
 
     // ===== Progress =====
-    const PROGRESS_KEY = 'pixelogic-pcb.game.v1';
-    const circuitKey = (id) => 'pixelogic-pcb.game.circuit.' + id;
-
     function loadProgress() {
-        try {
-            const raw = JSON.parse(localStorage.getItem(PROGRESS_KEY) || 'null');
-            if (raw && typeof raw === 'object' && raw.completed && typeof raw.completed === 'object')
-                return {
-                    completed: raw.completed, current: raw.current || null, mode: raw.mode || 'campaign',
-                    // Levels in stages: the stage reached ('pack') in one not yet solved.
-                    reached: raw.reached && typeof raw.reached === 'object' ? raw.reached : {},
-                };
-        } catch (e) { }
+        const raw = S.getJSON(S.KEYS.progress, null);
+        if (raw && typeof raw === 'object' && raw.completed && typeof raw.completed === 'object')
+            return {
+                completed: raw.completed, current: raw.current || null, mode: raw.mode || 'campaign',
+                // Levels in stages: the stage reached ('pack') in one not yet solved.
+                reached: raw.reached && typeof raw.reached === 'object' ? raw.reached : {},
+            };
         return { completed: {}, current: null, mode: 'campaign', reached: {} };
     }
-    function saveProgress(p) {
-        try { localStorage.setItem(PROGRESS_KEY, JSON.stringify(p)); } catch (e) { }
-    }
+    function saveProgress(p) { S.setJSON(S.KEYS.progress, p); }
     // The first level is always open, and solving a level opens the next one.
     // Nothing further back is ever re-locked, so a completed campaign stays
     // fully browsable — and a level you have solved stays open even if a new
@@ -1420,35 +1251,69 @@
         return g.w + 'x' + g.h + ':' + g.pads.map((p) => p.name + '@' + p.x + ',' + p.y).join(' ');
     };
     function saveCircuit(id, serialized) {
-        try {
-            localStorage.setItem(circuitKey(id), serialized);
-            localStorage.setItem(circuitKey(id) + '.layout', layoutKey(id));
-        } catch (e) { }
+        S.setText(S.circuitKey(id), serialized);
+        S.setText(S.circuitLayoutKey(id), layoutKey(id));
     }
     // A save made on a board that still holds what the level needs keeps
     // that board (see chosenSize, boardHolds), so a level built from parts
     // does not lose its save because a part it uses got smaller.
+    //
+    // The size is the board's own, read off the save. (A record once took
+    // the size the level would have had at the time, not its board's: a part
+    // made in the level grew the one and not the other, and the board was
+    // dropped on the next load. A record that is not its board's size is
+    // not believed; the board is, if every pad of the level at that size is
+    // on it and nothing else of theirs is.)
+    //
+    // A level built of the player's slices (stack.slice) could have been
+    // laid out for any of them, or none: the save comes back on whichever
+    // board it was made on. (A slice made since must not lose it — the
+    // level offers the new board instead, see stackOffer.)
     function loadCircuit(id) {
         chosenSize.delete(id);
-        try {
-            const saved = localStorage.getItem(circuitKey(id) + '.layout');
-            if (saved !== null) {
-                const level = getLevel(id), m = /^(\d+)x(\d+):/.exec(saved);
-                if (level && m) {
-                    const w = +m[1], h = +m[2];
-                    if (boardHolds(level, w, h)) chosenSize.set(id, { w, h });
-                }
-                if (saved !== layoutKey(id)) { chosenSize.delete(id); return null; }
+        chosenStack.delete(id);
+        const saved = S.getText(S.circuitLayoutKey(id));
+        if (saved === null) return null;
+        const level = getLevel(id), text = S.getText(S.circuitKey(id)), m = /^(\d+)x(\d+):/.exec(saved);
+        const said = m && { w: +m[1], h: +m[2] }, size = savedSize(text) || said;
+        for (const sl of level ? stackChoices(level) : [null]) {
+            if (level && level.stack) chosenStack.set(id, sl);
+            if (level && size && boardHolds(level, size.w, size.h)) chosenSize.set(id, size);
+            if (saved === layoutKey(id)) return text;
+            if (level && said && (said.w !== size.w || said.h !== size.h) && padsOn(level, size, text)) return text;
+            chosenSize.delete(id);
+        }
+        chosenStack.delete(id);
+        return null;
+    }
+    function savedSize(text) {
+        let data = null;
+        try { data = JSON.parse(text); } catch (e) { return null; }
+        return data && Number.isInteger(data.w) && Number.isInteger(data.h) ? { w: data.w, h: data.h } : null;
+    }
+    // Whether a saved board has the level's pads where its layout at the
+    // board's size puts them, and no switch or lamp anywhere else.
+    function padsOn(level, size, text) {
+        const g = layout(level);
+        if (g.w !== size.w || g.h !== size.h) return false;
+        return M.withBoard(M.createBoard(1, 1), () => {
+            if (!M.deserialize(text)) return false;
+            const want = new Map(g.pads.map((p) => [p.x + ',' + p.y, p.side === 'in' ? 'toggle' : 'led']));
+            let found = 0;
+            for (let y = 0; y < g.h; y++) for (let x = 0; x < g.w; x++) {
+                const c = M.colorOfCell(M.getCell(x, y));
+                if (c !== 'toggle' && c !== 'led') continue;
+                if (want.get(x + ',' + y) !== c) return false;
+                found++;
             }
-            return localStorage.getItem(circuitKey(id));
-        } catch (e) { return null; }
+            return found === want.size;
+        });
     }
     function clearCircuit(id) {
         chosenSize.delete(id);
-        try {
-            localStorage.removeItem(circuitKey(id));
-            localStorage.removeItem(circuitKey(id) + '.layout');
-        } catch (e) { }
+        chosenStack.delete(id);
+        S.remove(S.circuitKey(id));
+        S.remove(S.circuitLayoutKey(id));
     }
 
     window.PixelogicGame = {
@@ -1456,8 +1321,10 @@
         getLevel, levelIndex, levelsIn, nextLevel,
         layout, applyBoard, loadBoard, padLabels, coachState,
         vectorsFor, tableCases, verify, replay, settle, settleBudget, loadHoldScript,
-        allParts, partsFor, getPart, makeLevelPart, replaceLevelPart, testPart, saveCustomPart, deletePart, clearLevelParts,
-        backfillParts, neededSize, boardHolds, stackLayout, slicePeriod, judge, packCheck,
+        runVectors, runSaved, startVerifier, verifyOff, testPartOff, offThread,
+        allParts, partsFor, getPart, makeLevelPart, replaceLevelPart, testPart, saveCustomPart, deletePart, renamePart, clearLevelParts,
+        arraySpec, saveArraySpec, clearArraySpec, arrayPart, planArray, apartSpec,
+        neededSize, boardHolds, stackLayout, stackOffer, slicePeriod, judge, packCheck,
         loadProgress, saveProgress, isUnlocked,
         saveCircuit, loadCircuit, clearCircuit,
         busNames, busVal, busBits,

@@ -61,13 +61,13 @@
                         title="Conductor (1) — drag to draw wire; hold Shift (or turn on Straight) for a straight line. Right-drag always erases" style="--swatch:#3fae4a">Conductor</button>
                     <button class="tool-btn swatch-tool" data-tool="insulator" data-key="2"
                         title="Erase (2) — touching any cell of a mux removes the whole part" style="--swatch:#0d3b0d">Erase</button>
-                    <button class="tool-btn swatch-tool" data-tool="gray" data-key="3"
+                    <button class="tool-btn swatch-tool" data-tool="mux" data-key="3"
                         title="MUX (3) — click to place a mux, a solid 3x2 part; R or 3 again turns the next one, and clicking a blank one turns it. Wire the middle of a long side and that side is COM, the output; wire a corner of the COM side and that corner is SEL. The far side's ends are the pins: NO, on SEL's end, joins COM while SEL is on, NC while it is off"
                         style="--swatch:#2b2b2b">MUX</button>
-                    <button class="tool-btn swatch-tool" data-tool="pos" data-key="4" title="+V source (4)"
-                        style="--swatch:#ffffff">+V</button>
-                    <button class="tool-btn swatch-tool" data-tool="neg" data-key="5" title="&minus;V source (5)"
+                    <button class="tool-btn swatch-tool" data-tool="neg" data-key="4" title="&minus;V source (4)"
                         style="--swatch:#000000">&minus;V</button>
+                    <button class="tool-btn swatch-tool" data-tool="pos" data-key="5" title="+V source (5)"
+                        style="--swatch:#ffffff">+V</button>
                     <button class="tool-btn swatch-tool" data-tool="led" data-key="6" title="LED output (6)"
                         style="--swatch:#ff2a2a">LED</button>
                     <button class="tool-btn swatch-tool" data-tool="toggle" data-key="7" title="Toggle switch input (7)"
@@ -95,6 +95,8 @@
                         title="Select (S) — drag a rectangle">Select</button>
                     <button class="tool-btn glyph-tool" data-tool="rearrange" data-key="A" data-glyph="A"
                         title="Rearrange (A) — drag a mux, a straight wire segment, a pad, or a source; connections re-route to follow. Drag from empty space to rubber-band several, Ctrl/Cmd-click (or press and hold on touch) to add/remove one, then drag any of them to move the group. R rotates, Esc deselects">Rearrange</button>
+                    <button class="tool-btn glyph-tool" data-tool="probe" data-key="O" data-glyph="O"
+                        title="Probe (O) — clip a probe to a wire, a pad or a pin: the scope under the board shows what it reads, tick by tick. Click it again to take it off">Probe</button>
                     <button class="tool-btn glyph-tool" data-tool="paste" data-key="V" data-glyph="V" id="pasteBtn"
                         title="Paste (V) — stamps the clipboard immediately; drag it into place, then tap elsewhere or pick another tool to drop it"
                         disabled>Paste</button>
@@ -108,6 +110,111 @@
                      each taking a permanent slice of the chrome. -->
                 <div id="cellInfo" class="cell-info"></div>
                 <div id="saveStatus" class="save-status"></div>
+
+                <!-- The part in hand: turn it, flip it, and — for a part
+                     that repeats — how many copies go down this time. -->
+                <div id="handBar" class="selection-actions hand-bar" role="toolbar" aria-label="Part in hand">
+                    <span id="handName" class="hand-name"></span>
+                    <button id="handTurnBtn" class="tool-btn" title="Turn it a quarter (R)" aria-label="Turn">&#x21BB;</button>
+                    <button id="handFlipBtn" class="tool-btn" title="Flip it end for end (M)" aria-label="Flip">&#x21C4;</button>
+                    <span id="handCount" class="hand-count">
+                        <button id="handFewerBtn" class="tool-btn" title="One copy fewer ([)" aria-label="Fewer">&minus;</button>
+                        <span class="hand-times">&times;</span><input id="handCountInput" type="number" min="1" max="64"
+                            inputmode="numeric" aria-label="How many copies">
+                        <button id="handMoreBtn" class="tool-btn" title="One copy more (])" aria-label="More">+</button>
+                    </span>
+                    <button id="handApartBtn" class="tool-btn hand-apart" aria-pressed="false">Joined</button>
+                    <button id="handArrayBtn" class="tool-btn" title="How it repeats">Array&hellip;</button>
+                </div>
+
+                <!-- A part's copies set out on the board, where they will go
+                     down: which way and how far is the next copy dragged,
+                     what a pin is a click on its tag. This holds the rest. -->
+                <div id="arrayBar" class="selection-actions part-bar array-bar" role="toolbar" aria-label="Repeating a part">
+                    <span id="arrayName" class="hand-name"></span>
+                    <button id="arrayTurnBtn" class="tool-btn" title="Turn them a quarter (R)" aria-label="Turn">&#x21BB;</button>
+                    <button id="arrayFlipBtn" class="tool-btn" title="Flip them end for end (M)" aria-label="Flip">&#x21C4;</button>
+                    <button id="arrayApartBtn" class="tool-btn hand-apart" aria-pressed="false">Joined</button>
+                    <!-- Which way the next copy goes from the one before, as
+                         on screen (or drag the next copy there). -->
+                    <span class="array-ways" role="group" aria-label="Which way the copies go">
+                        <button class="tool-btn array-way" data-way="0" aria-pressed="false">&uarr;</button>
+                        <button class="tool-btn array-way" data-way="1" aria-pressed="false">&rarr;</button>
+                        <button class="tool-btn array-way" data-way="2" aria-pressed="false">&darr;</button>
+                        <button class="tool-btn array-way" data-way="3" aria-pressed="false">&larr;</button>
+                    </span>
+                    <span class="hand-count">
+                        <button id="arrayCloserBtn" class="tool-btn" title="Closer together" aria-label="Closer">&minus;</button>
+                        <span id="arrayPitch" class="array-pitch"></span>
+                        <button id="arrayFurtherBtn" class="tool-btn" title="Further apart" aria-label="Further">+</button>
+                    </span>
+                    <span class="hand-count">
+                        <button id="arrayFewerBtn" class="tool-btn" title="One copy fewer ([)" aria-label="Fewer">&minus;</button>
+                        <span class="hand-times">&times;</span><input id="arrayCountInput" type="number" min="2" max="64"
+                            inputmode="numeric" aria-label="How many copies">
+                        <button id="arrayMoreBtn" class="tool-btn" title="One copy more (])" aria-label="More">+</button>
+                    </span>
+                    <span id="arrayMsg" class="part-msg" aria-live="polite"></span>
+                    <button id="arrayForgetBtn" class="tool-btn danger" title="The part goes back to one at a time">Don&rsquo;t repeat</button>
+                    <button id="arrayOkBtn" class="tool-btn primary" title="Put them down here, and keep as many in hand (Enter)">Put down</button>
+                    <button id="arrayCancelBtn" class="tool-btn" title="Esc">Cancel</button>
+                </div>
+
+                <!-- Make part…, drawn on the board: its bounds, terminals
+                     and their names are on the board itself; this holds
+                     the rest. -->
+                <div id="partBar" class="selection-actions part-bar" role="toolbar" aria-label="Making a part">
+                    <select id="partAs" aria-label="Save as"></select>
+                    <input id="partName" type="text" maxlength="24" placeholder="Part name" aria-label="Part name">
+                    <button id="partFitBtn" class="tool-btn" title="Shrink the bounds to the smallest part round what they hold">Fit</button>
+                    <span id="partMsg" class="part-msg" aria-live="polite"></span>
+                    <button id="partOkBtn" class="tool-btn primary">Make part</button>
+                    <button id="partCancelBtn" class="tool-btn" title="Esc">Cancel</button>
+                </div>
+
+                <!-- The scope: what the probes on the board read, tick by
+                     tick, a row each — or a clocked level's timing report.
+                     Docked over the bottom of the board (above the level
+                     bar), which is framed above it; shown while there are
+                     probes. See ui/scope.js. -->
+                <div id="scope" class="scope" role="region" aria-label="Scope" hidden>
+                    <div class="scope-head">
+                        <button id="scopeCollapseBtn" class="icon-btn collapse-btn" title="Minimize the scope">&#x25BE;</button>
+                        <span id="scopeTitle" class="scope-title">Scope</span>
+                        <span id="scopeLiveCtl" class="scope-ctl">
+                            <button id="scopeRunBtn" class="tool-btn" aria-pressed="true"
+                                title="Capturing as the board runs — or stopped, to look back">Stop</button>
+                            <label class="scope-trig" title="Single waits for this probe's edge, catches what happens round it, and stops">Trigger
+                                <select id="scopeTrigProbe" aria-label="Trigger probe"></select>
+                                <select id="scopeTrigEdge" aria-label="Trigger edge">
+                                    <option value="rise">&uarr; rises</option>
+                                    <option value="fall">&darr; falls</option>
+                                    <option value="any">&varr; either</option>
+                                </select></label>
+                            <button id="scopeSingleBtn" class="tool-btn" aria-pressed="false">Single</button>
+                            <button id="scopeClearBtn" class="tool-btn" title="Forget what has been captured">Clear</button>
+                            <button id="scopePadsBtn" class="tool-btn" title="A probe on every pad">Pads</button>
+                            <button id="scopeTimingBtn" class="tool-btn"
+                                title="Measure this board's timing: when each input may change round the clock edge, how fast the outputs follow, the fastest clock">Timing</button>
+                        </span>
+                        <span id="scopeReportCtl" class="scope-ctl" hidden>
+                            <span id="scopeScenarios" class="scope-scenarios"></span>
+                            <button id="scopeResetBtn" class="tool-btn" title="Put the inputs' edges back where they were measured" hidden>Reset</button>
+                            <button id="scopeLiveBtn" class="tool-btn" title="Back to what the probes read">Live</button>
+                        </span>
+                        <span class="scope-zoom">
+                            <button id="scopeFitBtn" class="tool-btn" title="Show all of it">Fit</button>
+                            <button id="scopeZoomOutBtn" class="tool-btn" title="Zoom out (or Ctrl/⌘ + scroll, or pinch)" aria-label="Zoom out">&minus;</button>
+                            <button id="scopeZoomInBtn" class="tool-btn" title="Zoom in (or Ctrl/⌘ + scroll, or pinch)" aria-label="Zoom in">+</button>
+                        </span>
+                        <span id="scopeRead" class="scope-read" aria-live="polite"></span>
+                    </div>
+                    <div id="scopeSummary" class="scope-summary" hidden></div>
+                    <div class="scope-body">
+                        <div id="scopeNames" class="scope-names"></div>
+                        <canvas id="scopeCanvas" class="scope-canvas"></canvas>
+                    </div>
+                </div>
 
                 <!-- The active level's brief and its Verify button. An
                      overlay, like everything else here, so entering a level
@@ -160,6 +267,8 @@
                         style="display:none">Open lid</button>
                     <button id="decapBtn" class="tool-btn" title="Take the lid off for good: the part's circuit becomes loose parts you can change"
                         style="display:none">Decap</button>
+                    <button id="arrayEditBtn" class="tool-btn" title="Set its copies out again where they are: more or fewer, further apart, another way"
+                        style="display:none">Array&hellip;</button>
                     <button id="saveComponentBtn" class="tool-btn"
                         title="Make the selected circuit a part of your own, fitted to the smallest edge it allows; the wires crossing that edge are its terminals" disabled>Make part&hellip;</button>
                 </div>
@@ -192,6 +301,11 @@
                 clipboard</span></button>
         <button id="importBtn" class="menu-item" role="menuitem">Import circuit<span class="menu-hint">from
                 text</span></button>
+        <button id="backupBtn" class="menu-item" role="menuitem">Back up everything<span class="menu-hint">to a
+                file</span></button>
+        <button id="restoreBtn" class="menu-item" role="menuitem">Restore a backup<span class="menu-hint">from a
+                file</span></button>
+        <input id="restoreFile" type="file" accept=".json,application/json" hidden>
         <div class="menu-sep"></div>
         <button id="resetChargesBtn" class="menu-item" role="menuitem">Reset charges<span class="menu-hint">keep
                 layout</span></button>
@@ -223,23 +337,6 @@
         </div>
     </div>
 
-    <!-- ---- Make a part (sandbox) ---- -->
-    <div id="makePartBackdrop" class="modal-backdrop"></div>
-    <div id="makePartPanel" class="modal-panel" role="dialog" aria-label="Make a part">
-        <div class="modal-panel-header">
-            <span>Make a part</span>
-            <button id="makePartCloseBtn" class="icon-btn" title="Close">&times;</button>
-        </div>
-        <div id="makePartPins" class="part-preview-wrap"></div>
-        <div id="makePartSize" class="part-size"></div>
-        <label class="field">Save as <select id="makePartAs"></select></label>
-        <label class="field">Name <input id="makePartName" type="text" maxlength="24" placeholder="e.g. NOT2"></label>
-        <div id="makePartError" class="field-error" aria-live="polite"></div>
-        <div class="modal-panel-footer">
-            <button id="makePartOkBtn" class="tool-btn primary">Make part</button>
-        </div>
-    </div>
-
     <!-- ---- Campaign level browser ---- -->
     <div id="levelsBackdrop" class="modal-backdrop"></div>
     <div id="levelsPanel" class="modal-panel wide-panel" role="dialog" aria-label="Campaign">
@@ -258,11 +355,31 @@
         </div>
     </div>
 
-    <script src="model.js"></script>
-    <script src="view.js"></script>
-    <script src="game.js"></script>
-    <script src="ui.js"></script>
-    <script src="pwa.js"></script>
+    <!-- Asking: Clear grid's "are you sure", Import's text and the like
+         (ui/ask.js) — the page's own, not the browser's, which an embedded
+         browser may never show. -->
+    <dialog id="askDialog" class="ask-dialog" aria-labelledby="askText">
+        <div class="ask-body">
+            <p id="askText" class="ask-text"></p>
+            <textarea id="askInput" class="ask-input" rows="4" spellcheck="false"></textarea>
+            <div class="ask-actions">
+                <button id="askCancelBtn" class="tool-btn">Cancel</button>
+                <button id="askOkBtn" class="tool-btn primary">OK</button>
+            </div>
+        </div>
+    </dialog>
+
+    <!-- The model is ES modules (model/index.js imports the rest), so every
+         script here is loaded as a module: modules run in document order,
+         after parsing, and the view, game and UI need the model first. -->
+    <script type="module" src="model/index.js"></script>
+    <script type="module" src="storage.js"></script>
+    <script type="module" src="view.js"></script>
+    <script type="module" src="levels.js"></script>
+    <script type="module" src="game.js"></script>
+    <script type="module" src="timing.js"></script>
+    <script type="module" src="ui/main.js"></script>
+    <script type="module" src="pwa.js"></script>
 </body>
 
 </html>

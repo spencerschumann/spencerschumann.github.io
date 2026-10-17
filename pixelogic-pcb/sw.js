@@ -20,18 +20,54 @@
 // happened while the app itself changed underneath an unchanged worker. Do
 // not remove it because it looks unused.
 
-const CACHE_VERSION = 'v5';
-const BUILD = '99cf3f7';
+const CACHE_VERSION = 'v39';
+const BUILD = '6a135e1';
 const CACHE_NAME = `pixelogic-pcb-${CACHE_VERSION}-${BUILD}`;
 
 const ASSETS = [
     './',
     './index.html',
     './pixelogic-pcb.css',
-    './model.js',
+    './model/arrays.js',
+    './model/blocks.js',
+    './model/board.js',
+    './model/cells.js',
+    './model/clips.js',
+    './model/edit.js',
+    './model/fit.js',
+    './model/index.js',
+    './model/io.js',
+    './model/nets.js',
+    './model/rearrange.js',
+    './model/regions.js',
+    './model/route.js',
+    './model/sim.js',
+    './storage.js',
     './view.js',
+    './levels.js',
     './game.js',
-    './ui.js',
+    './timing.js',
+    './verify-worker.js',
+    './worker-env.js',
+    './ui/arrange.js',
+    './ui/arrayedit.js',
+    './ui/ask.js',
+    './ui/campaign.js',
+    './ui/canvas.js',
+    './ui/clipboard.js',
+    './ui/history.js',
+    './ui/loop.js',
+    './ui/main.js',
+    './ui/makepart.js',
+    './ui/page.js',
+    './ui/scope.js',
+    './ui/paint.js',
+    './ui/parts.js',
+    './ui/prefs.js',
+    './ui/stamp.js',
+    './ui/toolbar.js',
+    './ui/tools.js',
+    './ui/verdict.js',
     './pwa.js',
     './manifest.webmanifest',
     './icon-192.png',
