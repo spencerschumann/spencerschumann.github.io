@@ -1,7 +1,7 @@
 // Saving and loading a board: serialize, deserialize.
 
 import {
-    ID_INSULATOR_PLAIN, isValidId,
+    ID_INSULATOR_PLAIN, inferCrossings, isValidId,
 } from './cells.js';
 import {
     readPin, B, MAX_CELLS, copyBlockRec, packRuns, unpackRuns, withRep,
@@ -13,15 +13,17 @@ import {
     pinIndex, topBlockOf,
 } from './blocks.js';
 import {
-    recomputeRoles,
+    plainIfLone, recomputeRoles,
 } from './edit.js';
 import {
     resizeGrid,
 } from './regions.js';
 
 // Blocks, when there are any, as their records plus the two cell arrays.
+// `xo`: its crossings are cells of their own. A save without it is from
+// before, and is read by the rule it was drawn under (inferCrossings).
 function serialize() {
-    const o = { w: B.w, h: B.h, cells: packRuns(B.cells) };
+    const o = { w: B.w, h: B.h, xo: 1, cells: packRuns(B.cells) };
     if (B.blocks.size) {
         o.blocks = {
             pv: 2, recs: [...B.blocks.values()].map(copyBlockRec),
@@ -117,7 +119,11 @@ function deserialize(text) {
             const v = cells[i] & 0xff;
             B.cells[i] = isValidId(v) ? v : ID_INSULATOR_PLAIN;
         }
+        if (!data.xo) inferCrossings(B.cells, B.w, B.h);
         loadBlocks(data.blocks);
+        // A crossing left crossing nothing, from before that made it plain
+        // wire (plainIfLone): the same circuit either way.
+        for (let i = 0; i < B.cells.length; i++) plainIfLone(i);
         restartTicks();
         recomputeRoles();
         return true;

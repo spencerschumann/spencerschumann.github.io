@@ -3,7 +3,7 @@
 // touches no board.
 
 import {
-    DIRS, ID_CONDUCTOR_BASE, armInto, crossingFrom, isMuxId, isWireId,
+    DIRS, ID_CONDUCTOR_BASE, isMuxId, isWireId, isXover,
 } from './cells.js';
 import {
     MAX_CELLS,
@@ -386,8 +386,7 @@ function wiredThrough(c, a, b) {
     const inClip = (x, y) => x >= 0 && y >= 0 && x < c.w && y < c.h;
     const wireAt = (x, y) => inClip(x, y) && isWireId(c.data[y * c.w + x]);
     if (!wireAt(a[0], a[1]) || !wireAt(b[0], b[1])) return false;
-    const cross = (x, y) => crossingFrom((d) => wireAt(x + DIRS[d][0], y + DIRS[d][1]),
-        (d) => inClip(x + DIRS[d][0], y + DIRS[d][1]) && armInto(c.data[(y + DIRS[d][1]) * c.w + x + DIRS[d][0]], d));
+    const cross = (x, y) => inClip(x, y) && isXover(c.data[y * c.w + x]);
     const seen = new Set(), stack = [[a[0], a[1], -1]];
     while (stack.length) {
         const [x, y, d] = stack.pop();

@@ -53,6 +53,9 @@ import {
 import {
     closeLevels, gameLevel, levelBarCollapsed, setCollapsed, syncViewInset,
 } from './campaign.js';
+import {
+    exitSteps, stepBack, stepOn, steps,
+} from './steps.js';
 
 const M = window.PixelogicModel;
 const V = window.PixelogicView;
@@ -311,6 +314,8 @@ document.addEventListener('keydown', (e) => {
         if (partEditing()) { closeMakePart(true); return; }
         if (arrayEditing()) { closeArray(); return; }
         if (floatBase) { cancelPasteFloat(); return; } // a paste not yet placed: never mind
+        // Stepping through a run, with nothing picked up or picked out.
+        if (steps && !arrange && !arrangeSel.length && !selection) { exitSteps(); return; }
         if (arrange) abortArrange();          // mid-drag: put the object back
         else if (arrangeSel.length) { setArrangeSel([]); V.drawGrid(); }
         if (selection) { setSelection(null); V.drawGrid(); }
@@ -366,6 +371,13 @@ document.addEventListener('keydown', (e) => {
         return;
     }
 
+    // Stepping through a run, ← and → go back and on a step; ↑ and ↓
+    // still pan.
+    if (steps && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+        e.preventDefault();
+        if (e.key === 'ArrowLeft') stepBack(); else stepOn();
+        return;
+    }
     if (e.key.startsWith('Arrow')) {
         e.preventDefault();
         const step = 80;

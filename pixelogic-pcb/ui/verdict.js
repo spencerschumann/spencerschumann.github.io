@@ -10,6 +10,9 @@ import {
 import {
     forgetTiming, startTiming, timingButton,
 } from './scope.js';
+import {
+    dropSteps, enterSteps, steps, stepsEdited, stepsHtml,
+} from './steps.js';
 
 const M = window.PixelogicModel;
 const V = window.PixelogicView;
@@ -45,6 +48,9 @@ function nextLevelButton(level) {
 // The truth table is always a click away — before a Verify too, when
 // it is the level's spec, with any row there to try by hand.
 const TABLE_BTN = '<button class="tool-btn" data-act="table">Table</button>';
+// A storage level's run can be stepped through, there and back (steps.js).
+const STEPS_BTN = '<button class="tool-btn" data-act="steps" title="Step through the run, there and back, on the board">Steps</button>';
+const tableBtns = (level) => (level.sequential ? STEPS_BTN : '') + TABLE_BTN;
 const escapeHtml = (s) => String(s).replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[ch]);
 
 function coachHtml(level, c) {
@@ -53,24 +59,24 @@ function coachHtml(level, c) {
         for (let i = 0; i < c.total; i++) marks.push(i < c.index ? 'done' : i === c.index ? 'active' : '');
         return `<div class="status-row"><span class="status-step">Step ${c.index + 1} of ${c.total}</span>`
             + `<span class="status-text">${c.text}</span>`
-            + `<span class="status-actions">${TABLE_BTN}</span></div>${caseBar(marks)}`;
+            + `<span class="status-actions">${tableBtns(level)}</span></div>${caseBar(marks)}`;
     }
     if (gameProgress.completed[level.id]) {
         const next = G.nextLevel(level.id);
         return `<div class="status-row"><span class="level-done">✓ Solved</span>`
             + `<span class="status-text">${next ? 'On to the next one when you are ready.'
                 : 'That is the last level built so far.'}</span>`
-            + `<span class="status-actions">${nextLevelButton(level)}${TABLE_BTN}</span></div>`;
+            + `<span class="status-actions">${nextLevelButton(level)}${tableBtns(level)}</span></div>`;
     }
     // A slice made since the board was laid: it can be laid out for it.
     const offer = G.stackOffer(level);
     if (offer) {
         return `<div class="status-row"><span class="status-text">Your part <b>${escapeHtml(offer.name)}</b> stacks — lay the board out for it, its pads level with each slice?</span>`
-            + `<span class="status-actions"><button class="tool-btn primary" data-act="relay">Lay out</button>${TABLE_BTN}</span></div>`;
+            + `<span class="status-actions"><button class="tool-btn primary" data-act="relay">Lay out</button>${tableBtns(level)}</span></div>`;
     }
     const idle = packStage(level) ? level.pack.text : 'Build it, then press <b>Verify</b> to test it.';
     return `<div class="status-row"><span class="status-text">${c ? c.text : idle}</span>`
-        + `<span class="status-actions">${TABLE_BTN}</span></div>`;
+        + `<span class="status-actions">${tableBtns(level)}</span></div>`;
 }
 
 function verifyHtml(s) {
@@ -80,7 +86,7 @@ function verifyHtml(s) {
     }
     const level = s.level, result = s.result, n = result.cases.length;
     const unit = level.sequential ? 'step' : 'case';
-    const tableBtn = TABLE_BTN;
+    const tableBtn = s.done ? tableBtns(level) : TABLE_BTN;
     let row;
     if (!s.done) {
         // While a case runs, its inputs; once it has settled, what came
@@ -147,10 +153,10 @@ function verifyHtml(s) {
 
 function renderStatus() {
     if (!gameLevel) { setGuide(null); return; }
-    const c = verifyStatus ? null : G.coachState(gameLevel);
+    const c = verifyStatus || steps ? null : G.coachState(gameLevel);
     // The coach's colour-by-number ghost for this step, if it has one.
     setGuide(c && c.guide);
-    const html = verifyStatus ? verifyHtml(verifyStatus) : coachHtml(gameLevel, c);
+    const html = steps ? stepsHtml() : verifyStatus ? verifyHtml(verifyStatus) : coachHtml(gameLevel, c);
     if (html === lastStatusHtml) return;   // the coach is re-checked often; don't churn the DOM
     lastStatusHtml = html;
     levelStatusEl.innerHTML = html;
@@ -243,6 +249,7 @@ function forgetVerdict() {
     verifyStatus = null;
     probe = null;
     tableFor = null;
+    dropSteps();
 }
 
 // Any structural edit. A verdict describes the board it was run on, so an
@@ -259,6 +266,8 @@ function boardChanged() {
         // marks belonged to the board the verdict was run on.
         fillTable(gameLevel, G.tableCases(gameLevel));
     }
+    // Stepping goes on, from the board as it now is.
+    stepsEdited();
     renderStatus();
 }
 
@@ -394,7 +403,7 @@ function startReplay(level, result, onDone) {
     let hold = 0, started = false, pending = null, caseFrames = 0;
     r.start(!!result.primed);
     levelTableEl.classList.add('running');
-    replayOnAbort = () => onDone(result.passed);
+    replayOnAbort = () => onDone(result.passed, true);
 
     const frame = () => {
         replayTimer = requestAnimationFrame(frame);
@@ -436,6 +445,7 @@ function startReplay(level, result, onDone) {
 async function doVerify() {
     if (!gameLevel) return;
     abortReplay();
+    dropSteps();
     const level = gameLevel;
 
     // The verdict, off-screen, on a copy of the board as it is now — and
@@ -483,7 +493,7 @@ async function doVerify() {
     levelTableBodyEl.scrollTop = 0;
     renderStatus();
 
-    startReplay(level, result, (passed) => {
+    startReplay(level, result, (passed, cut) => {
         // The board may have moved on by the time an interrupted replay
         // reports in; its status line is not ours to write.
         if (gameLevel !== level || !verifyStatus || verifyStatus.result !== result) return;
@@ -494,6 +504,11 @@ async function doVerify() {
         for (let i = 0; i < upTo; i++) markRow(i, result.cases[i].ok ? 'ok' : 'bad');
         verifyStatus.done = true;
         renderStatus();
+        // A storage level played to where it went wrong: stepping through
+        // it from there, to go back and see how it got so. (Cut short —
+        // the board touched — it is the Steps button's to offer.)
+        if (!passed && !cut && level.sequential)
+            enterSteps(level, { primed: !!result.primed, seed: result.cases, at: result.failure.step });
     });
     // Touched while it was being checked: straight to how it ends.
     if (pending.hurry) abortReplay();
@@ -501,7 +516,7 @@ async function doVerify() {
 
 export {
     verifyStatus, lastStatusHtml, bits, caseBar, nextLevelButton, TABLE_BTN, coachHtml, verifyHtml,
-    renderStatus, lastGuideKey, setGuide, labelPads, probe, probeRow, readOutputs, updateProbe,
+    renderStatus, lastGuideKey, setGuide, labelPads, probe, probeRow, readOutputs, updateProbe, STEPS_BTN, tableBtns,
     forgetVerdict, boardChanged, tableFor, tableRows, fillTable, openTable, closeTable, scrollRowIntoView,
     shelveSolution, replayTimer, replayOnAbort, stopReplay, abortReplay, tableHtml, markRow, replayRate,
     replayHold, UNSETTLED_FRAMES, startReplay, doVerify,

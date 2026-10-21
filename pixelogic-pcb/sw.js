@@ -20,8 +20,8 @@
 // happened while the app itself changed underneath an unchanged worker. Do
 // not remove it because it looks unused.
 
-const CACHE_VERSION = 'v39';
-const BUILD = '6a135e1';
+const CACHE_VERSION = 'v45';
+const BUILD = '9103217';
 const CACHE_NAME = `pixelogic-pcb-${CACHE_VERSION}-${BUILD}`;
 
 const ASSETS = [
@@ -61,6 +61,7 @@ const ASSETS = [
     './ui/makepart.js',
     './ui/page.js',
     './ui/scope.js',
+    './ui/steps.js',
     './ui/paint.js',
     './ui/parts.js',
     './ui/prefs.js',

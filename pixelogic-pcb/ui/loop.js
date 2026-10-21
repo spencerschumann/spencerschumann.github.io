@@ -10,6 +10,9 @@ import {
 import {
     probe, renderStatus, replayTimer, updateProbe, verifyStatus,
 } from './verdict.js';
+import {
+    steps,
+} from './steps.js';
 
 const M = window.PixelogicModel;
 const V = window.PixelogicView;
@@ -57,8 +60,9 @@ const FRAME_BUDGET_MS = 12;
 function tickLoop(now) {
     // A Verify replay drives the board itself, one tick at a time. Letting
     // this loop step it as well ran it at two rates at once, and could
-    // make an oscillating board look settled to the replay's check.
-    if (running && !replayTimer) {
+    // make an oscillating board look settled to the replay's check. So
+    // does a step being played (steps.js).
+    if (running && !replayTimer && !(steps && steps.anim)) {
         const deadline = performance.now() + FRAME_BUDGET_MS;
         let steps = 0;
         while (now - lastTick >= tickIntervalMs) {

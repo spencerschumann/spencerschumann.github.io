@@ -6,13 +6,14 @@ import {
     DIRS, ID_INSULATOR_PLAIN, ID_MUX_X, ID_NEG, ID_POS, ID_SWITCH_OFF, ID_SWITCH_ON, ID_TOGGLE_OFF,
     ID_TOGGLE_ON, MK_C, MK_M, MK_NC, MK_NO, MK_O, MK_X, NEIGHBORS_8, OFF, SEL_NC, isConductorId, isMuxId,
     isInsulatorId, isLed, isSwitch, isToggle, isWireId, isXover, makeConductor, makeLed, makeMuxC, makeMuxM,
-    makeMuxNC, makeMuxNO, makeMuxO, mirrorId, muxDirOf, muxKindOf, rotateId, toggleIsOn,
+    makeMuxNC, makeMuxNO, makeMuxO, mirrorId, muxDirOf, muxKindOf, rotateId, toggleIsOn, armInto, combineCharge,
+    conductorCharge, makeXover, xoverH, xoverV,
 } from './cells.js';
 import {
     B, idx, inBounds,
 } from './board.js';
 import {
-    computeBlockGeom, computeRingMask, cutsPartWire, isProtected,
+    cellConnects, computeBlockGeom, computeRingMask, isProtected,
 } from './blocks.js';
 import {
     prunePendingLinks,
@@ -41,21 +42,97 @@ function paintCell(x, y, color) { paintCells([[x, y]], color); }
 // Nothing is painted over mux body: a wire drawn into a mux would leave
 // five cells that are no mux at all. If a wire has to go where a mux is,
 // the mux is erased (the eraser takes it whole) or moved first. Erasing
-// — painting bare substrate — is the one paint that may touch it. Nor is
-// wire painted where it would cut a part's wire (cutsPartWire), judged
-// cell by cell as they go down.
+// — painting bare substrate — is the one paint that may touch it.
 function paintCells(list, color) {
     const id = idForColor(color);
     if (id === null) return false;
-    let any = false;
+    const painted = [];
     for (const [x, y] of list) {
         if (!inBounds(x, y) || isProtected(x, y)) continue;
         if (!isInsulatorId(id) && isMuxId(B.cells[idx(x, y)])) continue;
-        if (isWireId(id) && cutsPartWire(x, y)) continue;
         B.cells[idx(x, y)] = id;
-        any = true;
+        painted.push(idx(x, y));
     }
-    if (any) recomputeRoles();
+    if (!painted.length) return;
+    // Wire erased from beside a crossing may leave it crossing nothing.
+    plainLoneCrossings(painted);
+    recomputeRoles();
+}
+
+// ===== Crossings =====
+//
+// A crossing is a cell of its own (cells.js): made only so, and unmade
+// so — or by taking away what it crossed (plainIfLone).
+// Whether (x, y) has an arm going way d: a wire there, or a mux's lead
+// facing in (the stub of wire it is drawn as).
+function armAt(x, y, d) {
+    const nx = x + DIRS[d][0], ny = y + DIRS[d][1];
+    return inBounds(nx, ny) && armInto(B.cells[idx(nx, ny)], d);
+}
+// A plain wire with an arm every way: a 4-way, which can be a crossing.
+function crossable(x, y) {
+    return inBounds(x, y) && isConductorId(B.cells[idx(x, y)]) && [0, 1, 2, 3].every((d) => armAt(x, y, d));
+}
+// Makes (x, y) a crossing (on) or a plain wire, keeping its charge.
+// Whether it changed.
+function setCrossing(x, y, on) {
+    if (!inBounds(x, y) || isProtected(x, y)) return false;
+    const i = idx(x, y), id = B.cells[i];
+    if (on && isConductorId(id)) B.cells[i] = makeXover(conductorCharge(id), conductorCharge(id));
+    else if (!on && isXover(id)) B.cells[i] = makeConductor(combineCharge(xoverV(id), xoverH(id)));
+    else return false;
+    recomputeRoles();
+    return true;
+}
+// A stroke of wire drawn straight across a wire makes a crossing where it
+// passes: `path` the stroke's cells in order, `drawn` (a Set of idx) the
+// ones it laid. A cell it went straight through — in one side and out the
+// other — that was wire before it came, running the other way only (an
+// arm each side that way, none along the stroke), becomes a crossing.
+// Anything else the stroke meets it joins: a T, a corner, a 4-way made
+// by drawing its fourth arm. The crossings it made — or, `dry`, would make.
+function crossWhereDrawn(path, drawn, dry) {
+    const made = [];
+    const old = (x, y, d) => {
+        const nx = x + DIRS[d][0], ny = y + DIRS[d][1];
+        return armAt(x, y, d) && !drawn.has(idx(nx, ny));
+    };
+    for (let k = 1; k + 1 < path.length; k++) {
+        const [x, y] = path[k], [ax, ay] = path[k - 1], [bx, by] = path[k + 1];
+        if (!inBounds(x, y) || drawn.has(idx(x, y)) || !isConductorId(B.cells[idx(x, y)])) continue;
+        const along = ay === y && by === y && ax !== bx ? [1, 3] : ax === x && bx === x && ay !== by ? [0, 2] : null;
+        if (!along) continue;
+        const across = along[0] === 1 ? [0, 2] : [1, 3];
+        if (!across.every((d) => old(x, y, d)) || along.some((d) => old(x, y, d)) || isProtected(x, y)) continue;
+        if (dry || setCrossing(x, y, true)) made.push([x, y]);
+    }
+    return made;
+}
+// A crossing that crosses nothing any more — nothing on either side of it
+// one way — is plain wire again: what is left of it runs the other way
+// only, or ends there, which plain wire carries just the same. One with a
+// wire on one side each way, an L, stays a crossing: plain, it would join
+// the two. A part's is the part's. (A crossing used to stay one until it
+// was clicked, whatever was erased round it, and one dragged off in
+// Rearrange went on crossing nothing where it landed.) `at`: a board
+// index; whether it changed.
+function plainIfLone(at) {
+    const x = at % B.w, y = (at - x) / B.w, id = B.cells[at];
+    if (!isXover(id) || B.blockAt[at]) return false;
+    const side = (d) => { const [dx, dy] = DIRS[d]; return cellConnects(x + dx, y + dy, [-dx, -dy]); };
+    if ((side(0) || side(2)) && (side(1) || side(3))) return false;
+    B.cells[at] = makeConductor(combineCharge(xoverV(id), xoverH(id)));
+    return true;
+}
+// The crossings beside `list`'s cells (board indices), when what was there
+// has been taken away: plainIfLone each. Whether any changed.
+function plainLoneCrossings(list) {
+    let any = false;
+    for (const i of list) {
+        const x = i % B.w, y = (i - x) / B.w;
+        for (const [dx, dy] of DIRS) if (inBounds(x + dx, y + dy) && plainIfLone(idx(x + dx, y + dy))) any = true;
+    }
+    return any;
 }
 
 function colorOfCell(id) {
@@ -231,5 +308,6 @@ function stampMux(list) {
 
 export {
     idForColor, paintCell, paintCells, colorOfCell, floodPad, setSwitch, toggleAt, setToggle, floodFill,
-    recomputeRoles, typedMuxAt, buildMuxRoles, muxLayout, stampMux,
+    recomputeRoles, typedMuxAt, buildMuxRoles, muxLayout, stampMux, crossable, setCrossing, crossWhereDrawn,
+    plainIfLone, plainLoneCrossings,
 };

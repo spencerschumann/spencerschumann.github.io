@@ -30,11 +30,14 @@ function nextCharge(charge, n, e, s, w) {
 //            round it), and an id this build does not define loads as
 //            insulator (see isValidId) rather than as whatever might move
 //            into the number later.
-// Crossover conductor: 27-35 (27 + v*3 + h) - a conductor whose four
-//            neighbors are all conductors routes its vertical axis (N<->S)
-//            independently from its horizontal axis (E<->W), so it needs to
-//            remember two charges. Crossover-ness itself is geometric (see
-//            isCrossoverAt); the distinct id only exists to hold both.
+// Crossover conductor: 27-35 (27 + v*3 + h) - a wire cell that routes its
+//            vertical axis (N<->S) independently of its horizontal axis
+//            (E<->W), and so holds two charges. A cell of its own: the
+//            player makes one (a stroke drawn straight across a wire, or
+//            a click on a 4-way), and it stays one, whatever is drawn or
+//            erased round it. (It was once read off the shape: any wire
+//            with wire all round and running straight through was a
+//            crossing — see inferCrossings, which reads old boards so.)
 // LED (output): 36-38 (36 + charge) - a pure sink that never drives a wire,
 //            but LED cells conduct to each other over the 8-neighborhood so
 //            a multi-cell pad lights (and drains) as one square unit.
@@ -149,7 +152,9 @@ for (let d = 0; d < 4; d++) {
         }
 }
 muxKindOf[ID_MUX_X] = MK_X;
-function isMuxId(id) { return muxKindOf[id] !== 0; }
+// (> 0, not !== 0: past the table's 256 a lookup is undefined, which is
+// not 0, and every number from 256 up was once a mux.)
+function isMuxId(id) { return muxKindOf[id] > 0; }
 // A mux cell with a lead: C, O and the pins.
 function hasMuxLead(id) { const k = muxKindOf[id]; return k === MK_C || k === MK_O || k === MK_NO || k === MK_NC; }
 // Is the cell `nid`, one step the way `d` (a DIRS index) from a wire, an
@@ -166,6 +171,27 @@ const armInto = (nid, d) => isWireId(nid) || leadInto(nid, d);
 // (an input feeding one mux's pin and another's control) are not: no wire
 // runs through there, and they join, as they always did.
 const crossingFrom = (wire, arm) => [0, 1, 2, 3].every(arm) && ((wire(0) && wire(2)) || (wire(1) && wire(3)));
+// The crossings a board made before they were cells of their own had, by
+// the rule it had then (crossingFrom, an arm a wire or a mux's lead facing
+// in): every wire cell that rule called a crossing becomes one, and any
+// other a plain wire, each keeping its charge. `cells` is w x h, changed in
+// place. (Old saves and clips are read through this once; see io.js and
+// clips.js.)
+function inferCrossings(cells, w, h) {
+    const at = (x, y) => (x >= 0 && y >= 0 && x < w && y < h ? cells[y * w + x] : ID_INSULATOR_PLAIN);
+    const cross = new Uint8Array(cells.length);
+    for (let i = 0; i < cells.length; i++) {
+        if (!isWireId(cells[i])) continue;
+        const x = i % w, y = (i - x) / w;
+        const nb = (d) => at(x + DIRS[d][0], y + DIRS[d][1]);
+        cross[i] = crossingFrom((d) => isWireId(nb(d)), (d) => armInto(nb(d), d)) ? 1 : 0;
+    }
+    for (let i = 0; i < cells.length; i++) {
+        const id = cells[i];
+        if (cross[i] && isConductorId(id)) cells[i] = makeXover(conductorCharge(id), conductorCharge(id));
+        else if (!cross[i] && isXover(id)) cells[i] = makeConductor(combineCharge(xoverV(id), xoverH(id)));
+    }
+}
 // The charge a mux cell shows: a control's on, a pin's or COM's charge,
 // the switch's (draining shows as falling).
 function muxCharge(id) {
@@ -234,7 +260,8 @@ const DIRS = [[0, -1], [1, 0], [0, 1], [-1, 0]]; // N, E, S, W
 // this, so stepping never creates bogus undo steps and pasting duplicates
 // the drawing, not a frozen instant of mid-flight charge.
 function stripId(id) {
-    if (isConductorId(id) || isXover(id)) return makeConductor(OFF);
+    if (isXover(id)) return makeXover(OFF, OFF);
+    if (isConductorId(id)) return makeConductor(OFF);
     if (isMuxId(id)) return restMuxId(id);
     if (isLed(id)) return makeLed(OFF);    // lit state is transient, like charge
     if (isSwitch(id)) return ID_SWITCH_OFF; // pressed state is transient too
@@ -259,7 +286,7 @@ export {
     toggleIsOn, NEIGHBORS_8, nextChargeN, isConductorId, conductorCharge, makeConductor, isXover, xoverV,
     xoverH, makeXover, isWireId, combineCharge, ID_MUX_C, ID_MUX_O, ID_MUX_X, ID_MUX_NO, ID_MUX_NC, ID_MUX_M,
     MK_C, MK_O, MK_X, MK_NO, MK_NC, MK_M, DRAIN, SEL_NO, SEL_NC, muxKindOf, muxDirOf, muxChOf, muxAuxOf,
-    makeMuxC, makeMuxO, makeMuxNO, makeMuxNC, makeMuxM, isMuxId, hasMuxLead, leadInto, armInto, crossingFrom, muxCharge, restMuxId, chargedMuxId,
+    makeMuxC, makeMuxO, makeMuxNO, makeMuxNC, makeMuxM, isMuxId, hasMuxLead, leadInto, armInto, crossingFrom, inferCrossings, muxCharge, restMuxId, chargedMuxId,
     MIRROR_DIR, withMuxDir, rotateId, MUX_CELL_NAMES, muxCellKind, muxLead, mirrorId, DIRS, stripId,
     isValidId,
 };

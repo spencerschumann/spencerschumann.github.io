@@ -400,7 +400,9 @@ function describeCell(x, y) {
 function describeLooseCell(x, y) {
     const id = M.getCell(x, y);
     if (M.isInsulatorId(id)) return 'empty';
-    if (M.isConductorId(id) || M.isXover(id)) return M.isCrossoverAt(x, y) ? 'wire crossing' : 'wire';
+    if (M.isXover(id)) return 'wire crossing — its two wires pass over each other; a click with Conductor (1) joins them';
+    if (M.crossable(x, y)) return 'wire joined four ways — a click with Conductor (1) makes it a crossing';
+    if (M.isConductorId(id)) return 'wire';
     if (id === M.ID_POS) return '+V source';
     if (id === M.ID_NEG) return '−V source';
     if (M.isLed(id)) return M.ledIsOn(id) ? 'LED, lit' : 'LED';

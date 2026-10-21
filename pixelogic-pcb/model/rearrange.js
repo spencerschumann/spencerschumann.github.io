@@ -3,7 +3,7 @@
 
 import {
     DIRS, ID_INSULATOR_PLAIN, ID_NEG, ID_POS, NEIGHBORS_8, OFF, isConductorId, isMuxId, isInsulatorId,
-    isLed, isSwitch, isToggle, isWireId, makeConductor, mirrorId, rotateId, stripId,
+    isLed, isSwitch, isToggle, isWireId, makeConductor, makeXover, mirrorId, rotateId, stripId,
 } from './cells.js';
 import {
     B, getCell, idx, inBounds, isCrossoverAt, isLocked,
@@ -13,7 +13,7 @@ import {
     turnPinCode,
 } from './blocks.js';
 import {
-    recomputeRoles,
+    plainLoneCrossings, recomputeRoles,
 } from './edit.js';
 import {
     netReaches, orphanWire, wireNetKey,
@@ -101,8 +101,12 @@ function leadsFacing(x, y) {
 // A run goes on straight through a crossing, both sides of it: dragging
 // one arm alone left the crossing a T, welding its two runs together.
 // The crossing cell itself is shared — the move leaves it behind as
-// plain wire for the run going the other way, and where the dragged run
-// lands across that run, a new crossing forms (see moveObjects).
+// plain wire for the run going the other way, carries it off as plain
+// wire too, and where the dragged run lands across that run, a new
+// crossing forms (see moveObjects). (Carried off as a crossing, it went
+// on crossing nothing where it landed.) Wire a move's clean-up takes away
+// may leave a crossing beside it crossing nothing: it is plain wire again
+// (plainLoneCrossings), as when the player erases round one.
 // Clicking the crossing itself grabs the horizontal run.
 function wireSegmentAt(x, y) {
     const wireAt = (ax, ay) => isWireId(getCell(ax, ay));
@@ -352,6 +356,9 @@ function survey(mv) {
         if (DIRS.some(([ax, ay]) => inBounds(cx + ax, cy + ay) && !mv.objSet.has(idx(cx + ax, cy + ay))
             && cellConnects(cx + ax, cy + ay, [-ax, -ay]))) sharedX.add(idx(cx, cy));
     }
+    // ...and the object's copy is plain wire: it is a crossing where it
+    // lands only if it lands across a run (see the end of this step).
+    mv.objCells.forEach(([cx, cy], k) => { if (sharedX.has(idx(cx, cy))) mv.ids[k] = makeConductor(OFF); });
     // A mux's stub that is more than an end — a junction (the run going
     // on past the pin as well as into it, a T) or one arm of a crossing
     // — is carried, so the part keeps its leads and reads as itself
@@ -541,12 +548,30 @@ function survey(mv) {
     // absorbed cells from their nets' bookkeeping.
     for (const comp of mv.components.values())
         for (const ci of [...comp.cells]) if (mv.movedSet.has(ci)) comp.cells.delete(ci);
+    const landedOn = new Map();
     mv.moved.forEach(([x, y], i) => {
         const mi = idx(x, y);
+        landedOn.set(mi, B.cells[mi]);
         B.cells[mi] = rotateId(mv.mirror ? mirrorId(mv.ids[i]) : mv.ids[i], mv.quarterTurns);
         B.blockAt[mi] = sideOf[i][0];
         B.pinAt[mi] = turnPinCode(mv.mirror ? mirrorPinCode(sideOf[i][1]) : sideOf[i][1], mv.quarterTurns);
     });
+    // A moved run that lands straight across a stationary one crosses it:
+    // where the moved wire runs one way only and the wire it landed on ran
+    // the other way only, the cell is made a crossing. (Anywhere else the
+    // two meet they join, and the check for joins at the end says whether
+    // that may stand.)
+    const wireAt = (x, y) => inBounds(x, y) && isWireId(B.cells[idx(x, y)]);
+    for (const [mi, was] of landedOn) {
+        if (!isWireId(was) || !isConductorId(B.cells[mi])) continue;
+        const x = mi % B.w, y = (mi - x) / B.w;
+        const way = (d) => [x + DIRS[d][0], y + DIRS[d][1]];
+        const movedWay = (d) => { const [nx, ny] = way(d); return wireAt(nx, ny) && mv.movedSet.has(idx(nx, ny)); };
+        const stillWay = (d) => { const [nx, ny] = way(d); return wireAt(nx, ny) && !mv.movedSet.has(idx(nx, ny)); };
+        const v = [0, 2], h = [1, 3];
+        for (const [along, across] of [[v, h], [h, v]])
+            if (along.every(movedWay) && !across.some(movedWay) && across.every(stillWay) && !along.some(stillWay)) B.cells[mi] = makeXover(OFF, OFF);
+    }
     recomputeRoles();
 }
 
@@ -771,10 +796,22 @@ function reroute(mv) {
             // orphaned is the terminal at the far end of the net, which is
             // what the dashed line has to point at.
             if (!path) return [from, [...c.targets][0]];
+            // A route only ever meets another wire head-on, crossing it
+            // (see routeNet), and steps over the cell it crosses — which is
+            // already wire, and not in the path. Its cells either side are:
+            // the cell between, wire, is made a crossing.
+            const onPath = new Set(path.map(([px, py]) => idx(px, py)));
             for (const [px, py] of path) {
                 B.cells[idx(px, py)] = makeConductor(OFF);
                 comp.routed.add(idx(px, py));
             }
+            for (const [px, py] of path)
+                for (const [ddx, ddy] of DIRS) {
+                    const mx = px + ddx, my = py + ddy, qx = px + 2 * ddx, qy = py + 2 * ddy;
+                    if (!inBounds(qx, qy) || !onPath.has(idx(qx, qy)) || onPath.has(idx(mx, my))) continue;
+                    const m = B.cells[idx(mx, my)];
+                    if (isConductorId(m)) B.cells[idx(mx, my)] = makeXover(OFF, OFF);
+                }
         }
         return null;
     };
@@ -808,6 +845,7 @@ function reroute(mv) {
         // object as PLACED. Only `cells` changes, which is all routeNet
         // reads for free space.
         for (const ci of rip) { B.cells[ci] = ID_INSULATOR_PLAIN; comp.cells.delete(ci); }
+        plainLoneCrossings(rip);
         const failed = attemptContract(c);
         if (!failed) return null;
         B.cells.set(before);
@@ -854,6 +892,7 @@ function reroute(mv) {
             .filter((ci) => isWireId(B.cells[ci]));
         if (!dead.length) return false;
         for (const ci of dead) { B.cells[ci] = ID_INSULATOR_PLAIN; comp.cells.delete(ci); }
+        plainLoneCrossings(dead);
         return true;
     };
     // Both ways are tried — from what of the net is left, as always, and
@@ -931,13 +970,16 @@ function reroute(mv) {
         // nets too: without them a run reaching the part through one
         // read as going nowhere, and was pruned.
         for (const ci of mv.keptBehind) if (isWireId(B.cells[ci])) net.add(ci);
+        const pruned = [];
         for (const ci of keepLoops(reduceNet(net, required, keep, mv.nodeIdFor(mv.nodeOfMoved)))) {
             if (!isWireId(B.cells[ci])) continue;
             B.cells[ci] = ID_INSULATOR_PLAIN;
+            pruned.push(ci);
             // Keep the bookkeeping honest: a cell that is gone must not
             // come back as a "required" anchor on a later pass.
             for (const comp of mv.components.values()) { comp.cells.delete(ci); comp.routed.delete(ci); }
         }
+        plainLoneCrossings(pruned);
     };
     const preRoute = B.cells.slice();
     const preCompCells = new Map([...mv.components].map(([k, c]) => [k, new Set(c.cells)]));
@@ -992,6 +1034,7 @@ function check(mv) {
             if (!mv.preOrphans.has(ci) && !mv.movedSet.has(ci) && !B.blockAt[ci]) gone.push(ci);
         if (gone.length) {
             for (const ci of gone) B.cells[ci] = ID_INSULATOR_PLAIN;
+            plainLoneCrossings(gone);
             recomputeRoles();
         }
     }

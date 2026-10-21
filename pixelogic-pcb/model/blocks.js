@@ -3,11 +3,11 @@
 // stay bare and which are free (classifyRing, ringMask).
 
 import {
-    DIRS, ID_CONDUCTOR_BASE, ID_INSULATOR_PLAIN, ID_NEG, ID_POS, armInto, crossingFrom, hasMuxLead, isConductorId, isMuxId,
+    DIRS, ID_CONDUCTOR_BASE, ID_INSULATOR_PLAIN, ID_NEG, ID_POS, hasMuxLead, isConductorId, isMuxId,
     isInsulatorId, isLed, isSwitch, isToggle, isWireId, isXover, muxDirOf, stripId,
 } from './cells.js';
 import {
-    B, copyBlockRec, idx, inBounds, isCrossoverAt,
+    B, copyBlockRec, idx, inBounds,
 } from './board.js';
 import {
     recomputeRoles,
@@ -287,12 +287,12 @@ function restoreBlockState(s) {
 // wire joins that pin, wherever along the edge it is: the edge beside a
 // pin's wire is that pin's terminal, all of it, and not only the cell
 // its own lead faces (a pad as wide as the wire runs). It is kept bare
-// only where a wire there would cut the pin's wire in two — a fourth
-// wire on a tee makes it a crossing, whose two ways are then joined
-// nowhere else (beside a blob of wire it only makes the blob bigger) —
-// and beside any wire that is no pin's. Each cell is judged alone: two
-// that are each fine can cut it together (both sides of a corner the
-// wire turns), and the second is refused as it is wired (cutsPartWire).
+// beside any wire that is no pin's — a crossing's included, either of
+// whose ways a wire there would join. (A wire beside a pin's wire never
+// makes a crossing of it: a crossing is a cell of its own. When one could,
+// the edge had to be kept bare wherever a wire would turn a tee into a
+// crossing and cut the pin's wire in two, and two cells each fine alone
+// could still cut it together.)
 //
 // Next to a mux it is simple, since a mux means what its cells say
 // whatever lies against it: the cell a lead faces is kept bare (or is
@@ -311,15 +311,6 @@ function classifyRing(core) {
         termOf.set(key(p.hx + dx, p.hy + dy), p);
     }
     const wires = pinWires(core, inCore, key);
-    const isW = (x, y) => inCore(x, y) && isWireId(core.id(x, y));
-    const arm = (x, y, d) => inCore(x, y) && armInto(core.id(x, y), d);
-    // Would a wire on (x, y), the rest of the edge bare, cut the wire of
-    // (nx, ny) beside it?
-    const cuts = (nx, ny, x, y) => {
-        const w = (px, py) => isW(px, py) || (px === x && py === y), a = (px, py, d) => arm(px, py, d) || (px === x && py === y);
-        return crossingFrom((d) => w(nx + DIRS[d][0], ny + DIRS[d][1]), (d) => a(nx + DIRS[d][0], ny + DIRS[d][1], d))
-            && crossingCuts(w, inCore, nx, ny, a);
-    };
     const ring = new Map();
     const put = (x, y, cls, pin) => ring.set(key(x, y), { x, y, cls, pin: pin ? pin.k : -1 });
     for (let y = core.y0 - 1; y <= core.y1 + 1; y++)
@@ -342,9 +333,12 @@ function classifyRing(core) {
             const nid = core.id(nx, ny);
             if (isInsulatorId(nid)) { put(x, y, 'X'); continue; }
             if (!isMuxId(nid)) {
-                // Wire, a source, a lamp: anything touching it joins it.
-                const p = isWireId(nid) && wires.own.get(key(nx, ny));
-                put(x, y, p && !cuts(nx, ny, x, y) ? 'T' : 'R', p);
+                // Wire, a source, a lamp: anything touching it joins it — a
+                // crossing's one way only, the way the edge cell is from it:
+                // a terminal of the pin whose wire that is, if it is a pin's.
+                const k = isXover(nid) ? key(nx, ny) + (x !== nx ? 'h' : 'v') : key(nx, ny);
+                const p = isWireId(nid) && wires.own.get(k);
+                put(x, y, p ? 'T' : 'R', p);
                 continue;
             }
             // Mux body: a mux joins what is on its lead and nothing
@@ -356,68 +350,18 @@ function classifyRing(core) {
         }
     return ring;
 }
-// Does a crossing at (cx, cy) cut its wire in two — its north-south way
-// and its east-west way joined nowhere else? Walked from the cells north
-// and south of it, never through it (and straight on over any other
-// crossing), to see if the walk comes round to the cells east or west of
-// it. `isW(x, y)`: wire there; `within(x, y)`: where the walk may go;
-// `arm(x, y, d)`: an arm of the wire one step back the other way — a wire,
-// or a mux's lead facing in (armInto) — wire alone if not given.
-function crossingCuts(isW, within, cx, cy, arm) {
-    const key = (x, y) => x + ',' + y;
-    const armAt = arm || ((x, y) => isW(x, y));
-    const cross = (x, y) => crossingFrom((d) => isW(x + DIRS[d][0], y + DIRS[d][1]), (d) => armAt(x + DIRS[d][0], y + DIRS[d][1], d));
-    // A cell east or west reached the east-west way, if it is a crossing
-    // itself: its other way is another wire.
-    const goal = new Set([1, 3].map((d) => {
-        const x = cx + DIRS[d][0], y = cy + DIRS[d][1];
-        return key(x, y) + (cross(x, y) ? 'h' : '');
-    }));
-    const seen = new Set(), stack = [];
-    const visit = (x, y, d) => {
-        if ((x === cx && y === cy) || !within(x, y) || !isW(x, y)) return false;
-        const c = cross(x, y), k = key(x, y) + (c ? (d & 1 ? 'h' : 'v') : '');
-        if (goal.has(k)) return true;
-        if (seen.has(k)) return false;
-        seen.add(k);
-        for (const w of c ? [d] : [0, 1, 2, 3]) stack.push([x, y, w]);
-        return false;
-    };
-    for (const d of [0, 2]) if (visit(cx + DIRS[d][0], cy + DIRS[d][1], d)) return false;
-    while (stack.length) {
-        const [x, y, w] = stack.pop();
-        if (visit(x + DIRS[w][0], y + DIRS[w][1], w)) return false;
-    }
-    return true;
-}
-// Would a wire on (x, y) cut a part's wire beside it — make a crossing of
-// an edge cell of it whose two ways are joined nowhere else, inside the
-// part or out? (Its edge says no for each cell alone; two together can,
-// as both sides of a corner the wire turns.) The part's id, or 0.
-function cutsPartWire(x, y) {
-    if (!inBounds(x, y) || isWireId(B.cells[idx(x, y)])) return 0;
-    const isW = (px, py) => (px === x && py === y) || (inBounds(px, py) && isWireId(B.cells[idx(px, py)]));
-    const arm = (px, py, d) => (px === x && py === y) || (inBounds(px, py) && armInto(B.cells[idx(px, py)], d));
-    for (const [dx, dy] of DIRS) {
-        const cx = x + dx, cy = y + dy;
-        if (!inBounds(cx, cy) || !B.blockAt[idx(cx, cy)] || !isWireId(B.cells[idx(cx, cy)])) continue;
-        if (!crossingFrom((d) => isW(cx + DIRS[d][0], cy + DIRS[d][1]), (d) => arm(cx + DIRS[d][0], cy + DIRS[d][1], d))) continue;
-        if (crossingCuts(isW, inBounds, cx, cy, arm)) return topBlockOf(B.blockAt[idx(cx, cy)]);
-    }
-    return 0;
-}
 // Which pin each of a core's own wires is: followed from each pin's cell,
 // wire to wire (straight on over a crossing), and on through the parts
 // nested in it — a wire on a nested part's terminal is that part's pin,
 // and goes on from every other terminal of it. A pin through a nested
 // part (`via`) starts at that part's pin. The first pin to reach a wire
-// has it. Returns {own: Map 'x,y' -> pin, nested: Map 'b:j' -> pin}.
+// has it. Returns {own: Map 'x,y' -> pin, nested: Map 'b:j' -> pin} — for a
+// crossing, a key a way: 'x,yv' its north-south wire, 'x,yh' its east-west.
 function pinWires(core, inCore, key) {
     const own = new Map(), nested = new Map();
     const isW = (x, y) => inCore(x, y) && isWireId(core.id(x, y));
     const ownWire = (x, y) => isW(x, y) && !core.nested(x, y);
-    const crossing = (x, y) => crossingFrom((d) => isW(x + DIRS[d][0], y + DIRS[d][1]),
-        (d) => inCore(x + DIRS[d][0], y + DIRS[d][1]) && armInto(core.id(x + DIRS[d][0], y + DIRS[d][1]), d));
+    const crossing = (x, y) => inCore(x, y) && isXover(core.id(x, y));
     for (const p of core.pins) {
         const seen = new Set(), stack = [];
         // A step onto (x, y), going way d (-1: from nowhere in particular).
@@ -427,7 +371,7 @@ function pinWires(core, inCore, key) {
             const k = cross ? key(x, y) + (d < 0 ? '' : d & 1 ? 'h' : 'v') : key(x, y);
             if (seen.has(k)) return;
             seen.add(k);
-            if (!cross && !own.has(key(x, y))) own.set(key(x, y), p);
+            if (!own.has(k) && (!cross || d >= 0)) own.set(k, p);
             for (const w of ways) stack.push([x, y, w]);
         };
         // A nested part's pin is this pin: its wire goes on from every
@@ -451,7 +395,11 @@ function pinWires(core, inCore, key) {
         if (via) {
             const [dx, dy] = DIRS[p.d], e = core.ringOf(via).get(key(p.hx + dx, p.hy + dy));
             if (e && e.cls === 'T') joinNested(via, e.pin);
-        } else if (ownWire(p.hx, p.hy)) visit(p.hx, p.hy, -1);
+        } else if (ownWire(p.hx, p.hy)) {
+            // A pin on a crossing is on the one of its wires that runs out
+            // to the terminal: walked from there, inward, that way only.
+            visit(p.hx, p.hy, crossing(p.hx, p.hy) ? (p.d + 2) & 3 : -1);
+        }
         while (stack.length) {
             const [x, y, w] = stack.pop(), [dx, dy] = DIRS[w], nx = x + dx, ny = y + dy;
             if (!inCore(nx, ny)) continue;
@@ -529,8 +477,7 @@ function computeRingMask() {
 }
 // Cells where an edge is broken: something on a cell kept bare that
 // joins the part there — a wire, a source, a mux whose lead faces it,
-// another part's wire or pin — or wire on terminals that together cut the
-// part's wire (see cutsPartWire). Anything else may sit against a part:
+// another part's wire or pin. Anything else may sit against a part:
 // on a terminal, whatever joins it there is joined to that pin, which is
 // what a terminal is for (a mux's lead or another part's pin, straight
 // on, with no wire between); and a mux's plain side, or another part's
@@ -545,7 +492,6 @@ function ringViolations() {
             if (e.cls === 'X' || !inBounds(e.x, e.y)) continue;
             const [cx, cy] = edgeHost(g, e.x, e.y);
             if (e.cls === 'R') { if (cellsJoin(e.x, e.y, cx, cy)) out.push(idx(e.x, e.y)); continue; }
-            if (isW(e.x, e.y) && isW(cx, cy) && isCrossoverAt(cx, cy) && crossingCuts(isW, inBounds, cx, cy)) out.push(idx(e.x, e.y));
         }
     }
     return out;
@@ -605,6 +551,6 @@ export {
     RING_R, RING_T, pinCode, pinIndex, pinFaceOf, turnPinCode, mirrorPinCode, blockParent, isProtected, terminalsByPin,
     isTerminalCell, cellInBlock, topBlockOf, blockCellIdxs, blocksInside, computeBlockGeom, blockList,
     blockInfo, blockAtCell, visibleBlockAt, edgeAt, setBlockOpen, removeBlock, decapBlock, blockState,
-    restoreBlockState, classifyRing, coreOnBoard, blockSig, ringOfBlock, computeRingMask, ringViolations, cutsPartWire,
+    restoreBlockState, classifyRing, coreOnBoard, blockSig, ringOfBlock, computeRingMask, ringViolations,
     cellConnects, idConnects, cellsJoin, edgeHost,
 };

@@ -42,6 +42,9 @@ import {
 import {
     abortReplay, closeTable, doVerify, forgetVerdict, openTable, probeRow, renderStatus, setGuide,
 } from './verdict.js';
+import {
+    exitSteps, goToStep, startSteps, stepBack, stepOn, steps,
+} from './steps.js';
 
 const M = window.PixelogicModel;
 const V = window.PixelogicView;
@@ -354,9 +357,16 @@ function setupCampaign() {
     // The status line's buttons are re-rendered with it, so they are
     // handled here rather than bound one by one.
     levelStatusEl.addEventListener('click', (e) => {
+        // Stepping, a step on the bar is where to go.
+        const seg = e.target.closest('[data-step]');
+        if (seg && steps) { goToStep(Number(seg.dataset.step)); return; }
         const btn = e.target.closest('[data-act]');
         if (!btn) return;
-        if (btn.dataset.act === 'next') enterLevel(btn.dataset.level);
+        if (btn.dataset.act === 'steps') startSteps(gameLevel);
+        else if (btn.dataset.act === 'step-back') stepBack();
+        else if (btn.dataset.act === 'step-on') stepOn();
+        else if (btn.dataset.act === 'steps-done') exitSteps();
+        else if (btn.dataset.act === 'next') enterLevel(btn.dataset.level);
         else if (btn.dataset.act === 'relay') relayBoard();
         else if (btn.dataset.act === 'timing') startTiming(gameLevel, true);
         else if (btn.dataset.act === 'table') {
@@ -365,8 +375,10 @@ function setupCampaign() {
     });
     document.getElementById('levelTableCloseBtn').addEventListener('click', closeTable);
     levelTableBodyEl.addEventListener('click', (e) => {
+        // A row is that step, stepping; else it is tried by hand.
         const tr = e.target.closest('tr[data-row]');
-        if (tr) probeRow(Number(tr.dataset.row));
+        if (tr && steps) goToStep(Number(tr.dataset.row));
+        else if (tr) probeRow(Number(tr.dataset.row));
     });
     levelCollapseBtn.addEventListener('click', () => setCollapsed(!levelBarCollapsed));
     hintBtn.addEventListener('click', () => setHintOpen(!levelHintEl.classList.contains('open')));

@@ -10,7 +10,7 @@ import {
     nextChargeN, restMuxId, chargedMuxId, switchIsPressed, toggleIsOn, xoverH, xoverV,
 } from './cells.js';
 import {
-    B, boardLent, getCell, idx, inBounds, isCrossoverAt,
+    B, boardLent, getCell, idx, inBounds,
 } from './board.js';
 import {
     recomputeRoles,
@@ -45,22 +45,16 @@ function contribCharge(x, y, face) {
 }
 
 // ===== Per-cell-kind next-state =====
-// Handles both plain conductors and crossovers, since which one a wire cell
-// is depends only on its neighbors (isCrossoverAt) and can flip when the
-// user edits an adjacent cell. A crossover keeps N<->S and E<->W separate;
-// a plain conductor is one node taking charge from all four sides.
+// A plain conductor is one node taking charge from all four sides; a
+// crossover (a cell of its own) keeps N<->S and E<->W apart, each with its
+// own charge.
 function nextConductor(x, y, id) {
     const n = contribCharge(x, y - 1, 2);
     const e = contribCharge(x + 1, y, 3);
     const s = contribCharge(x, y + 1, 0);
     const w = contribCharge(x - 1, y, 1);
-    if (isCrossoverAt(x, y)) {
-        const vOld = isXover(id) ? xoverV(id) : isConductorId(id) ? conductorCharge(id) : OFF;
-        const hOld = isXover(id) ? xoverH(id) : isConductorId(id) ? conductorCharge(id) : OFF;
-        return makeXover(nextCharge(vOld, n, OFF, s, OFF), nextCharge(hOld, OFF, e, OFF, w));
-    }
-    const cOld = isXover(id) ? combineCharge(xoverV(id), xoverH(id)) : conductorCharge(id);
-    return makeConductor(nextCharge(cOld, n, e, s, w));
+    if (isXover(id)) return makeXover(nextCharge(xoverV(id), n, OFF, s, OFF), nextCharge(xoverH(id), OFF, e, OFF, w));
+    return makeConductor(nextCharge(conductorCharge(id), n, e, s, w));
 }
 
 // ===== The mux, cell by cell =====
@@ -234,9 +228,8 @@ function restartTicks() {
 function resetCharges() {
     for (let i = 0; i < B.cells.length; i++) {
         const id = B.cells[i];
-        // Crossovers collapse to a plain conductor; the next tick re-derives
-        // the crossover form from geometry.
-        if (isConductorId(id) || isXover(id)) B.cells[i] = makeConductor(OFF);
+        if (isXover(id)) B.cells[i] = makeXover(OFF, OFF);
+        else if (isConductorId(id)) B.cells[i] = makeConductor(OFF);
         else if (isMuxId(id)) B.cells[i] = restMuxId(id);
         else if (isLed(id)) B.cells[i] = makeLed(OFF);
         else if (isSwitch(id)) B.cells[i] = ID_SWITCH_OFF;
@@ -256,7 +249,8 @@ function resetCharges() {
 function primeCharges() {
     for (let i = 0; i < B.cells.length; i++) {
         const id = B.cells[i];
-        if (isConductorId(id) || isXover(id)) B.cells[i] = makeConductor(ON);
+        if (isXover(id)) B.cells[i] = makeXover(ON, ON);
+        else if (isConductorId(id)) B.cells[i] = makeConductor(ON);
         else if (isMuxId(id)) B.cells[i] = chargedMuxId(id);
         else if (isLed(id)) B.cells[i] = makeLed(ON);
         else if (isSwitch(id)) B.cells[i] = ID_SWITCH_OFF;

@@ -273,18 +273,19 @@
                 },
                 {
                     text: (b) => (b.reaches('A', 'B')
-                        ? 'The two wires touch, so A and B are joined. They may only meet in '
-                            + 'a clean <b>+</b>: four wire cells around the crossing.'
-                        : 'Now <b>B</b> straight down to <b>QB</b>, through A’s wire. Where '
-                            + 'four wires meet in a <b>+</b>, they pass over each other.'),
+                        ? 'The two wires are joined. Where they meet must be a crossing — click the '
+                            + '<b>+</b> there with the Conductor to make it one — and they must not touch '
+                            + 'anywhere else.'
+                        : 'Now <b>B</b> straight down to <b>QB</b>, across A’s wire. A wire drawn '
+                            + 'straight across another crosses it: the two pass over each other.'),
                     done: (b) => b.reaches('B', 'QB') && !b.reaches('A', 'B'),
                 },
             ],
             coachDone: 'Flip <b>A</b> and <b>B</b>: each lamp follows its own switch. '
                 + 'Then press <b>Verify</b>.',
-            hint: 'Draw A’s wire straight across, then B’s straight down through it. The '
-                + 'crossing cell needs wire on all four sides — a plus — and the two wires must '
-                + 'not touch anywhere else.',
+            hint: 'Draw A’s wire straight across, then B’s straight down across it: drawn '
+                + 'straight across, it crosses. A plus that joins them instead is made a crossing '
+                + 'by clicking it with the Conductor. The two wires must not touch anywhere else.',
             tools: ['conductor', 'insulator'],
             padAt: { A: ['w', 4], QA: ['e', 4], B: ['n', 4], QB: ['s', 4] },
             inputs: ['A', 'B'], outputs: ['QA', 'QB'], w: 9, h: 9,

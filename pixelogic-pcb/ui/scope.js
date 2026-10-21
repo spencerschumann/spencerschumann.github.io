@@ -674,8 +674,17 @@ function setupScope() {
         dirty();
     });
     scopeCanvas.addEventListener('pointerup', (e) => {
-        // Let go, the readout stays on the edge moved till the pointer does.
-        if (held) { grip = held; held = null; dirty(); return; }
+        // Let go, the readout stays on the edge moved till the pointer does;
+        // dragged out of sight (past an end, the waveform grown), the whole
+        // of it is shown again.
+        if (held) {
+            const s = shown(), r = right === null ? s.last : right, at = plotWidth() - (r - held.ev.t + 1) * pxPerTick;
+            grip = held;
+            held = null;
+            if (at < 0 || at > plotWidth()) fit();
+            dirty();
+            return;
+        }
         if (drag && !drag.moved) {
             const t = tickAtX(e.offsetX);
             marker = marker !== null && Math.abs(t - marker) * pxPerTick < 6 ? null : t;

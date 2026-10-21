@@ -903,6 +903,19 @@
 
     // An output a step does not judge (null) matches whatever it is.
     const matches = (level, got, want) => level.outputs.every((name) => want[name] == null || got[name] === (want[name] & 1));
+    // Whether a step judges anything at all.
+    const judges = (level, want) => level.outputs.some((name) => want[name] != null);
+    // A storage run's step is right if it settles and matches — but until
+    // the run has judged something, the circuit is still waking up, from
+    // whatever it woke holding, and still ringing then is part of that: the
+    // script's first clock or load is there to settle it. A step after that
+    // which never settles is wrong, judged or not. (The player's serial
+    // adder woke from a charged start with a pulse going round the
+    // flip-flop's holding loop, up into the adder and back, every 10 ticks;
+    // the first clock stopped it, and every step after passed — and it was
+    // failed at step 1, which judged nothing.) `judging`: whether this step
+    // or one before it judged something.
+    const stepOk = (level, r, want, judging) => (r.settled || !judging) && matches(level, r.got, want);
 
     // Runs the level's vectors against a copy of what is on the board —
     // charge, locks and any owed rearrange connections included — so
@@ -956,12 +969,14 @@
                     let prev = Object.fromEntries(level.outputs.map((name) => [name, null]));
                     let was = coldInputs(level);
                     const mem = {};
+                    let judging = false;
                     level.script.forEach((v, i) => {
                         const r = applyVector(g, level, v, budget);
                         const want = stepWants(level, i, v, prev, was, mem);
+                        judging = judging || judges(level, want);
                         const entry = {
                             step: i, inputs: v, expected: want, actual: r.got,
-                            ok: r.settled && matches(level, r.got, want),
+                            ok: stepOk(level, r, want, judging),
                             ticks: r.ticks, settled: r.settled,
                         };
                         if (primed) entry.primed = true;
@@ -1182,6 +1197,9 @@
             // for everything else each vector gets its own in begin().
             start(primed) {
                 if (primed) M.primeCharges(); else M.resetCharges();
+                // The start comes to rest before the first step, as in
+                // runVectors: a charged board drains where it is driven.
+                if (level.sequential) settle(budget);
                 prevCells = null; quietFor = 0; elapsed = 0; index = -1;
             },
             // Move to vector n and drive the input pads to it — from a
@@ -1211,6 +1229,69 @@
                 return got;
             },
             vectorAt: (n) => vectors[n],
+        };
+    }
+
+    // ===== Stepping through it =====
+    //
+    // A storage level's run is one long story, and a red mark at step 12 of
+    // 34 says only where it went wrong, not how: what the board held coming
+    // into that step is the whole question. So the run can be walked a step
+    // at a time, there and back, on the board being worked on: the same
+    // start (from rest, or `primed`, the run the verdict failed), the same
+    // script, the same settling and judging as runVectors. Each step is
+    // worked out on a copy of the board and kept — its board as it settled,
+    // and how it went — so going back is putting an earlier one back
+    // (M.setCharges), and the UI plays a step forward on the board itself
+    // from the one before, for as many ticks as it took. An edit makes what
+    // was kept stale (`forget`): it is worked out again from the start,
+    // with the edit, as it is asked for.
+    //
+    // `at(i)`: step i — {step, inputs, cells, got, expected, ok, settled,
+    // ticks} — worked out as far as that if need be; -1 is the start, the
+    // board at rest (or charged) with every input off. `known(i)`: whether
+    // it has been.
+    function stepRun(level, primed) {
+        const g = layout(level), budget = settleBudget(level), script = level.script;
+        const unknown = () => Object.fromEntries(level.outputs.map((name) => [name, null]));
+        const clone = (o) => JSON.parse(JSON.stringify(o));
+        // kept[i + 1] is step i; kept[0], the start. Each carries what the
+        // next step is judged from: the outputs it gave (`prev`), its
+        // inputs (`was`), and the run's `mem` after it.
+        let kept = [];
+        function work(upTo) {
+            if (kept.length > upTo + 1) return;
+            M.withBoard(M.cloneBoard(M.activeBoard()), () => {
+                // What was kept is of this board as it is, or it starts over.
+                if (kept.length && !M.setCharges(kept[kept.length - 1].cells)) kept = [];
+                if (!kept.length) {
+                    if (primed) M.primeCharges(); else M.resetCharges();
+                    const s = settle(budget);
+                    kept.push({
+                        step: -1, inputs: coldInputs(level), cells: M.copyCells(), got: null, expected: unknown(), ok: true,
+                        settled: s.settled, ticks: s.ticks, prev: unknown(), was: coldInputs(level), mem: {}, judging: false,
+                    });
+                }
+                while (kept.length <= upTo + 1) {
+                    const before = kept[kept.length - 1], i = kept.length - 1, v = script[i];
+                    const mem = clone(before.mem);
+                    const r = applyVector(g, level, v, budget);
+                    const want = stepWants(level, i, v, before.prev, before.was, mem);
+                    const judging = before.judging || judges(level, want);
+                    kept.push({
+                        step: i, inputs: v, cells: M.copyCells(), got: r.got, expected: want,
+                        ok: stepOk(level, r, want, judging), settled: r.settled, ticks: r.ticks,
+                        prev: r.got, was: v, mem, judging,
+                    });
+                }
+            });
+        }
+        return {
+            total: script.length, primed: !!primed, g,
+            at(i) { const k = Math.max(-1, Math.min(script.length - 1, i)); work(k); return kept[k + 1]; },
+            known: (i) => kept.length > i + 1,
+            forget() { kept = []; },
+            inputsAt: (i) => (i < 0 ? coldInputs(level) : script[i]),
         };
     }
 
@@ -1320,7 +1401,7 @@
         LEVELS, CHAPTERS,
         getLevel, levelIndex, levelsIn, nextLevel,
         layout, applyBoard, loadBoard, padLabels, coachState,
-        vectorsFor, tableCases, verify, replay, settle, settleBudget, loadHoldScript,
+        vectorsFor, tableCases, verify, replay, stepRun, settle, settleBudget, loadHoldScript,
         runVectors, runSaved, startVerifier, verifyOff, testPartOff, offThread,
         allParts, partsFor, getPart, makeLevelPart, replaceLevelPart, testPart, saveCustomPart, deletePart, renamePart, clearLevelParts,
         arraySpec, saveArraySpec, clearArraySpec, arrayPart, planArray, apartSpec,

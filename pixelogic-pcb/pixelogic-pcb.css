@@ -736,6 +736,15 @@ html, body {
 .case-bar span.done, .case-bar span.ok { background: var(--accent); opacity: 0.75; }
 .case-bar span.active { background: var(--text); }
 .case-bar span.bad { background: #ff8a8a; }
+/* Stepping through a run: an arrow either side of where it is, and a bar
+   of its steps, each one a click away. The step shown is ringed, keeping
+   the colour of how it went. */
+.status-row .step-nav { min-height: 28px; min-width: 28px; padding: 0 6px; font-size: 11px; flex: 0 0 auto; }
+.case-bar.steps { height: 9px; cursor: pointer; }
+.status-step.bad { color: #ff8a8a; }
+.case-bar.steps span:hover { filter: brightness(1.5); }
+.case-bar span.here { box-shadow: 0 0 0 1.5px var(--text); opacity: 1; }
+.case-bar span.here:not(.ok):not(.bad) { background: var(--text); }
 /* A phone's status line is narrow enough that a step takes three lines. */
 @media (max-width: 480px) {
     .status-line { height: 64px; }

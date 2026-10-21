@@ -685,8 +685,12 @@ function partInBounds(rect, terms) {
             if (j >= 0) { via = { via: top, viaPin: j }; net = `v${top}:${j}`; out = info.pins[j].dir === 'out'; hintOf.set(net, info.pins[j].name); }
             else why = 'Something meets a part inside here, where that part has no pin';
         } else if (isWireId(B.cells[hi])) {
-            if (isCrossoverAt(hx, hy)) why = 'A crossing cannot be a terminal’s cell: it would join its two wires';
-            else { net = netAt(hx, hy, d); out = outNet.has(net); }
+            // A crossing too: a terminal beyond it is on the one of its two
+            // wires that runs out to it (netAt goes by the way, d), and
+            // joins nothing else. (It was refused when crossings were read
+            // off the shape: wiring it could have made it a tee.)
+            net = netAt(hx, hy, d);
+            out = outNet.has(net);
         } else if (isMuxId(B.cells[hi])) {
             if (cellConnects(hx, hy, DIRS[d])) { net = `m${hi}`; out = !!(B.roles[hi] && B.roles[hi].kind === 'com'); }
         } else if (!isInsulatorId(B.cells[hi])) why = 'A source or a lamp cannot be a terminal’s cell';
@@ -695,9 +699,9 @@ function partInBounds(rect, terms) {
             if (why || !net) { problem(x, y, why || 'Something meets it here where nothing inside can be a terminal'); continue; }
             meetings.push({ x, y, hx, hy, d, side, net, hint: hintOf.get(net), out: out || isLed(B.cells[outside]), ...(via || {}) });
         } else if (blank && net) {
-            // Room for a wire there: not a fourth on a tee inside.
-            const arms = DIRS.filter(([dx, dy]) => ownWire(hx + dx, hy + dy)).length;
-            if (via || isMuxId(B.cells[hi]) || arms <= 2) candidates.push({ x, y, hx, hy, d, side, net, hint: hintOf.get(net), out, ...(via || {}) });
+            // Room for a wire there. (Not beside a tee, once: a fourth wire
+            // on one made a crossing of it. It makes a 4-way, which joins.)
+            candidates.push({ x, y, hx, hy, d, side, net, hint: hintOf.get(net), out, ...(via || {}) });
         }
     }
     const at = (list, x, y) => list.find((m) => m.x === x && m.y === y);

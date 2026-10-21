@@ -1,5 +1,7 @@
 // Painting: a stroke of a material, cell to cell, straight with Shift or
-// the Straight toggle, and what a stroke does over muxes and parts.
+// the Straight toggle, and what a stroke does over muxes and parts. A wire
+// drawn straight across a wire crosses it; a click with the Conductor on
+// a 4-way makes it a crossing, and on a crossing joins it again.
 
 import {
     flashStatus, straightBtn,
@@ -105,19 +107,33 @@ function strokeParts(path, color, s) {
     return true;
 }
 
-// Wire the model would not put down because it would cut a part's wire
-// (two terminals on either side of a corner its wire turns, say): say so,
-// once a stroke.
-function warnCut(todo, s) {
-    if (s.warned || s.color !== 'conductor') return;
-    for (const [x, y] of todo) {
-        if (M.colorOfCell(M.getCell(x, y)) === 'conductor') continue;
-        const b = M.cutsPartWire(x, y), info = b && M.blockInfo(b);
-        if (!info) continue;
-        flashStatus(`Wire there would cut ${info.name}’s wire in two: with the wire already beside it, it would make a crossing of it`);
-        s.warned = true;
-        return;
+// Where a wire stroke goes straight across a wire, a crossing (see
+// M.crossWhereDrawn): `trail` is the stroke's cells in order, `drawn` the
+// ones it laid ([x, y] each, so they follow the grid when it grows).
+function crossWhereDrawn(s, path, dry) {
+    if (s.color !== 'conductor') return [];
+    const drawn = new Set(s.drawn.map(([x, y]) => M.idx(x, y)));
+    return M.crossWhereDrawn(path, drawn, dry);
+}
+// A click with the Conductor on a wire it did not draw: a 4-way becomes
+// a crossing, a crossing is joined again. Whether it was such a click.
+function toggleCrossing(s) {
+    const st = s.start;
+    if (s.color !== 'conductor' || s.moved || !st || !st.wasWire) return false;
+    const { x, y } = st;
+    const on = !M.isCrossoverAt(x, y);
+    if (on && !M.crossable(x, y)) {
+        flashStatus('A crossing needs wire coming in from all four sides');
+        return true;
     }
+    beginUndoBatch();
+    M.setCrossing(x, y, on);
+    endUndoBatch();
+    flashStatus(on ? 'A crossing: its two wires pass over each other' : 'Joined: all four wires are one');
+    updateActionButtons();
+    scheduleSave();
+    V.drawGrid();
+    return true;
 }
 
 // A paint stroke of `color`, from cell `c`: {color, last, line, warned}.
@@ -128,19 +144,24 @@ function warnCut(todo, s) {
 // board (`base`) on every move, so pulling back shortens it rather than
 // leaving the overshoot behind.
 function paintGesture(c, color, straight) {
+    const wasWire = M.inBounds(c.x, c.y) && M.isWireId(M.getCell(c.x, c.y));
     const s = {
-        color, last: null, warned: false,
+        color, last: null, warned: false, trail: [], drawn: [], moved: false,
+        start: { x: c.x, y: c.y, wasWire },
         line: straight && M.inBounds(c.x, c.y)
             ? { x0: c.x, y0: c.y, base: M.getStructuralSnapshot(), end: null, opened: false, painted: false } : null,
     };
     paintTo(s, c);
     return {
-        move({ c: p }) { paintTo(s, p); },
+        move({ c: p }) { if (p.x !== s.start.x || p.y !== s.start.y) s.moved = true; paintTo(s, p); },
         // A straight stroke is only a preview until it ends: grow the
         // grid and save once, on release — or, if it ended back where
-        // it began with nothing drawn, drop the undo step it opened.
+        // it began with nothing drawn, drop the undo step it opened. A
+        // click on a wire, either way, may be one toggling a crossing.
         end() {
             const l = s.line;
+            if (l && !l.painted && l.opened) { endUndoBatch(); undoStack.pop(); updateActionButtons(); l.opened = false; }
+            if (toggleCrossing(s)) return;
             if (!l) return;
             if (l.painted) { applyExpansion(); scheduleSave(); }
             else if (l.opened) { endUndoBatch(); undoStack.pop(); updateActionButtons(); }
@@ -174,7 +195,8 @@ function paintStraight(s, c) {
     if (todo.length) {
         if (!undoBatchOpen) { beginUndoBatch(); l.opened = true; }
         M.paintCells(todo, s.color);
-        warnCut(todo, s);
+        s.drawn = todo.map(([x, y]) => [x, y]);
+        crossWhereDrawn(s, path);
     }
     l.painted = todo.length > 0 || erased;
     V.drawGrid();
@@ -190,19 +212,36 @@ function paintTo(s, c) {
     const from = s.last || c;
     s.last = c;
     const path = cellPath(from.x, from.y, c.x, c.y);
+    // The stroke's way so far, a cell a step: what it crosses is read off
+    // it (crossWhereDrawn).
+    for (const [x, y] of path) {
+        const t = s.trail[s.trail.length - 1];
+        if (!t || t[0] !== x || t[1] !== y) s.trail.push([x, y]);
+    }
     const erased = strokeParts(path, s.color, s);
     const todo = strokeCells(path, s.color);
+    if (todo.length) {
+        beginUndoBatch();
+        M.paintCells(todo, s.color);
+        for (const [x, y] of todo) s.drawn.push([x, y]);
+    }
+    // The cells this move made the middle of the stroke — the last two of
+    // its way before, and this move's — may be crossings now. (An undo
+    // step is opened for one only if one is made.)
+    let crossed = false;
+    if (s.color === 'conductor' && s.trail.length > 2) {
+        const win = s.trail.slice(Math.max(0, s.trail.length - path.length - 2));
+        if (crossWhereDrawn(s, win, true).length) { if (!undoBatchOpen) beginUndoBatch(); crossWhereDrawn(s, win); crossed = true; }
+    }
     if (!todo.length) {
-        if (erased) { V.drawGrid(); scheduleSave(); }
+        if (erased || crossed) { V.drawGrid(); scheduleSave(); }
         return;
     }
-    beginUndoBatch();
-    M.paintCells(todo, s.color);
-    warnCut(todo, s);
     const g = applyExpansion();
     // Growing on the left or top shifts every cell, this stroke's
-    // previous one included.
+    // previous one included — and its way so far.
     s.last = { x: c.x + g.left, y: c.y + g.top };
+    if (g.left || g.top) for (const list of [s.trail, s.drawn]) for (const cell of list) { cell[0] += g.left; cell[1] += g.top; }
     V.drawGrid();
     scheduleSave();
 }

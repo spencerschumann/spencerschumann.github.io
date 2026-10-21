@@ -57,6 +57,7 @@ const levelHintEl = document.getElementById('levelHint');
 const levelStatusEl = document.getElementById('levelStatus');
 const levelTableEl = document.getElementById('levelTable');
 const levelTableBodyEl = document.getElementById('levelTableBody');
+const levelTableHintEl = document.getElementById('levelTableHint');
 const hintBtn = document.getElementById('hintBtn');
 const verifyBtn = document.getElementById('verifyBtn');
 const levelsBtn = document.getElementById('levelsBtn');
@@ -112,7 +113,7 @@ export {
     arrayCountEl, handBarEl, selectionActionsEl, menuBtn, menuPanel, menuBackdrop,
     fullscreenBtn, gridToggleBtn, pinLabelsBtn, straightBtn, campaignBtn, levelsPanel, levelsBackdrop,
     levelsCloseBtn, levelsListEl, sandboxBtn, resetProgressBtn, levelBar, levelTitleEl, levelBriefEl,
-    levelHintEl, levelStatusEl, levelTableEl, levelTableBodyEl, hintBtn, verifyBtn, levelsBtn,
+    levelHintEl, levelStatusEl, levelTableEl, levelTableBodyEl, levelTableHintEl, hintBtn, verifyBtn, levelsBtn,
     levelCollapseBtn, sandboxToggleBtn, partAsEl, askDialogEl, askTextEl, askInputEl, askOkBtn, askCancelBtn,
     scopeEl, scopeTitleEl, scopeCollapseBtn, scopeLiveCtl, scopeReportCtl, scopeRunBtn, scopeSingleBtn, scopeClearBtn,
     scopePadsBtn, scopeTimingBtn, scopeLiveBtn, scopeScenariosEl, scopeTrigProbeEl, scopeTrigEdgeEl, scopeZoomInBtn,

@@ -3,7 +3,7 @@
 // reading and writing its cells, and a level's locked pads.
 
 import {
-    DIRS, ID_INSULATOR_PLAIN, armInto, crossingFrom, isWireId,
+    ID_INSULATOR_PLAIN, isXover,
 } from './cells.js';
 
 const CELL_SIZE = 32;
@@ -90,18 +90,12 @@ const copyBlockRec = (r) => withRep({
     pins: r.pins.map((p) => copyPin(p)),
 }, r);
 
-// A wire pixel with an arm of wire on all four sides, and wire running
-// straight past it one way, is a crossover: the two axes pass over each
-// other without connecting. An arm is a wire, or a mux's lead facing in —
-// the stub of wire it is drawn as — so a mux's output led into a wire
-// running past, and on out the other side, crosses it (see crossingFrom).
-// Purely geometric, so both the simulation and the renderer agree the
-// instant the fourth arm is drawn (before any step converts the id to an
-// xover form).
+// A crossover: a cell of its own (see cells.js), whose two axes pass over
+// each other without connecting — whatever is round it. (It was read off
+// the shape round the cell once, and flipped to a T and back as wire was
+// drawn and erased near it.)
 function isCrossoverAt(x, y) {
-    if (!isWireId(getCell(x, y))) return false;
-    const at = (d) => getCell(x + DIRS[d][0], y + DIRS[d][1]);
-    return crossingFrom((d) => isWireId(at(d)), (d) => armInto(at(d), d));
+    return isXover(getCell(x, y));
 }
 
 // ===== Boards =====

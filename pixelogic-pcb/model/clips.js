@@ -3,7 +3,7 @@
 // and over what, a clip's parts may be put down (blockFits, clearance).
 
 import {
-    DIRS, ID_INSULATOR_PLAIN, isMuxId, isInsulatorId, mirrorId, rotateId, stripId,
+    DIRS, ID_INSULATOR_PLAIN, inferCrossings, isMuxId, isInsulatorId, mirrorId, rotateId, stripId,
 } from './cells.js';
 import {
     readPin, copyPin, B, MAX_CELLS, idx, inBounds, packRuns, unpackRuns, withRep,
@@ -154,6 +154,9 @@ function sanitizeClip(c) {
     if (!cells || cells.length !== n) return null;
     const data = new Uint8Array(n);
     for (let i = 0; i < n; i++) data[i] = stripId(cells[i] & 0xff);
+    // A clip kept before crossings were cells of their own (no `xo`) is
+    // read by the rule it was drawn under.
+    if (!c.xo) inferCrossings(data, c.w, c.h);
     const out = { w: c.w, h: c.h, data };
     if (!Array.isArray(c.blocks) || !c.blocks.length || !bmap0 || bmap0.length !== n) return out;
     const recs = [];
@@ -197,7 +200,7 @@ function sanitizeClip(c) {
 }
 // Plain arrays, for JSON.
 function clipToJSON(c) {
-    const o = { w: c.w, h: c.h, data: packRuns(c.data) };
+    const o = { w: c.w, h: c.h, xo: 1, data: packRuns(c.data) };
     if (c.blocks && c.blocks.length) {
         o.pv = 2;
         o.blocks = c.blocks.map((b) => withRep({

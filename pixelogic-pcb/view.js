@@ -152,6 +152,15 @@
     // large (matching the old two-cell gap-cutting look) so it reads as an
     // obvious interruption rather than just "as wide as the wire."
     const CROSSOVER_GAP_FRAC = 0.8;
+    // A junction — a tee, a 4-way — wears a round dot over its hub, a little
+    // wider than the wire, as a schematic marks a connection: it says the
+    // wires are joined there, and tells a 4-way from a crossing at a glance.
+    const JUNCTION_DOT_FRAC = 0.85;  // its radius, in wire widths
+    function addJunctionDot(path, px, py, cs, thicknessFrac) {
+        const r = cs * thicknessFrac * JUNCTION_DOT_FRAC, cx = px + cs / 2, cy = py + cs / 2;
+        path.moveTo(cx + r, cy);
+        path.arc(cx, cy, r, 0, 2 * Math.PI);
+    }
 
     // Each side is asked with the direction pointing back at this cell, so a
     // neighbor that only connects on one face (a mux lead) answers for
@@ -482,6 +491,11 @@
                 const ports = isElbow(arms) ? elbowPorts(x, y, arms) : null;
                 addWireShape(layers.wirePath, px, py, cs, arms, WIRE_THICKNESS, ports);
                 addChargeShape(layers.chargePath, px, py, cs, arms, wireCharge(id), ports);
+                if ((arms.n ? 1 : 0) + (arms.e ? 1 : 0) + (arms.s ? 1 : 0) + (arms.w ? 1 : 0) >= 3 && !inClump(x, y)) {
+                    addJunctionDot(layers.wirePath, px, py, cs, WIRE_THICKNESS);
+                    const ct = chargeThicknessFrac(wireCharge(id));
+                    if (ct) addJunctionDot(layers.chargePath, px, py, cs, ct);
+                }
             }
             return;
         }
