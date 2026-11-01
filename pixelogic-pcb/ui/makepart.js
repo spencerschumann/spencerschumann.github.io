@@ -12,7 +12,7 @@ import {
     selection, setSelection,
 } from './clipboard.js';
 import {
-    applyToolAvailability, gameLevel,
+    applyToolAvailability, boardKey, gameLevel,
 } from './campaign.js';
 import {
     ask,
@@ -52,10 +52,18 @@ const partEditChose = () => { if (partEdit) partEdit.chose = true; };
 const asTarget = () => (partAsEl.value ? G.getPart(partAsEl.value) : null);
 const sameCell = (x, y) => (t) => t.x === x && t.y === y;
 
+// Saving back a part with a shape (it was decapped here), bounds still
+// where it stood are that shape, not a rectangle (see doSaveComponent):
+// which cells are in them, if so.
+function keptShape() {
+    const s = partEdit.shape, r = partEdit.rect;
+    return s && s.rect.x0 === r.x0 && s.rect.y0 === r.y0 && s.rect.x1 === r.x1 && s.rect.y1 === r.y1 ? s : null;
+}
+const shapeFn = () => { const s = keptShape(); return s ? s.has : undefined; };
 // What the bounds meet, terminals or not (M.partInBounds with none).
-const bare = () => M.partInBounds(partEdit.rect, null);
+const bare = () => M.partInBounds(partEdit.rect, null, shapeFn());
 function analyse() {
-    partEdit.info = M.partInBounds(partEdit.rect, partEdit.terms);
+    partEdit.info = M.partInBounds(partEdit.rect, partEdit.terms, shapeFn());
     render();
 }
 // Names for terminals without one: a wire's terminals one name; the
@@ -145,8 +153,9 @@ function contentBox(r) {
 function render() {
     const { info, terms } = partEdit, r = info.rect;
     const pinOf = (t) => info.pins.findIndex((p) => p.name === t.name);
+    const kept = keptShape();
     V.setPartEdit({
-        rect: r, edge: info.edge, problems: info.problems,
+        rect: r, outline: kept ? kept.outline : null, edge: info.edge, problems: info.problems,
         candidates: info.candidates.filter((c) => !terms.some(sameCell(c.x, c.y))),
         terms: terms.map((t) => ({
             x: t.x, y: t.y, name: t.name, dir: t.dir, pin: pinOf(t),
@@ -395,7 +404,7 @@ function doSaveComponent() {
     partEdit = { rect: { ...selection }, terms: [], info: null, restore: { ...selection } };
     reconcile();
     // Save as: a new part, or any part on the shelf. The one being edited
-    // — decapped here, or put down loose from the shelf — is the choice
+    // — decapped here — is the choice
     // already made, its terminals named as they were.
     partAsEl.innerHTML = '';
     const opt = (value, text) => { const o = document.createElement('option'); o.value = value; o.textContent = text; partAsEl.appendChild(o); };
@@ -405,10 +414,14 @@ function doSaveComponent() {
     partAsEl.value = makePartMemory ? makePartMemory.key : '';
     // Saving back a part being changed: bounds left where it was put down
     // are shrunk to what is there now (a column taken out leaves one bare
-    // at the edge); its pins come back where they were (reconcile).
+    // at the edge); its pins come back where they were (reconcile). One
+    // with a shape keeps it, for as long as the bounds stay where it stood.
     if (makePartMemory) {
-        const m = makePartMemory.rect, s = partEdit.rect;
-        if (m.x0 === s.x0 && m.y0 === s.y0 && m.x1 === s.x1 && m.y1 === s.y1) partEdit.rect = contentBox(s);
+        const m = makePartMemory.rect, s = partEdit.rect, same = m.x0 === s.x0 && m.y0 === s.y0 && m.x1 === s.x1 && m.y1 === s.y1;
+        if (same && makePartMemory.cells) {
+            const cells = makePartMemory.cells, set = new Set(cells.map(([x, y]) => x + ',' + y));
+            partEdit.shape = { rect: { ...m }, has: (x, y) => set.has(x + ',' + y), outline: M.outlineOf(cells) };
+        } else if (same) partEdit.rect = contentBox(s);
         reconcile();
     }
     partNameEl.value = '';
@@ -493,8 +506,8 @@ async function finishMakePart() {
         const order = target.pins.map((q) => q.name);
         pins = pins.slice().sort((a, b) => (order.indexOf(a.name) + 1 || 99) - (order.indexOf(b.name) + 1 || 99));
     }
-    const source = target ? target.source : '', rect = info.rect;
-    const clip = M.captureRect(rect, pins, name, source, null);
+    const source = target ? target.source : '', rect = info.rect, shape = shapeFn();
+    const clip = M.captureRect(rect, pins, name, source, null, shape);
     if (target && source) {
         // A level's part: it has to do the level's job — its tests run off
         // the page's thread, the bar saying so meanwhile. What they say is
@@ -515,10 +528,11 @@ async function finishMakePart() {
             if (res.error) say(res.error);
             else {
                 const f = res.failure, bits = (o) => Object.entries(o).map(([k, v]) => `${k}=${v & 1}`).join(' ');
-                const wrong = Object.keys(f.expected).filter((k) => f.expected[k] != null && (f.expected[k] & 1) !== (f.actual[k] & 1));
-                say(!f.settled ? `It never settles at ${bits(f.inputs)}`
+                const wrong = Object.keys(f.expected).filter((k) => f.expected[k] != null && (f.expected[k] & 1) !== f.actual[k]);
+                say(f.short ? `A short circuit at ${bits(f.inputs)}: +V and −V meet`
+                    : !f.settled ? `It never settles at ${bits(f.inputs)}`
                     : `Not the ${name} part: at ${bits(f.inputs)}, ${wrong.map((k) => `${k} should be ${f.expected[k] & 1}`).join(', ')}`
-                    + (f.primed ? ' — from a charged start: something in it is not driven' : ''));
+                    + (f.primed ? ' — woken with every contact on NO: it holds something from waking up' : ''));
             }
             return;
         }
@@ -530,7 +544,7 @@ async function finishMakePart() {
     }
     // The circuit becomes the part where it stands, lid shut.
     beginUndoBatch();
-    M.capPart(rect, pins, name, source);
+    M.capPart(rect, pins, name, source, shape);
     endUndoBatch();
     closeMakePart(false);
     // What was decapped here has been saved back, one way or another.
@@ -554,7 +568,6 @@ let editMemories = [];
 let makePartMemory = null;      // the one Make part… is saving back, if any
 const overlaps = (r, c) => r.x0 <= c.x1 && r.x1 >= c.x0 && r.y0 <= c.y1 && r.y1 >= c.y0;
 const MEMORIES_KEY = 'pixelogic-pcb.editing';
-const boardKey = () => (gameLevel ? 'level:' + gameLevel.id : 'sandbox');
 function keepMemories() {
     try {
         const all = JSON.parse(sessionStorage.getItem(MEMORIES_KEY) || '{}');
@@ -582,6 +595,7 @@ function shiftMemories(dx, dy) {
     for (const m of editMemories) {
         m.rect = { x0: m.rect.x0 + dx, y0: m.rect.y0 + dy, x1: m.rect.x1 + dx, y1: m.rect.y1 + dy };
         for (const p of m.pins) if (p.at) p.at = [p.at[0] + dx, p.at[1] + dy];
+        if (m.cells) m.cells = m.cells.map(([x, y]) => [x + dx, y + dy]);
     }
     keepMemories();
 }
@@ -598,11 +612,14 @@ function renameMemories(from, to, name) {
         sessionStorage.setItem(MEMORIES_KEY, JSON.stringify(all));
     } catch (e) { /* this board's, at least, are renamed */ }
 }
-function rememberEdit(key, pins, rect) {
+function rememberEdit(key, pins, rect, cells) {
     const part = G.getPart(key);
     if (!part) return;
     editMemories = editMemories.filter((m) => !(m.key === key && overlaps(m.rect, rect)));
-    editMemories.push({ key, name: part.name, rect: { ...rect }, pins: pins.map((p) => ({ name: p.name, dir: p.dir, at: p.at && [...p.at] })) });
+    editMemories.push({
+        key, name: part.name, rect: { ...rect }, pins: pins.map((p) => ({ name: p.name, dir: p.dir, at: p.at && [...p.at] })),
+        ...(cells ? { cells: cells.map((c) => [...c]) } : {}),
+    });
     if (editMemories.length > 8) editMemories.shift();
     keepMemories();
 }
@@ -622,8 +639,8 @@ function editFor(rect, terms) {
         const here = overlaps(m.rect, rect);
         const pIns = part.pins.filter((q) => q.dir === 'in').length;
         const same = here && pIns === ins && part.pins.length - pIns === outs;
-        // Where it was put down is enough: a loose copy put down to change
-        // has nothing wired to it to tell it by.
+        // Where it stood is enough: a copy decapped with nothing wired to
+        // it yet has nothing else to tell it by.
         if (!same && !at && !here) continue;
         const score = [same ? 1 : 0, at, here ? 1 : 0, (m.rect.x1 - m.rect.x0 + 1) * (m.rect.y1 - m.rect.y0 + 1)];
         const k = bestScore ? score.findIndex((v, j) => v !== bestScore[j]) : 0;

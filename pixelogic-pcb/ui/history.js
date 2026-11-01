@@ -29,6 +29,9 @@ import {
 import {
     loadProbes, shiftProbes,
 } from './scope.js';
+import {
+    benchChanged, benchOpen, benchSnap, keepBench, restoreBench, shiftBench,
+} from './bench.js';
 
 const M = window.PixelogicModel;
 const V = window.PixelogicView;
@@ -41,9 +44,10 @@ const G = window.PixelogicGame;
 let saveTimer = null;
 // The sandbox circuit and each level's attempt are stored separately, so
 // switching between them never overwrites the other. Writes go wherever
-// the board currently belongs.
+// the board currently belongs — the part bench's, while one is out.
 function persistCircuit() {
-    if (gameLevel) G.saveCircuit(gameLevel.id, M.serialize());
+    if (benchOpen()) keepBench();
+    else if (gameLevel) G.saveCircuit(gameLevel.id, M.serialize());
     else S.setText(S.KEYS.sandbox, M.serialize());
 }
 // Every structural edit comes through here, so it is also where the
@@ -53,7 +57,7 @@ function persistCircuit() {
 function scheduleSave(quiet) {
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = setTimeout(() => { persistCircuit(); saveTimer = null; }, 300);
-    if (!quiet) boardChanged();
+    if (!quiet) { boardChanged(); benchChanged(); }
 }
 // Anything that swaps the board out has to land the pending write first,
 // or a debounced save fires after the swap and writes the new board into
@@ -73,6 +77,7 @@ function cancelSave() {
 // ---- View (zoom/pan) persistence ----
 let viewSaveTimer = null;
 function scheduleViewSave() {
+    if (benchOpen()) return;    // the bench's view is its own, and goes with it
     if (viewSaveTimer) clearTimeout(viewSaveTimer);
     viewSaveTimer = setTimeout(() => {
         S.setJSON(S.KEYS.view, { zoom: V.zoom, panX: V.panX, panY: V.panY });
@@ -105,6 +110,8 @@ let undoBatchOpen = false;
 const gridOrigin = { x: 0, y: 0 };
 
 // Each entry snapshots the circuit and that origin — NOT the pan or zoom.
+// On the part bench, the bench too: its bounds, pads and copies are part of
+// what an edit there changes.
 // Undo used to restore the pan outright, which meant any panning or
 // zooming you did after an edit was thrown away the moment you undid it:
 // the view jumped, which is jarring and never what undo was asked to do.
@@ -112,7 +119,7 @@ const gridOrigin = { x: 0, y: 0 };
 // still across an undo that shrinks the grid, while leaving the view
 // exactly where you put it.
 function snapshotEntry() {
-    return { snap: M.getStructuralSnapshot(), originX: gridOrigin.x, originY: gridOrigin.y };
+    return { snap: M.getStructuralSnapshot(), originX: gridOrigin.x, originY: gridOrigin.y, bench: benchSnap() };
 }
 // `from`: the board as it was before, taken earlier (an array lifted off
 // the board to be set out again is not an edit until it is put down).
@@ -137,6 +144,7 @@ function restoreEntry(e) {
     if (dx || dy) V.pan(dx, dy);
     gridOrigin.x = e.originX;
     gridOrigin.y = e.originY;
+    if (e.bench) restoreBench(e.bench);
 }
 // Mid-gesture, undo means "not that": roll back the drag or the floating
 // paste in progress, and stop there. Popping history out from under one
@@ -169,6 +177,7 @@ function redo() {
 }
 
 function afterEdit() {
+    benchChanged();
     updateActionButtons();
     refreshStampPreview();
     V.drawGrid();
@@ -184,14 +193,41 @@ function applyExpansion() {
     // coordinate — and the bounded workspace is part of the puzzle anyway.
     if (gameLevel) return { left: 0, top: 0, right: 0, bottom: 0 };
     const g = M.expandForBorder();
-    if (g.left || g.top) {
-        V.compensateExpansion(g.left, g.top);
-        gridOrigin.x += g.left;
-        gridOrigin.y += g.top;
-        shiftMemories(g.left, g.top);
-        shiftProbes(g.left, g.top);
-    }
+    boardGrew(g.left, g.top);
     return g;
+}
+// The board grown by `left` columns and `top` rows at its left and top:
+// the drawing stays put on screen, and everything kept by cell moves with
+// it.
+function boardGrew(left, top) {
+    if (!left && !top) return;
+    V.compensateExpansion(left, top);
+    gridOrigin.x += left;
+    gridOrigin.y += top;
+    shiftMemories(left, top);
+    shiftProbes(left, top);
+    shiftBench(left, top);
+}
+
+// The part bench sets the board aside, history and all, and puts it back
+// as it was (bench.js): what to undo there is the bench's own.
+function stashHistory() {
+    const s = { undo: undoStack.splice(0), redo: redoStack.splice(0), origin: { ...gridOrigin } };
+    endUndoBatch();
+    gridOrigin.x = 0;
+    gridOrigin.y = 0;
+    updateActionButtons();
+    return s;
+}
+function unstashHistory(s) {
+    undoStack.length = 0;
+    redoStack.length = 0;
+    undoStack.push(...s.undo);
+    redoStack.push(...s.redo);
+    gridOrigin.x = s.origin.x;
+    gridOrigin.y = s.origin.y;
+    endUndoBatch();
+    updateActionButtons();
 }
 
 // Entering a level swaps the whole board: the sandbox circuit is written
@@ -215,5 +251,6 @@ function resetHistory() {
 export {
     saveTimer, persistCircuit, scheduleSave, flushSave, cancelSave, viewSaveTimer, scheduleViewSave,
     loadView, undoStack, redoStack, UNDO_LIMIT, undoBatchOpen, gridOrigin, snapshotEntry, beginUndoBatch,
-    endUndoBatch, restoreEntry, cancelGesture, undo, redo, afterEdit, applyExpansion, resetHistory,
+    endUndoBatch, restoreEntry, cancelGesture, undo, redo, afterEdit, applyExpansion, boardGrew, resetHistory,
+    stashHistory, unstashHistory,
 };

@@ -3,6 +3,11 @@
 
     const canvas = document.getElementById('grid');
     const ctx = canvas.getContext('2d');
+    // The current flowing, over the board (see drawFlow).
+    const flowCanvas = document.getElementById('flow');
+    const fctx = flowCanvas ? flowCanvas.getContext('2d') : null;
+    // What it draws (buildFlow), and whether it has drawn anything to clear.
+    let flowPolys = [], flowDrawn = false;
 
     // ===== PCB palette =====
     const COLOR_INSULATOR = '#065300';
@@ -24,8 +29,9 @@
     // the black (-) disc.
     const COLOR_POS_RING = '#032900', COLOR_NEG_RING = '#8c949c';
     // Charge is shown uniformly across conductors, mux pixels and crossovers
-    // as a faint (25% opacity) light-grey box: full-size for ON, slightly
-    // smaller for FALLING, nothing for OFF.
+    // as a faint (25% opacity) light-grey box for 1, nothing for 0 — and, for
+    // now, nothing for Z (floating) either: the third value was a wire
+    // draining, drawn a size smaller, and wires no longer drain (sim.js).
     const COLOR_CHARGE = 'rgba(216, 216, 216, 0.25)';
 
     var zoom = 1;
@@ -91,6 +97,13 @@
         canvas.height = Math.round(h * r);
         canvas.style.width = w + 'px';
         canvas.style.height = h + 'px';
+        if (flowCanvas) {
+            flowCanvas.width = canvas.width;
+            flowCanvas.height = canvas.height;
+            flowCanvas.style.width = w + 'px';
+            flowCanvas.style.height = h + 'px';
+            flowDrawn = true;      // cleared on the next frame
+        }
     }
 
     function screenToCell(sx, sy) {
@@ -106,7 +119,7 @@
     // its own (see drawCell).
     function wireCharge(id) {
         if (M.isXover(id)) return M.xoverV(id) === M.ON || M.xoverH(id) === M.ON ? M.ON
-            : M.xoverV(id) === M.FALLING || M.xoverH(id) === M.FALLING ? M.FALLING : M.OFF;
+            : M.xoverV(id) === M.Z || M.xoverH(id) === M.Z ? M.Z : M.OFF;
         return M.conductorCharge(id);
     }
 
@@ -142,7 +155,17 @@
     // smaller, so it reads as the wire's own core lighting up rather than a
     // shape unrelated to the (now much thinner) wire body. This shape math is
     // also what a future flowing-charge animation would move fluid along.
-    const CHARGE_THICKNESS_ON = WIRE_THICKNESS * 0.55, CHARGE_THICKNESS_FALLING = WIRE_THICKNESS * 0.38;
+    const CHARGE_THICKNESS_ON = WIRE_THICKNESS * 0.55;
+    // Floating (Z, driven by nothing): a faint dotted line down the wire's
+    // middle — not the bare wire a 0 is.
+    const COLOR_FLOAT = 'rgba(214, 222, 230, 0.55)', FLOAT_DOT = 0.07;
+    function addFloatDots(path, cs, ends) {
+        const r = cs * FLOAT_DOT;
+        for (const [ex, ey] of ends) { path.moveTo(ex + r, ey); path.arc(ex, ey, r, 0, Math.PI * 2); }
+    }
+    // A short: the same core, red, and a size bigger.
+    const SHORT_THICKNESS = WIRE_THICKNESS * 0.8;
+    const COLOR_SHORT = 'rgba(255, 64, 40, 0.85)';
     // How far from the cell's centre an elbow's 45° bevel starts, along each
     // arm, as a fraction of the cell — the 45°-routing PCB look. The bevel's
     // WIDTH is not a choice: it is always exactly the wire's (see
@@ -282,8 +305,8 @@
     }
 
     function addChargeShape(path, px, py, cs, arms, charge, ports) {
-        if (charge !== M.ON && charge !== M.FALLING) return;
-        addWireShape(path, px, py, cs, arms, charge === M.ON ? CHARGE_THICKNESS_ON : CHARGE_THICKNESS_FALLING, ports);
+        if (charge !== M.ON) return;
+        addWireShape(path, px, py, cs, arms, CHARGE_THICKNESS_ON, ports);
     }
 
     // Crossover: the horizontal run is solid across the full cell width; the
@@ -299,9 +322,7 @@
     }
 
     function chargeThicknessFrac(charge) {
-        if (charge === M.ON) return CHARGE_THICKNESS_ON;
-        if (charge === M.FALLING) return CHARGE_THICKNESS_FALLING;
-        return 0;
+        return charge === M.ON ? CHARGE_THICKNESS_ON : 0;
     }
 
     // Same split-bar shape as addCrossoverWire, but for the charge overlay —
@@ -373,17 +394,16 @@
                 if (four.some(([cx, cy]) => hidden(cx, cy))) continue;
                 addClumpShape(layers.wirePath, x, y, cs, cs * WIRE_THICKNESS / 2);
                 const charges = four.map(([cx, cy]) => wireCharge(M.getCell(cx, cy)));
-                if (!charges.every((q) => q === M.ON || q === M.FALLING)) continue;
-                const frac = charges.every((q) => q === M.ON) ? CHARGE_THICKNESS_ON : CHARGE_THICKNESS_FALLING;
-                addClumpShape(layers.chargePath, x, y, cs, cs * frac / 2);
+                if (!charges.every((q) => q === M.ON)) continue;
+                addClumpShape(layers.chargePath, x, y, cs, cs * CHARGE_THICKNESS_ON / 2);
             }
-        const lit = (x, y) => isWireCell(x, y) && [M.ON, M.FALLING].includes(wireCharge(M.getCell(x, y)));
+        const lit = (x, y) => isWireCell(x, y) && wireCharge(M.getCell(x, y)) === M.ON;
         for (let y = y0; y <= y1; y++)
             for (let x = x0; x <= x1; x++) {
                 if (!isWireCell(x, y) || hidden(x, y)) continue;
                 addInsideCuts(layers.wirePath, x, y, cs, cs * WIRE_THICKNESS / 2, isWireCell);
                 const q = wireCharge(M.getCell(x, y));
-                if (q === M.ON || q === M.FALLING)
+                if (q === M.ON)
                     addInsideCuts(layers.chargePath, x, y, cs, cs * chargeThicknessFrac(q) / 2, lit);
             }
     }
@@ -481,30 +501,49 @@
             // A crossing inside a clump is no crossing to look at: the
             // clump joins two of its arms round the corner, so its two runs
             // are one wire, and it is drawn as a plain junction.
+            const i = M.idx(x, y), shortV = !!(layers.short && layers.short[i * 2]), shortH = !!(layers.short && layers.short[i * 2 + 1]);
             if (M.isCrossoverAt(x, y) && !inClump(x, y)) {
                 addCrossoverWire(layers.wirePath, px, py, cs);
                 const vCharge = M.isXover(id) ? M.xoverV(id) : M.conductorCharge(id);
                 const hCharge = M.isXover(id) ? M.xoverH(id) : M.conductorCharge(id);
                 addCrossoverCharge(layers.chargePath, px, py, cs, vCharge, hCharge);
+                if (shortV || shortH) addCrossoverCharge(layers.shortPath, px, py, cs, shortV ? M.ON : M.OFF, shortH ? M.ON : M.OFF);
+                // Each floating way, dotted out to its ends (not over the
+                // crossing, where the other way runs on top).
+                const cx = px + cs / 2, cy = py + cs / 2;
+                if (vCharge === M.Z && !shortV) addFloatDots(layers.floatPath, cs, [[cx, py], [cx, py + cs]]);
+                if (hCharge === M.Z && !shortH) addFloatDots(layers.floatPath, cs, [[px, cy], [px + cs, cy]]);
             } else {
                 const arms = wireArms(x, y);
                 const ports = isElbow(arms) ? elbowPorts(x, y, arms) : null;
                 addWireShape(layers.wirePath, px, py, cs, arms, WIRE_THICKNESS, ports);
                 addChargeShape(layers.chargePath, px, py, cs, arms, wireCharge(id), ports);
+                if (shortV) addWireShape(layers.shortPath, px, py, cs, arms, SHORT_THICKNESS, ports);
+                else if (wireCharge(id) === M.Z) {
+                    // A dot in the middle and one at each arm's end: dots
+                    // every half cell along a floating wire.
+                    const cx = px + cs / 2, cy = py + cs / 2, ends = [[cx, cy]];
+                    if (arms.n) ends.push([cx, py]);
+                    if (arms.s) ends.push([cx, py + cs]);
+                    if (arms.e) ends.push([px + cs, cy]);
+                    if (arms.w) ends.push([px, cy]);
+                    addFloatDots(layers.floatPath, cs, ends);
+                }
                 if ((arms.n ? 1 : 0) + (arms.e ? 1 : 0) + (arms.s ? 1 : 0) + (arms.w ? 1 : 0) >= 3 && !inClump(x, y)) {
                     addJunctionDot(layers.wirePath, px, py, cs, WIRE_THICKNESS);
                     const ct = chargeThicknessFrac(wireCharge(id));
                     if (ct) addJunctionDot(layers.chargePath, px, py, cs, ct);
+                    if (shortV) addJunctionDot(layers.shortPath, px, py, cs, WIRE_THICKNESS);
                 }
             }
             return;
         }
 
-        if (id === M.ID_POS || id === M.ID_NEG) {
+        if (M.isSource(id)) {
             // One drawing for one thing — arm stubs and all — whether it sits
             // out on its own or flush against an LED or a mux lead, where the
             // stub is what makes the connection read.
-            drawSourceCell(x, y, px, py, cs, id === M.ID_POS);
+            drawSourceCell(x, y, px, py, cs, M.isPosSource(id));
             return;
         }
 
@@ -625,8 +664,9 @@
         else if (dy === 1) ctx.fillRect(cx - half, cy, t, py + cs - cy);
         else if (dx === 1) ctx.fillRect(cx, cy - half, px + cs - cx, t);
         else ctx.fillRect(px, cy - half, cx - px, t);
-        const chargeFrac = positive ? CHARGE_THICKNESS_ON : CHARGE_THICKNESS_FALLING;
-        const ct = cs * chargeFrac, chalf = ct / 2;
+        // −V drives 0: its stubs carry no charge.
+        if (!positive) return;
+        const ct = cs * CHARGE_THICKNESS_ON, chalf = ct / 2;
         ctx.fillStyle = COLOR_CHARGE;
         if (dy === -1) ctx.fillRect(cx - chalf, py, ct, cy - py);
         else if (dy === 1) ctx.fillRect(cx - chalf, cy, ct, py + cs - cy);
@@ -642,7 +682,10 @@
         ctx.fillStyle = COLOR_INSULATOR;
         ctx.fillRect(px, py, cs, cs);
         const cx = px + cs / 2, cy = py + cs / 2;
-        const arms = wireArms(x, y);
+        // A stub where it is soldered — and only there: a wire running past
+        // a side it is not soldered to goes by, unjoined.
+        const arms = wireArms(x, y), st = M.sourceStubs(M.getCell(x, y));
+        arms.n = arms.n && !!(st & 1); arms.e = arms.e && !!(st & 2); arms.s = arms.s && !!(st & 4); arms.w = arms.w && !!(st & 8);
         // A corner inside a ring of wire is filled, wire and then charge,
         // so the ring's middle (see addInsideCuts) is solid right up to the
         // circle, which goes on top.
@@ -658,10 +701,10 @@
         if (arms.e) addSourceArmStub(px, py, cs, cx, cy, 1, 0, positive);
         if (arms.w) addSourceArmStub(px, py, cs, cx, cy, -1, 0, positive);
         ctx.fillStyle = COLOR_CHARGE;
-        const lit = (ax, ay) => [M.ON, M.FALLING].includes(wireCharge(M.getCell(ax, ay)));
+        const lit = (ax, ay) => wireCharge(M.getCell(ax, ay)) === M.ON;
         for (const [sx, sy] of corners)
-            if (lit(x + sx, y) && lit(x, y + sy) && lit(x + sx, y + sy))
-                cornerTo(sx, sy, cs * (positive ? CHARGE_THICKNESS_ON : CHARGE_THICKNESS_FALLING) / 2);
+            if (positive && lit(x + sx, y) && lit(x, y + sy) && lit(x + sx, y + sy))
+                cornerTo(sx, sy, cs * CHARGE_THICKNESS_ON / 2);
         drawSourceCircleGlyph(cx, cy, cs, positive);
     }
 
@@ -928,6 +971,32 @@
         };
     }
 
+    // The line round a part that does not fill its box, `inset` cells in
+    // from its outline's grid corners, rounded `radius` cells: a Path2D. Each
+    // loop is walked clockwise, its cells on the right, so a corner moves
+    // along both of the normals of the edges that meet there.
+    function outlinePath(outline, cs, inset, radius) {
+        const path = new Path2D();
+        for (const loop of outline) {
+            const n = loop.length, pts = [];
+            for (let i = 0; i < n; i++) {
+                const [ax, ay] = loop[(i + n - 1) % n], [bx, by] = loop[i], [cx, cy] = loop[(i + 1) % n];
+                const ex = Math.sign(bx - ax), ey = Math.sign(by - ay), fx = Math.sign(cx - bx), fy = Math.sign(cy - by);
+                pts.push([panX + (bx + (-ey - fy) * inset) * cs, panY + (by + (ex + fx) * inset) * cs]);
+            }
+            path.addPath(roundedPoly(pts, pts.map(() => radius * cs)));
+        }
+        return path;
+    }
+    // A part's package, in canvas pixels: its rectangle, or the line round
+    // its cells, in by `inset` cells, rounded.
+    function lidPath(b, cs, inset) {
+        if (b.outline) return outlinePath(b.outline, cs, inset, LID_RADIUS);
+        const r = lidRect(b, cs, inset), path = new Path2D();
+        path.roundRect(r.x, r.y, r.w, r.h, Math.min(LID_RADIUS * cs, r.w / 2, r.h / 2));
+        return path;
+    }
+
     // A lead: from the footprint's edge in to just under the package — one
     // cell's, or (from host `a` to host `b`) one as wide as a pin's
     // terminals run side by side along that edge.
@@ -975,11 +1044,13 @@
     function leadRuns(p) {
         const all = [{ host: p.host, face: p.face }, ...(p.others || [])], runs = [];
         for (const f of [[0, -1], [1, 0], [0, 1], [-1, 0]]) {
-            const along = (t) => (f[0] ? t.host[1] : t.host[0]);
-            const on = all.filter((t) => t.face[0] === f[0] && t.face[1] === f[1]).sort((s, t) => along(s) - along(t));
+            // (Across, as well as along: on a part with a shape, two hosts
+            // a row apart can face the same way from different columns.)
+            const along = (t) => (f[0] ? t.host[1] : t.host[0]), across = (t) => (f[0] ? t.host[0] : t.host[1]);
+            const on = all.filter((t) => t.face[0] === f[0] && t.face[1] === f[1]).sort((s, t) => across(s) - across(t) || along(s) - along(t));
             let run = null;
             for (const t of on) {
-                if (run && along(t) === along({ host: run.b }) + 1) { run.b = t.host; continue; }
+                if (run && across(t) === across({ host: run.b }) && along(t) === along({ host: run.b }) + 1) { run.b = t.host; continue; }
                 run = { a: t.host, b: t.host, face: f };
                 runs.push(run);
             }
@@ -1015,9 +1086,7 @@
         ctx.fillStyle = COLOR_LID_LEAD_ON;
         ctx.fill(lit);
 
-        const r = lidRect(b, cs, LID_INSET);
-        const body = new Path2D();
-        body.roundRect(r.x, r.y, r.w, r.h, Math.min(LID_RADIUS * cs, r.w / 2, r.h / 2));
+        const r = lidRect(b, cs, LID_INSET), body = lidPath(b, cs, LID_INSET);
         ctx.fillStyle = ghost && ghost.bad ? '#3a1414' : COLOR_LID;
         ctx.fill(body);
         ctx.strokeStyle = ghost ? (ghost.bad ? '#ff8a8a' : '#e8e8e8') : COLOR_LID_EDGE;
@@ -1041,24 +1110,30 @@
                 if (!p.host) continue;
                 const [dx, dy] = p.face;
                 const cx = panX + (p.host[0] + 0.5) * cs, cy = panY + (p.host[1] + 0.5) * cs;
+                // Just in from the package's edge, by the face it leaves
+                // (the box's edge, for a part that fills its box).
+                const edge = (LID_INSET * cs) + pad, half = cs / 2;
                 if (dx) {
                     ctx.textAlign = dx < 0 ? 'left' : 'right';
-                    ctx.fillText(p.name, dx < 0 ? r.x + pad : r.x + r.w - pad, cy);
+                    ctx.fillText(p.name, cx + dx * (half - edge), cy);
                     pinBand = Math.max(pinBand, ctx.measureText(p.name).width + pad * 2);
                 } else {
                     ctx.textAlign = 'center';
-                    ctx.fillText(p.name, cx, dy < 0 ? r.y + pad + pinPx / 2 : r.y + r.h - pad - pinPx / 2);
+                    ctx.fillText(p.name, cx, cy + dy * (half - edge - pinPx / 2));
                 }
             }
         }
-        const room = Math.max(0, r.w - 2 * pinBand);
-        const namePx = Math.min(cs * 0.9, r.h * 0.42, room / Math.max(2, b.name.length * 0.62));
+        // The name, in the middle: of the largest rectangle in it, for a
+        // part that does not fill its box.
+        const mid = b.inner ? lidRect(b.inner, cs, LID_INSET) : r;
+        const room = Math.max(0, mid.w - (b.inner ? 0 : 2 * pinBand));
+        const namePx = Math.min(cs * 0.9, mid.h * 0.42, room / Math.max(2, b.name.length * 0.62));
         if (namePx * dpr >= 8) {
             ctx.font = `700 ${namePx}px ${LID_FONT}`;
             ctx.fillStyle = COLOR_LID_NAME;
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
-            ctx.fillText(b.name, r.x + r.w / 2, r.y + r.h / 2);
+            ctx.fillText(b.name, mid.x + mid.w / 2, mid.y + mid.h / 2);
         }
         ctx.restore();
         ctx.textAlign = 'left';
@@ -1074,9 +1149,7 @@
         ctx.strokeStyle = COLOR_OPEN_EDGE;
         ctx.lineWidth = Math.max(1, cs * 0.05);
         ctx.setLineDash([Math.max(3, cs * 0.22), Math.max(2, cs * 0.14)]);
-        ctx.beginPath();
-        ctx.roundRect(r.x, r.y, r.w, r.h, Math.min(LID_RADIUS * cs, r.w / 2, r.h / 2));
-        ctx.stroke();
+        ctx.stroke(lidPath(b, cs, 0.12));
         ctx.setLineDash([]);
         // The name on a tab across the outline's top-left corner.
         const namePx = Math.min(cs * 0.55, 14);
@@ -1205,7 +1278,8 @@
         ctx.strokeStyle = bad ? '#ff8a8a' : COLOR_OUTLINE;
         ctx.lineWidth = Math.max(1.5, cs * 0.08);
         ctx.setLineDash([Math.max(3, cs * 0.25), Math.max(2, cs * 0.15)]);
-        ctx.strokeRect(bx, by, bw, bh);
+        if (o.outline) ctx.stroke(outlinePath(o.outline, cs, 0, 0));
+        else ctx.strokeRect(bx, by, bw, bh);
         ctx.setLineDash([]);
         const hs = Math.max(5, cs * 0.3);
         ctx.fillStyle = bad ? '#ff8a8a' : COLOR_OUTLINE;
@@ -1298,19 +1372,17 @@
         ctx.fillStyle = o.blocked ? 'rgba(255, 138, 138, 0.55)' : COLOR_CONDUCTOR;
         for (const [x, y] of o.wire) ctx.fillRect(X(x), Y(y), cs, cs);
         o.copies.forEach((b, k) => {
-            const r = lidRect(b, cs, LID_INSET);
-            ctx.beginPath();
-            ctx.roundRect(r.x, r.y, r.w, r.h, Math.min(LID_RADIUS * cs, r.w / 2, r.h / 2));
+            const r = lidRect(b.inner || b, cs, LID_INSET), body = lidPath(b, cs, LID_INSET);
             ctx.globalAlpha = 0.88;
             ctx.fillStyle = b.bad ? '#3a1414' : COLOR_LID;
-            ctx.fill();
+            ctx.fill(body);
             ctx.globalAlpha = 1;
             ctx.strokeStyle = b.bad || (o.blocked && !b.next) ? '#ff8a8a' : b.next ? '#9fd8ff' : '#e8e8e8';
             ctx.lineWidth = Math.max(1.5, cs * (b.next ? 0.1 : 0.07));
             ctx.setLineDash(b.next || b.bad ? [Math.max(4, cs * 0.3), Math.max(3, cs * 0.18)] : []);
-            ctx.stroke();
+            ctx.stroke(body);
             ctx.setLineDash([]);
-            arrayEditHits.push({ kind: 'copy', k, x: X(b.x0), y: Y(b.y0), w: (b.x1 - b.x0 + 1) * cs, h: (b.y1 - b.y0 + 1) * cs });
+            arrayEditHits.push({ kind: 'copy', k, x: X(b.x0), y: Y(b.y0), w: (b.x1 - b.x0 + 1) * cs, h: (b.y1 - b.y0 + 1) * cs, cells: b.cells });
             if (b.label == null) return;
             const text = String(b.label);
             const px = Math.max(10, Math.min(cs * 1.1, r.h * 0.5, r.w / Math.max(2, text.length * 0.62)));
@@ -1412,6 +1484,252 @@
         ctx.restore();
     }
 
+    // The paths a redraw accumulates cells into, one per layer (see
+    // drawGrid).
+    function newLayers(short) {
+        return {
+            short,
+            shortPath: new Path2D(),
+            floatPath: new Path2D(),
+            wirePath: new Path2D(),
+            chargePath: new Path2D(),
+            muxBodyPath: new Path2D(),
+            ledOnPath: new Path2D(),
+            ledOffPath: new Path2D(),
+            boxParts: [],
+            queuedBoxKeys: new Set(),
+        };
+    }
+    // ...filled, bottom to top. `live`: with the charge on them — not for a
+    // part bench's copies, which are drawings of the part, not circuits.
+    function fillLayers(layers, cs, live) {
+        ctx.fillStyle = COLOR_MUX_BODY;
+        ctx.fill(layers.muxBodyPath);
+        // Mux parts go in with the rest of the mux bodies — under the
+        // wires, so a wire meeting a lead draws over the shared boundary.
+        for (const part of layers.boxParts) drawBoxPart(part, cs);
+        ctx.fillStyle = COLOR_LED_OFF;
+        ctx.fill(layers.ledOffPath);
+        ctx.fillStyle = live ? COLOR_LED_ON : COLOR_LED_OFF;
+        ctx.fill(layers.ledOnPath);
+        ctx.fillStyle = COLOR_CONDUCTOR;
+        ctx.fill(layers.wirePath);
+        if (!live) return;
+        ctx.fillStyle = COLOR_CHARGE;
+        ctx.fill(layers.chargePath);
+        ctx.fillStyle = COLOR_FLOAT;
+        ctx.fill(layers.floatPath);
+        ctx.fillStyle = COLOR_SHORT;
+        ctx.fill(layers.shortPath);
+    }
+    // Nothing under a shut lid is drawn: the lid covers it. `hidden(x, y)`.
+    function lidCover() {
+        const blockList = M.blockList();
+        const shut = new Set(blockList.filter((b) => !b.open).map((b) => b.id));
+        const parentOf = new Map(blockList.map((b) => [b.id, b.parent]));
+        const hidden = (x, y) => {
+            if (!shut.size) return false;
+            for (let b = M.blockAtCell(x, y); b; b = parentOf.get(b)) if (shut.has(b)) return true;
+            return false;
+        };
+        return { blockList, shut, hidden };
+    }
+
+    // ---- The part bench (ui/bench.js) ----
+    // The part's bounds, dashed, a handle on each side and corner to drag;
+    // what is wrong, red, and the cells its edge keeps bare, hatched. Each
+    // pad's tag beyond it, away from the part: its name — drag it to move
+    // the pad, click it to rename — and an arrow the way its signal goes,
+    // to click to turn it, inputs green and outputs yellow, dimmed while
+    // nothing leads to it; a grip at its corner to size it. A pad being
+    // moved or sized, its outline where it goes. A part that repeats: the
+    // copy before it and the one after, drawn from the part's own cells
+    // where they will go, red if they will not go together — the next
+    // one with a tab to drag it by. Where each handle, tag, arrow, grip and
+    // tab is drawn is kept (benchHits), for a press to find. A part that
+    // does not fill its box: the line round its cells (`outline`), and, its
+    // outline being drawn (`outlining`), what is out of the part in its box
+    // shaded.
+    // {rect, outline, cells, outlining, problems: [{x, y}], edge, bad, fixed,
+    //  pads: [{name, dir, x0, y0, x1, y1, unwired, editing}],
+    //  copies: [{dx, dy, next}] | null, copiesBad,
+    //  preview: {x0, y0, x1, y1, bad} | null}
+    var benchView = null, benchHits = [];
+    function drawBenchCopy(o, c, cs) {
+        const r = o.rect, savedX = panX, savedY = panY;
+        panX += c.dx * cs;
+        panY += c.dy * cs;
+        try {
+            const bx = panX + r.x0 * cs, by = panY + r.y0 * cs, bw = (r.x1 - r.x0 + 1) * cs, bh = (r.y1 - r.y0 + 1) * cs;
+            if (bx > viewW || by > viewH || bx + bw < 0 || by + bh < 0) return;
+            ctx.save();
+            // The board under it is covered: the copy is what goes there.
+            const shape = o.cells ? new Set(o.cells.map(([x, y]) => x + ',' + y)) : null;
+            const inShape = (x, y) => !shape || shape.has(x + ',' + y);
+            const line = o.outline ? outlinePath(o.outline, cs, 0, 0) : null;
+            ctx.fillStyle = COLOR_INSULATOR;
+            ctx.globalAlpha = 0.72;
+            if (line) ctx.fill(line); else ctx.fillRect(bx, by, bw, bh);
+            ctx.globalAlpha = 0.6;
+            const layers = newLayers(null), { blockList, hidden } = lidCover();
+            for (let y = r.y0; y <= r.y1; y++)
+                for (let x = r.x0; x <= r.x1; x++) if (inShape(x, y) && !hidden(x, y)) drawCell(x, y, layers);
+            addClumps(layers, r.x0, r.y0, r.x1, r.y1, (x, y) => !inShape(x, y) || hidden(x, y));
+            fillLayers(layers, cs, false);
+            const inside = (b) => b.x0 >= r.x0 && b.x1 <= r.x1 && b.y0 >= r.y0 && b.y1 <= r.y1;
+            for (const b of blockList) {
+                if (b.hidden || !inside(b)) continue;
+                if (b.open) drawOpenBlock(b, cs); else drawLid(b, cs, { bad: false });
+            }
+            ctx.globalAlpha = 1;
+            ctx.strokeStyle = o.copiesBad ? '#ff8a8a' : c.next ? '#9fd8ff' : 'rgba(232, 232, 232, 0.7)';
+            ctx.lineWidth = Math.max(1.5, cs * 0.07);
+            ctx.setLineDash([Math.max(4, cs * 0.3), Math.max(3, cs * 0.18)]);
+            if (line) ctx.stroke(line); else ctx.strokeRect(bx, by, bw, bh);
+            ctx.setLineDash([]);
+            if (c.next) {
+                // The tab to drag it by, on its far side.
+                const [dx, dy] = [Math.sign(c.dx), Math.sign(c.dy)];
+                const size = Math.max(10, Math.min(13, cs * 0.5));
+                ctx.font = `700 ${size}px ${LID_FONT}`;
+                const label = 'next ⠿', tw = ctx.measureText(label).width + 12, th = size + 8;
+                const tx = dx > 0 ? bx + bw + 3 : dx < 0 ? bx - 3 - tw : bx + bw / 2 - tw / 2;
+                const ty = dy > 0 ? by + bh + 3 : dy < 0 ? by - 3 - th : by + bh / 2 - th / 2;
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.85)';
+                ctx.beginPath();
+                ctx.roundRect(tx, ty, tw, th, 4);
+                ctx.fill();
+                ctx.strokeStyle = o.copiesBad ? '#ff8a8a' : '#9fd8ff';
+                ctx.lineWidth = 1.5;
+                ctx.stroke();
+                ctx.fillStyle = ctx.strokeStyle;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(label, tx + tw / 2, ty + th / 2 + 1);
+                benchHits.push({ kind: 'copy', x: tx, y: ty, w: tw, h: th });
+            }
+            ctx.restore();
+        } finally {
+            panX = savedX;
+            panY = savedY;
+        }
+    }
+    function drawBench(cs) {
+        const o = benchView, r = o.rect;
+        const X = (x) => panX + x * cs, Y = (y) => panY + y * cs;
+        benchHits = [];
+        for (const c of o.copies || []) drawBenchCopy(o, c, cs);
+        ctx.save();
+        drawEdge((o.edge || []).filter((e) => e.cls !== 'T'), cs, true, false);
+        for (const p of o.problems) {
+            ctx.fillStyle = 'rgba(255, 90, 90, 0.38)';
+            ctx.fillRect(X(p.x), Y(p.y), cs, cs);
+            ctx.strokeStyle = '#ff8a8a';
+            ctx.lineWidth = Math.max(1.5, cs * 0.06);
+            ctx.strokeRect(X(p.x), Y(p.y), cs, cs);
+        }
+        // The bounds, and their handles. Drawing the outline, what is out of
+        // the part in its box is shaded, and the box itself shows.
+        const bx = X(r.x0), by = Y(r.y0), bw = (r.x1 - r.x0 + 1) * cs, bh = (r.y1 - r.y0 + 1) * cs;
+        if (o.outlining) {
+            const shape = o.cells ? new Set(o.cells.map(([x, y]) => x + ',' + y)) : null;
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.42)';
+            for (let y = r.y0; y <= r.y1; y++)
+                for (let x = r.x0; x <= r.x1; x++) if (shape && !shape.has(x + ',' + y)) ctx.fillRect(X(x), Y(y), cs, cs);
+            ctx.strokeStyle = 'rgba(125, 255, 179, 0.3)';
+            ctx.lineWidth = 1;
+            ctx.strokeRect(bx, by, bw, bh);
+        }
+        ctx.strokeStyle = o.bad ? '#ff8a8a' : COLOR_OUTLINE;
+        ctx.lineWidth = Math.max(1.5, cs * 0.08);
+        ctx.setLineDash([Math.max(3, cs * 0.25), Math.max(2, cs * 0.15)]);
+        if (o.outline) ctx.stroke(outlinePath(o.outline, cs, 0, 0));
+        else ctx.strokeRect(bx, by, bw, bh);
+        ctx.setLineDash([]);
+        const hs = Math.max(8, Math.min(14, cs * 0.36));
+        for (const [side, hx, hy] of [['n', bx + bw / 2, by], ['s', bx + bw / 2, by + bh], ['w', bx, by + bh / 2], ['e', bx + bw, by + bh / 2],
+            ['nw', bx, by], ['ne', bx + bw, by], ['sw', bx, by + bh], ['se', bx + bw, by + bh]]) {
+            ctx.fillStyle = '#000';
+            ctx.fillRect(hx - hs / 2 - 1, hy - hs / 2 - 1, hs + 2, hs + 2);
+            ctx.fillStyle = o.bad ? '#ff8a8a' : COLOR_OUTLINE;
+            ctx.fillRect(hx - hs / 2, hy - hs / 2, hs, hs);
+            benchHits.push({ kind: 'handle', side, x: hx - hs / 2 - 3, y: hy - hs / 2 - 3, w: hs + 6, h: hs + 6 });
+        }
+        // The pads: each a tag beyond it, away from the part.
+        const size = Math.max(10, Math.min(15, cs * 0.55));
+        ctx.font = `700 ${size}px ${LID_FONT}`;
+        ctx.textBaseline = 'middle';
+        o.pads.forEach((p, k) => {
+            const color = p.dir === 'out' ? '#ffd166' : COLOR_OUTLINE;
+            const side = p.x1 < r.x0 ? 'w' : p.x0 > r.x1 ? 'e' : p.y1 < r.y0 ? 'n' : 's';
+            const px = X(p.x0), py = Y(p.y0), pw = (p.x1 - p.x0 + 1) * cs, ph = (p.y1 - p.y0 + 1) * cs;
+            ctx.globalAlpha = p.unwired ? 0.55 : 1;
+            ctx.strokeStyle = color;
+            ctx.lineWidth = Math.max(1.5, cs * 0.07);
+            ctx.strokeRect(px - 1.5, py - 1.5, pw + 3, ph + 3);
+            const th = size + 8, nw = ctx.measureText(p.name).width + 12, aw = th;
+            const tw = nw + aw;
+            const tx = side === 'w' ? px - 4 - tw : side === 'e' ? px + pw + 4 : px + pw / 2 - tw / 2;
+            const ty = side === 'n' ? py - 4 - th : side === 's' ? py + ph + 4 : py + ph / 2 - th / 2;
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.85)';
+            ctx.beginPath();
+            ctx.roundRect(tx, ty, tw, th, 4);
+            ctx.fill();
+            ctx.lineWidth = p.editing ? 2.5 : 1.2;
+            ctx.setLineDash(p.unwired ? [3, 3] : []);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            // The name, then the arrow: in (pointing at the part) or out.
+            ctx.fillStyle = color;
+            ctx.textAlign = 'center';
+            ctx.fillText(p.name, tx + nw / 2, ty + th / 2 + 1);
+            const ax = tx + nw + aw / 2, ay = ty + th / 2, a = th * 0.22;
+            const toward = { w: [1, 0], e: [-1, 0], n: [0, 1], s: [0, -1] }[side];
+            const [dx, dy] = p.dir === 'out' ? [-toward[0], -toward[1]] : toward;
+            ctx.beginPath();
+            ctx.moveTo(ax + dx * a * 1.3, ay + dy * a * 1.3);
+            ctx.lineTo(ax - dx * a - dy * a, ay - dy * a + dx * a);
+            ctx.lineTo(ax - dx * a + dy * a, ay - dy * a - dx * a);
+            ctx.closePath();
+            ctx.fill();
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(tx + nw, ty + 3);
+            ctx.lineTo(tx + nw, ty + th - 3);
+            ctx.stroke();
+            benchHits.push({ kind: 'tag', pad: k, x: tx, y: ty, w: nw, h: th });
+            benchHits.push({ kind: 'arrow', pad: k, x: tx + nw, y: ty, w: aw, h: th });
+            // The grip, at its bottom right corner.
+            const gs = Math.max(7, Math.min(11, cs * 0.3)), gx = px + pw, gy = py + ph;
+            ctx.fillStyle = '#000';
+            ctx.fillRect(gx - gs / 2 - 1, gy - gs / 2 - 1, gs + 2, gs + 2);
+            ctx.fillStyle = color;
+            ctx.beginPath();
+            ctx.moveTo(gx + gs / 2, gy - gs / 2);
+            ctx.lineTo(gx + gs / 2, gy + gs / 2);
+            ctx.lineTo(gx - gs / 2, gy + gs / 2);
+            ctx.closePath();
+            ctx.fill();
+            benchHits.push({ kind: 'grip', pad: k, x: gx - gs / 2 - 3, y: gy - gs / 2 - 3, w: gs + 6, h: gs + 6 });
+            ctx.globalAlpha = 1;
+        });
+        if (o.preview) {
+            const p = o.preview;
+            ctx.strokeStyle = p.bad ? '#ff8a8a' : '#ffffff';
+            ctx.fillStyle = p.bad ? 'rgba(255, 90, 90, 0.25)' : 'rgba(255, 255, 255, 0.18)';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([5, 4]);
+            const px = X(p.x0), py = Y(p.y0), pw = (p.x1 - p.x0 + 1) * cs, ph = (p.y1 - p.y0 + 1) * cs;
+            ctx.fillRect(px, py, pw, ph);
+            ctx.strokeRect(px, py, pw, ph);
+            ctx.setLineDash([]);
+        }
+        ctx.restore();
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'alphabetic';
+    }
+
     function drawGrid() {
         // Reset per frame rather than once: resizing the canvas resets its
         // whole context state, transform included.
@@ -1437,40 +1755,23 @@
         // addWireShape for why (per-cell fillRect calls leave antialiased
         // seams). Mux parts are collected too, one per macro (see
         // queueBoxPart), since each is drawn whole rather than per cell.
-        const layers = {
-            wirePath: new Path2D(),
-            chargePath: new Path2D(),
-            muxBodyPath: new Path2D(),
-            ledOnPath: new Path2D(),
-            ledOffPath: new Path2D(),
-            boxParts: [],
-            queuedBoxKeys: new Set(),
-        };
-        // Nothing under a shut lid is drawn: the lid covers it.
-        const blockList = M.blockList();
-        const shut = new Set(blockList.filter((b) => !b.open).map((b) => b.id));
-        const parentOf = new Map(blockList.map((b) => [b.id, b.parent]));
-        const underLid = (x, y) => {
-            for (let b = M.blockAtCell(x, y); b; b = parentOf.get(b)) if (shut.has(b)) return true;
-            return false;
-        };
+        // The short, if the breaker has tripped: which cells' ways are in it
+        // (cell * 2 + axis), drawn as a red core over the wire.
+        const trip = M.tripped && M.tripped();
+        let short = null;
+        if (trip && trip.sites) {
+            const N = M.activeBoard().netlist;
+            short = new Uint8Array(M.GRID_W * M.GRID_H * 2);
+            for (const s of trip.sites) if (N && s < N.sites) short[N.siteCell[s] * 2 + N.siteAxis[s]] = 1;
+        }
+        const layers = newLayers(short);
+        const { blockList, shut, hidden } = lidCover();
         for (let y = y0; y <= y1; y++)
             for (let x = x0; x <= x1; x++)
-                if (!shut.size || !underLid(x, y)) drawCell(x, y, layers);
-        addClumps(layers, x0, y0, x1, y1, (x, y) => shut.size > 0 && underLid(x, y));
-        ctx.fillStyle = COLOR_MUX_BODY;
-        ctx.fill(layers.muxBodyPath);
-        // Mux parts go in with the rest of the mux bodies — under the
-        // wires, so a wire meeting a lead draws over the shared boundary.
-        for (const part of layers.boxParts) drawBoxPart(part, cs);
-        ctx.fillStyle = COLOR_LED_OFF;
-        ctx.fill(layers.ledOffPath);
-        ctx.fillStyle = COLOR_LED_ON;
-        ctx.fill(layers.ledOnPath);
-        ctx.fillStyle = COLOR_CONDUCTOR;
-        ctx.fill(layers.wirePath);
-        ctx.fillStyle = COLOR_CHARGE;
-        ctx.fill(layers.chargePath);
+                if (!hidden(x, y)) drawCell(x, y, layers);
+        addClumps(layers, x0, y0, x1, y1, hidden);
+        fillLayers(layers, cs, true);
+        buildFlow(x0, y0, x1, y1, cs, hidden, [...shut].join());
         drawPendingLinks(cs);
 
         if (gridVisible && cs > 6) {
@@ -1515,6 +1816,7 @@
                 drawLid(p, cs, { bad: !partPreview.ok });
             }
         if (partOutline) drawPartOutline(cs);
+        if (benchView) drawBench(cs);
         if (partEdit) drawPartEdit(cs);
         if (arrayEdit) drawArrayEdit(cs);
         if (stampPreview && stampPreview.leads) drawLeadMarks(stampPreview.leads, cs,
@@ -1736,8 +2038,243 @@
         clampPan();
     }
 
+    // ===== Current flowing =====
+    //
+    // Where current runs to a load, it is drawn running — quietly: a pair
+    // of faint strands winding round the lit core, soft packets of light
+    // drifting down it the way it flows, and now and then a glint. A short
+    // is the same, angry: hot, fast, sparking. The ways are the model's
+    // (M.flowField: from each source to the loads it feeds), laid along the
+    // wire as the wire is drawn — a bend, a staircase or a clump of thick
+    // wire crossed on the diagonal (buildFlow) — when the board is drawn,
+    // and animated a frame at a time on a canvas of their own over it
+    // (drawFlow).
+    const reducedMotion = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    // Cells between the samples a way is drawn through — fewer zoomed out,
+    // where they would be closer than a few pixels.
+    const FLOW_STEP = 0.12, FLOW_STEP_PX = 3;
+    // Smooth noise along a line, 0..1, off a table.
+    const hash1 = (n) => { const s = Math.sin(n * 127.1 + 311.7) * 43758.5453; return s - Math.floor(s); };
+    const NOISE = Float32Array.from({ length: 1024 }, (_, i) => hash1(i));
+    const noise1 = (x) => { const i = Math.floor(x), f = x - i, e = f * f * (3 - 2 * f); return NOISE[i & 1023] * (1 - e) + NOISE[(i + 1) & 1023] * e; };
+    const smooth = (a, b, x) => { const v = Math.min(1, Math.max(0, (x - a) / (b - a))); return v * v * (3 - 2 * v); };
+    // What the ways were last worked out for: the board's cells, the view,
+    // the shut lids and the breaker. A running board is redrawn every frame
+    // whether anything changed or not, and the ways only when something did.
+    let flowFor = null;
+    function buildFlow(x0, y0, x1, y1, cs, hidden, shutKey) {
+        if (!M.flowField) { flowPolys = []; return; }
+        const cells = M.copyCells(), trip = M.tripped(), key = { cs, panX, panY, x0, y0, x1, y1, shutKey, trip: trip ? trip.tick : -1, cells };
+        const was = flowFor;
+        if (was && was.cells.length === cells.length && ['cs', 'panX', 'panY', 'x0', 'y0', 'x1', 'y1', 'shutKey', 'trip'].every((k) => was[k] === key[k])) {
+            let i = 0;
+            while (i < cells.length && cells[i] === was.cells[i]) i++;
+            if (i === cells.length) return;
+        }
+        flowFor = key;
+        flowPolys = [];
+        const W = M.GRID_W, D = [[0, -1], [1, 0], [0, 1], [-1, 0]];
+        const dirOf = (a, b) => { const d = b - a; return d === -W ? 0 : d === 1 ? 1 : d === W ? 2 : d === -1 ? 3 : -1; };
+        // Whether a way turning in (x, y), in from side p and out by side
+        // q, cuts the corner on the diagonal: where the wire is drawn so —
+        // an elbow's bevel, a staircase — or the corner is filled, in a
+        // clump of thick wire. Through a tee it turns at the middle.
+        const cuts = (x, y, p, q) => {
+            const a = wireArms(x, y), arm = [a.n, a.e, a.s, a.w];
+            if (isElbow(a) && arm[p] && arm[q]) return true;
+            return isWireCell(x + D[p][0], y + D[p][1]) && isWireCell(x + D[q][0], y + D[q][1])
+                && isWireCell(x + D[p][0] + D[q][0], y + D[p][1] + D[q][1]);
+        };
+        for (const ch of M.flowField().chains) {
+            const n = ch.cells.length, cells = ch.cells;
+            const vis = new Uint8Array(n);
+            for (let k = 0; k < n; k++) {
+                const x = cells[k] % W, y = (cells[k] - x) / W;
+                vis[k] = x >= x0 - 1 && x <= x1 + 1 && y >= y0 - 1 && y <= y1 + 1 && !hidden(x, y) ? 1 : 0;
+            }
+            // Points in cells (a cell's middle is +0.5), each with how many
+            // steps from the source it is (`u`), so the flow runs on
+            // unbroken through a fork or a gap: x, y, u, x, y, u...
+            let pts = [];
+            const flush = () => { if (pts.length >= 6) addFlowPoly(pts, ch, cs); pts = []; };
+            for (let k = 0; k < n; k++) {
+                const x = cells[k] % W, y = (cells[k] - x) / W, id = M.getCell(x, y), wire = M.isConductorId(id) || M.isXover(id);
+                const din = k > 0 ? dirOf(cells[k - 1], cells[k]) : -1;
+                const dout = k < n - 1 ? dirOf(cells[k], cells[k + 1]) : ch.toward;
+                if (k > 0) {
+                    if (din < 0) flush();   // across a mux, to its other lead
+                    else if (vis[k - 1] || vis[k]) pts.push(x + 0.5 - D[din][0] / 2, y + 0.5 - D[din][1] / 2, ch.s0 + k - 0.5);
+                }
+                if (!vis[k]) { flush(); continue; }
+                if (wire && !(din >= 0 && dout >= 0 && din !== dout && cuts(x, y, (din + 2) & 3, dout))) pts.push(x + 0.5, y + 0.5, ch.s0 + k);
+            }
+            if (ch.toward >= 0 && vis[n - 1]) {
+                const x = cells[n - 1] % W, y = (cells[n - 1] - x) / W;
+                pts.push(x + 0.5 + D[ch.toward][0] / 2, y + 0.5 + D[ch.toward][1] / 2, ch.s0 + n - 0.5);
+            }
+            flush();
+        }
+    }
+    // A way, resampled every FLOW_STEP cells, in screen pixels, with the
+    // normal at each sample (smoothed round the bends) and its `u`.
+    function addFlowPoly(pts, ch, cs) {
+        const step = Math.max(FLOW_STEP, FLOW_STEP_PX / cs), np = pts.length / 3;
+        const steps = new Int32Array(np);
+        let m = 1;
+        for (let k = 1; k < np; k++) {
+            const dx = pts[k * 3] - pts[k * 3 - 3], dy = pts[k * 3 + 1] - pts[k * 3 - 2];
+            steps[k] = Math.max(1, Math.ceil(Math.sqrt(dx * dx + dy * dy) / step));
+            m += steps[k];
+        }
+        if (m < 2) return;
+        const x = new Float32Array(m), y = new Float32Array(m), u = new Float32Array(m);
+        x[0] = panX + pts[0] * cs; y[0] = panY + pts[1] * cs; u[0] = pts[2];
+        let i = 1;
+        for (let k = 1; k < np; k++) {
+            const ax = pts[k * 3 - 3], ay = pts[k * 3 - 2], au = pts[k * 3 - 1], bx = pts[k * 3], by = pts[k * 3 + 1], bu = pts[k * 3 + 2];
+            for (let j = 1; j <= steps[k]; j++, i++) {
+                const f = j / steps[k];
+                x[i] = panX + (ax + (bx - ax) * f) * cs; y[i] = panY + (ay + (by - ay) * f) * cs; u[i] = au + (bu - au) * f;
+            }
+        }
+        // The normals, smoothed round the bends.
+        let nx = new Float32Array(m), ny = new Float32Array(m), sx = new Float32Array(m), sy = new Float32Array(m);
+        let len = 0;
+        for (let k = 0; k < m; k++) {
+            const a = k > 0 ? k - 1 : 0, b = k < m - 1 ? k + 1 : m - 1, dx = x[b] - x[a], dy = y[b] - y[a], l = Math.sqrt(dx * dx + dy * dy) || 1;
+            nx[k] = -dy / l; ny[k] = dx / l;
+            if (k) { const ex = x[k] - x[k - 1], ey = y[k] - y[k - 1]; len += Math.sqrt(ex * ex + ey * ey); }
+        }
+        for (let pass = 0; pass < 3; pass++) {
+            for (let k = 0; k < m; k++) {
+                const a = k > 0 ? k - 1 : 0, b = k < m - 1 ? k + 1 : m - 1;
+                const vx = nx[a] + nx[k] * 2 + nx[b], vy = ny[a] + ny[k] * 2 + ny[b], l = Math.sqrt(vx * vx + vy * vy) || 1;
+                sx[k] = vx / l; sy[k] = vy / l;
+            }
+            const tx = nx, ty = ny;
+            nx = sx; ny = sy; sx = tx; sy = ty;
+        }
+        flowPolys.push({
+            kind: ch.kind, weight: Math.min(1, 0.72 + 0.14 * Math.log2(1 + ch.load)), seed: hash1(ch.cells[0] * 0.37 + ch.s0) * 100, len, x, y, nx, ny, u,
+        });
+    }
+    // How each kind is drawn: current quiet, a short loud. Speeds in cells
+    // a second, sizes in cells.
+    const FLOW_LOOK = {
+        1: {
+            speed: 1.6, strands: 2, amp: 0.075, width: 0.032, base: 0.1, peak: 0.55, packet: [0.5, 0.9], packetScale: 0.5,
+            colors: [[220, 255, 214], [180, 255, 170]], glow: [120, 255, 90], glowAlpha: 0.26, glowWidth: 0.34,
+            sparks: 1 / 6, sparkAlpha: 0.55, sparkSize: 0.026, sparkSpread: 0.16, jitter: 0, flicker: 0,
+        },
+        2: {
+            speed: 5.5, strands: 4, amp: 0.17, width: 0.045, base: 0.32, peak: 0.6, packet: [0.3, 0.85], packetScale: 1.3,
+            colors: [[255, 244, 214], [255, 160, 64], [255, 220, 150], [255, 96, 48]], glow: [255, 58, 28], glowAlpha: 0.32, glowWidth: 0.55,
+            sparks: 1.4, sparkAlpha: 0.95, sparkSize: 0.04, sparkSpread: 0.6, jitter: 0.07, flicker: 0.35,
+        },
+    };
+    const FLOW_LEVELS = 6;
+    const rgba = (c, a) => `rgba(${c[0]},${c[1]},${c[2]},${a.toFixed(3)})`;
+    // Strokes `paths` — a Path2D per brightness level — at that brightness.
+    function strokeLevels(paths, color, top, width) {
+        fctx.lineWidth = width;
+        for (let l = 0; l < FLOW_LEVELS; l++) {
+            if (!paths[l]) continue;
+            fctx.strokeStyle = rgba(color, ((l + 0.5) / FLOW_LEVELS) * top);
+            fctx.stroke(paths[l]);
+        }
+    }
+    function drawFlowKind(kind, t, cs) {
+        const L = FLOW_LOOK[kind], polys = flowPolys.filter((p) => p.kind === kind);
+        if (!polys.length) return;
+        const flick = L.flicker ? 1 - L.flicker * Math.random() : 1;
+        const top = (L.base + L.peak) * flick;
+        const level = (a) => Math.max(0, Math.min(FLOW_LEVELS - 1, Math.floor((a / top) * FLOW_LEVELS)));
+        const glow = [], strands = L.colors.map(() => []), dots = [], r = Math.max(0.8, cs * L.sparkSize);
+        // A segment onto the path of its brightness: carried straight on
+        // from the last one where that was the same, so a run of one
+        // brightness is one line, not a pile of dashes each with its caps.
+        let last = -1;
+        const add = (lists, l, ax, ay, bx, by) => {
+            const p = lists[l] || (lists[l] = new Path2D());
+            if (l !== last) p.moveTo(ax, ay);
+            p.lineTo(bx, by);
+            last = l;
+        };
+        for (const p of polys) {
+            const m = p.x.length, packet = new Float32Array(m);
+            for (let i = 0; i < m; i++) packet[i] = smooth(L.packet[0], L.packet[1], noise1((p.u[i] - L.speed * t) * L.packetScale + p.seed));
+            // Packets of light, a soft glow down the middle.
+            last = -1;
+            for (let i = 1; i < m; i++) {
+                const a = (packet[i] + packet[i - 1]) / 2 * L.glowAlpha * p.weight * flick;
+                if (a < 0.004) { last = -1; continue; }
+                add(glow, Math.min(FLOW_LEVELS - 1, Math.floor((a / L.glowAlpha) * FLOW_LEVELS)), p.x[i - 1], p.y[i - 1], p.x[i], p.y[i]);
+            }
+            // The strands, winding round the middle as they go.
+            // Zoomed far out, a strand is as much as can be seen.
+            const nStrands = cs < 12 ? 1 : L.strands;
+            for (let j = 0; j < nStrands; j++) {
+                const lists = strands[j % strands.length];
+                let px = 0, py = 0;
+                last = -1;
+                for (let i = 0; i < m; i++) {
+                    const uf = p.u[i] - L.speed * t;
+                    let off = L.amp * cs * (0.62 * Math.sin(uf * 2.4 + j * 2.1 + t * 1.3 + p.seed)
+                        + 0.38 * (noise1(uf * 1.1 + j * 7.3 + p.seed + t * 0.27) * 2 - 1));
+                    if (L.jitter) off += (Math.random() - 0.5) * L.jitter * cs;
+                    // Pinched to the middle at a way's two ends.
+                    off *= Math.min(1, i / 4, (m - 1 - i) / 4);
+                    const qx = p.x[i] + p.nx[i] * off, qy = p.y[i] + p.ny[i] * off;
+                    if (i) add(lists, level((L.base + L.peak * (packet[i] + packet[i - 1]) / 2) * p.weight * flick), px, py, qx, qy);
+                    px = qx; py = qy;
+                }
+            }
+            // Glints, carried along and fading.
+            const count = Math.max(1, Math.round((p.len / cs) * L.sparks));
+            for (let k = 0; k < count; k++) {
+                const h1 = hash1(p.seed + k * 3.1), h2 = hash1(p.seed + k * 5.7), h3 = hash1(p.seed + k * 9.3);
+                const life = (t * (0.45 + h1 * 0.5) + h2) % 1;
+                const i = Math.floor(((h3 * m) + L.speed * (0.8 + h1 * 0.5) * t * (m / Math.max(1, p.len / cs))) % m);
+                const a = Math.sin(Math.PI * life) ** 2 * L.sparkAlpha * p.weight * flick * (0.4 + 0.6 * packet[i]);
+                if (a < 0.02) continue;
+                const off = ((h2 - 0.5) * 2 * L.amp + (h3 - 0.5) * L.sparkSpread * life) * cs;
+                const l = Math.min(FLOW_LEVELS - 1, Math.floor((a / L.sparkAlpha) * FLOW_LEVELS));
+                const d = dots[l] || (dots[l] = new Path2D()), x = p.x[i] + p.nx[i] * off, y = p.y[i] + p.ny[i] * off;
+                d.moveTo(x + r, y);
+                d.arc(x, y, r, 0, Math.PI * 2);
+            }
+        }
+        strokeLevels(glow, L.glow, L.glowAlpha, Math.max(2, cs * L.glowWidth));
+        strokeLevels(glow, L.glow, L.glowAlpha, Math.max(1.5, cs * L.glowWidth * 0.45));
+        strands.forEach((lists, j) => strokeLevels(lists, L.colors[j], top, Math.max(0.8, cs * L.width)));
+        for (let l = 0; l < FLOW_LEVELS; l++) {
+            if (!dots[l]) continue;
+            fctx.fillStyle = rgba(L.colors[0], ((l + 0.5) / FLOW_LEVELS) * L.sparkAlpha);
+            fctx.fill(dots[l]);
+        }
+    }
+    // One frame of it (`now`, ms). Nothing moves for a viewer who asked for
+    // less motion: the cores the board draws say where current is.
+    function drawFlow(now) {
+        if (!fctx) return;
+        const any = flowPolys.length > 0;
+        if (!any && !flowDrawn) return;
+        fctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        fctx.clearRect(0, 0, viewW, viewH);
+        flowDrawn = false;
+        if (!any || reducedMotion) return;
+        const t = now / 1000, cs = cellSize();
+        fctx.lineCap = 'round';
+        fctx.lineJoin = 'bevel';
+        fctx.globalCompositeOperation = 'lighter';
+        drawFlowKind(1, t, cs);
+        drawFlowKind(2, t, cs);
+        fctx.globalCompositeOperation = 'source-over';
+        flowDrawn = true;
+    }
+
     window.PixelogicView = {
-        canvas, drawGrid, resizeCanvas, screenToCell, fitToWindow,
+        canvas, drawGrid, resizeCanvas, screenToCell, fitToWindow, drawFlow,
         // The viewport in CSS pixels. canvas.width/height are DEVICE pixels
         // now, and only equal these at a ratio of 1.
         get width() { return viewW; },
@@ -1778,6 +2315,9 @@
         get partEdit() { return partEdit; },
         get partEditHits() { return partEditHits; },
         setArrayEdit(o) { arrayEdit = o || null; if (!arrayEdit) arrayEditHits = []; },
+        setBench(o) { benchView = o || null; if (!benchView) benchHits = []; },
+        get bench() { return benchView; },
+        get benchHits() { return benchHits; },
         get arrayEdit() { return arrayEdit; },
         get arrayEditHits() { return arrayEditHits; },
         setStampPreview(p) { stampPreview = p || null; },

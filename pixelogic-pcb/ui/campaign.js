@@ -2,7 +2,7 @@
 // bar, the level browser, and where the app opens.
 
 import {
-    campaignBtn, hintBtn, levelBar, levelBriefEl, levelCollapseBtn, levelHintEl, levelStatusEl,
+    benchBarEl, flashStatus, campaignBtn, hintBtn, levelBar, levelBriefEl, levelCollapseBtn, levelHintEl, levelStatusEl,
     levelTableBodyEl, levelTableEl, levelTitleEl, levelsBackdrop, levelsBtn, levelsCloseBtn, levelsListEl,
     levelsPanel, resetProgressBtn, sandboxBtn, sandboxToggleBtn, verifyBtn,
 } from './page.js';
@@ -58,21 +58,44 @@ const G = window.PixelogicGame;
 let gameLevel = null;
 let gameProgress = G.loadProgress();
 
+// The part bench (bench.js) sets the board aside, and its level with it:
+// on the bench the editor is the sandbox's — the board grows, every tool
+// is to hand, nothing is verified — though what it saves is the bench's.
+// Undefined while no bench is out; else the level set aside (null: the
+// sandbox), which comes back when it is put away.
+let benchLevel;
+const onBench = () => benchLevel !== undefined;
+function setBenchAside(on) {
+    if (on && !onBench()) { benchLevel = gameLevel; gameLevel = null; }
+    if (!on && onBench()) { gameLevel = benchLevel; benchLevel = undefined; }
+    document.getElementById('app').classList.toggle('on-bench', onBench());
+}
+// Whose things — probes, parts being changed — are whose: each level's,
+// the sandbox's, and the bench's, each their own.
+const boardKey = () => (onBench() ? 'bench' : gameLevel ? 'level:' + gameLevel.id : 'sandbox');
+// The bench has to be put away (saved, or left) before the board is
+// changed for another.
+function benchInTheWay() {
+    if (!onBench()) return false;
+    flashStatus('Save the part on the bench, or leave it, first');
+    return true;
+}
+
 let levelBarCollapsed = S.getJSON(S.KEYS.levelBar, false) === true;
 
 // The level bar floats over the canvas, so the view has to know how much
 // of the foot it hides. Called whenever the bar appears, collapses, or
 // opens its hint. The truth table popover sits on top of the bar and
-// follows it.
-// The scope, when it is out, sits above the level bar (or at the bottom,
-// in the sandbox), and the board is framed above the both of them.
+// follows it. On the part bench, the bench's bar has the foot instead.
+// The scope, when it is out, sits above the bar (or at the bottom, in the
+// sandbox), and the board is framed above the both of them.
 function syncViewInset() {
-    const open = gameLevel && levelBar.classList.contains('open');
-    const bar = open ? levelBar.offsetHeight + 16 : 0, scope = scopeHeight();
-    document.getElementById('scope').style.bottom = (open ? bar : 8) + 'px';
-    const inset = scope ? (open ? bar : 8) + scope + 8 : bar;
+    const foot = onBench() ? benchBarEl : gameLevel && levelBar.classList.contains('open') ? levelBar : null;
+    const bar = foot ? foot.offsetHeight + 16 : 0, scope = scopeHeight();
+    document.getElementById('scope').style.bottom = (foot ? bar : 8) + 'px';
+    const inset = scope ? (foot ? bar : 8) + scope + 8 : bar;
     V.setViewInset(inset);
-    if (open) levelTableEl.style.bottom = inset + 'px';
+    if (foot === levelBar) levelTableEl.style.bottom = inset + 'px';
 }
 
 // The level bar's height moves when the player collapses it or opens the
@@ -100,6 +123,7 @@ function showBoard() {
 }
 
 function enterLevel(id) {
+    if (benchInTheWay()) return;
     const level = G.getLevel(id);
     if (!level || !G.isUnlocked(id, gameProgress)) return;
     abortReplay();
@@ -162,6 +186,7 @@ function showTargetRect(level) {
 }
 
 function exitToSandbox() {
+    if (benchInTheWay()) return;
     abortReplay();
     closeArray();
     flushSave();
@@ -303,6 +328,7 @@ function renderLevels() {
 }
 
 function openLevels() {
+    if (benchInTheWay()) return;
     renderLevels();
     levelsPanel.classList.add('open');
     levelsBackdrop.classList.add('open');
@@ -316,6 +342,7 @@ function closeLevels() {
 // between them and remembers which one you were in.
 function toggleSandbox() {
     setMenuOpen(false);
+    if (benchInTheWay()) return;
     if (gameLevel) { exitToSandbox(); return; }
     const resume = gameProgress.current && G.getLevel(gameProgress.current);
     if (resume && G.isUnlocked(resume.id, gameProgress)) enterLevel(resume.id);
@@ -395,7 +422,7 @@ function setupCampaign() {
 }
 
 export {
-    gameLevel, gameProgress, levelBarCollapsed, syncViewInset, reframeAfter, showBoard, enterLevel,
+    gameLevel, gameProgress, onBench, setBenchAside, boardKey, levelBarCollapsed, syncViewInset, reframeAfter, showBoard, enterLevel,
     packStage, showTargetRect, exitToSandbox, applyToolAvailability, updateLevelBar, applyCollapsed,
     setCollapsed, setHintOpen, renderLevels, openLevels, closeLevels, toggleSandbox, resumeCampaign,
     setupCampaign,

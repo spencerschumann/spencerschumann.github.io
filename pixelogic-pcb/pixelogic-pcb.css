@@ -310,6 +310,14 @@ html, body {
     min-width: 0;
 }
 
+#flow {
+    position: absolute;
+    top: 0;
+    left: 0;
+    pointer-events: none;
+    /* Light on the board: the current glows on the wire it runs down. */
+    mix-blend-mode: screen;
+}
 #grid {
     position: absolute;
     top: 0;
@@ -943,6 +951,13 @@ html, body {
 }
 .hand-count input::-webkit-outer-spin-button, .hand-count input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 
+/* The part bench: its bar has the foot, as a level's does, and the
+   selection's actions go to the top for it. */
+#app.on-bench .selection-actions:not(.bench-bar) {
+    bottom: auto;
+    top: max(8px, env(safe-area-inset-top));
+}
+.bench-bar input[readonly] { color: var(--text-dim); }
 /* A part's copies set out on the board: the bar over it. */
 .array-bar .tool-btn { min-width: 34px; }
 .hand-apart { min-width: 64px; }

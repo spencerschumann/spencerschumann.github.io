@@ -1,30 +1,28 @@
 // The cell: what one byte of the board means. Every cell is one byte (an
-// id) saying what it is and holding its state — wire and its charge, a
-// source, a lamp, a switch, a crossing's two charges, the six typed cells of
-// a mux — and the rule a wire's charge follows. No board here: only ids and
-// the tables that read them, which is what a GPU kernel will need.
+// id) saying what it is and holding its state — wire and its value, a
+// source, a lamp, a switch, a crossing's two values, the six typed cells of
+// a mux. No board here, and no rule: only ids and the tables that read
+// them. (What the values come to, tick by tick, is sim.js's.)
 
-// ===== Charge states (3-state decay model, ported from pixelogic/model.js) =====
+// ===== Values: 0, 1, and floating =====
 const OFF = 0, ON = 1, FALLING = 2;
-
-function nextCharge(charge, n, e, s, w) {
-    if (charge === OFF) {
-        if (n === ON || e === ON || s === ON || w === ON) return ON;
-    } else if (charge === ON) {
-        if (n === FALLING || e === FALLING || s === FALLING || w === FALLING) return FALLING;
-    } else if (charge === FALLING) {
-        return OFF;
-    }
-    return charge;
-}
+// Since wires fill at once (sim.js), nothing drains: the third value is a
+// net driven by nothing, floating — Z. (FALLING is its old name, from the
+// charge model, in which it was a wire draining.)
+const Z = FALLING;
 
 // ===== Cell ID space (fits in a Uint8Array) =====
 //
 // Insulator: 0 (plain only - a bare insulator is inert, and an insulator
 //            hole no longer means anything special)
 // Conductor: 10-12 (charge 0-2)
-// +V: 13   -V: 14  (explicit sources - they can sit right against a mux
-//            and drive it directly)
+// +V: 160-175, -V: 176-191 (160/176 + stubs) - the sources, each soldered
+//            on the sides its stubs say (a bit a side, N E S W as DIRS),
+//            joined there and nowhere else: a wire may run past one.
+//            13 and 14 are the old +V and -V, joined to whatever touched
+//            them: they still read, as a source with a stub every side,
+//            and a board is rewritten as it is next looked over (see
+//            edit.js dropDeadStubs).
 // 15-26:     unassigned, and kept that way: circuits saved by older builds
 //            use them (21-26 were old-style mux body, read off the wire
 //            round it), and an id this build does not define loads as
@@ -39,8 +37,8 @@ function nextCharge(charge, n, e, s, w) {
 //            with wire all round and running straight through was a
 //            crossing — see inferCrossings, which reads old boards so.)
 // LED (output): 36-38 (36 + charge) - a pure sink that never drives a wire,
-//            but LED cells conduct to each other over the 8-neighborhood so
-//            a multi-cell pad lights (and drains) as one square unit.
+//            but LED cells join each other over the 8-neighborhood so a
+//            multi-cell pad lights as one square unit.
 // Switch (momentary input): 39 released, 40 pressed - drives like +V while
 //            pressed and like -V (pulls down) when released. Pressing floods
 //            the whole 8-connected switch pad, so a big button acts as one.
@@ -51,12 +49,23 @@ const ID_INSULATOR_PLAIN = 0;
 const ID_CONDUCTOR_BASE = 10, ID_CONDUCTOR_MAX = 12;
 const ID_POS = 13;
 const ID_NEG = 14;
+const ID_SRC_POS = 160, ID_SRC_NEG = 176, ID_SRC_MAX = 191;
 const ID_XOVER_BASE = 27, ID_XOVER_MAX = 35;
 const ID_LED_BASE = 36, ID_LED_MAX = 38;
 const ID_SWITCH_OFF = 39, ID_SWITCH_ON = 40;
 const ID_TOGGLE_OFF = 41, ID_TOGGLE_ON = 42;
 
 function isInsulatorId(id) { return id === ID_INSULATOR_PLAIN; }
+// A source: +V or -V, and the sides it is soldered to (its stubs, a
+// bit a side as DIRS: 1 north, 2 east, 4 south, 8 west).
+function isSource(id) { return id === ID_POS || id === ID_NEG || (id >= ID_SRC_POS && id <= ID_SRC_MAX); }
+function isPosSource(id) { return id === ID_POS || (id >= ID_SRC_POS && id < ID_SRC_NEG); }
+function sourceStubs(id) { return id === ID_POS || id === ID_NEG ? 15 : id >= ID_SRC_POS && id <= ID_SRC_MAX ? (id - ID_SRC_POS) & 15 : 0; }
+function makeSource(pos, stubs) { return (pos ? ID_SRC_POS : ID_SRC_NEG) + (stubs & 15); }
+// The same source with its stub way `d` (a DIRS index) on or off.
+function withStub(id, d, on) { return makeSource(isPosSource(id), on ? sourceStubs(id) | (1 << d) : sourceStubs(id) & ~(1 << d)); }
+// Which DIRS index an offset [dx, dy] is.
+function dirIndex([dx, dy]) { return dy < 0 ? 0 : dx > 0 ? 1 : dy > 0 ? 2 : 3; }
 function isLed(id) { return id >= ID_LED_BASE && id <= ID_LED_MAX; }
 function ledCharge(id) { return id - ID_LED_BASE; }
 function makeLed(charge) { return ID_LED_BASE + charge; }
@@ -70,15 +79,6 @@ function toggleIsOn(id) { return id === ID_TOGGLE_ON; }
 // used for pad-internal spreading so pads fill a solid square rather than a
 // 4-connected diamond.
 const NEIGHBORS_8 = [[0, -1], [1, 0], [0, 1], [-1, 0], [-1, -1], [1, -1], [1, 1], [-1, 1]];
-
-// Variadic form of nextCharge for cells that read more than four inputs
-// (an LED sees up to eight LED neighbors plus its orthogonal drivers).
-function nextChargeN(cur, inputs) {
-    if (cur === OFF) return inputs.some((c) => c === ON) ? ON : OFF;
-    if (cur === ON) return inputs.some((c) => c === FALLING) ? FALLING : ON;
-    if (cur === FALLING) return OFF;
-    return cur;
-}
 
 function isConductorId(id) { return id >= ID_CONDUCTOR_BASE && id <= ID_CONDUCTOR_MAX; }
 function conductorCharge(id) { return id - ID_CONDUCTOR_BASE; }
@@ -115,12 +115,15 @@ function combineCharge(v, h) {
 // Each cell stores at most one direction — C, O, 1 and 2 their lead's,
 // M the way to its O — and finds its partners from that and its
 // neighbours' kinds. So a mux means what its cells say whatever lies
-// round it, and two can sit flush. Every cell's next state is a
-// function of its own byte and its four neighbours' (see nextMuxCell).
+// round it, and two can sit flush. What each holds: C whether the
+// control read 1 last tick, NO also whether it read Z (see sim.js
+// selWas); O, NO and NC their net's value; M its contact — the pin it
+// is on (SEL_NO, SEL_NC) and COM's value, or open (DRAIN).
 const ID_MUX_C = 64, ID_MUX_O = 72, ID_MUX_X = 84, ID_MUX_NO = 85, ID_MUX_NC = 109, ID_MUX_M = 121;
 const MK_C = 1, MK_O = 2, MK_X = 3, MK_NO = 4, MK_NC = 5, MK_M = 6;
-// A switch's fourth charge: on the tick it switches away from a charged
-// pin it drains COM (falling, toward O) and gives the pins nothing.
+// A switch's fourth value: its contact open, on neither pin — its control
+// floating. (The name is the charge model's, in which it was the tick a
+// switch drained COM.)
 const DRAIN = 3;
 const SEL_NO = 0, SEL_NC = 1;
 const muxKindOf = new Uint8Array(256), muxDirOf = new Uint8Array(256);
@@ -192,8 +195,8 @@ function inferCrossings(cells, w, h) {
         else if (!cross[i] && isXover(id)) cells[i] = makeConductor(combineCharge(xoverV(id), xoverH(id)));
     }
 }
-// The charge a mux cell shows: a control's on, a pin's or COM's charge,
-// the switch's (draining shows as falling).
+// The value a mux cell shows: a control's on, a pin's or COM's value,
+// the switch's (open shows as floating).
 function muxCharge(id) {
     switch (muxKindOf[id]) {
         case MK_C: return muxAuxOf[id] ? ON : OFF;
@@ -202,8 +205,8 @@ function muxCharge(id) {
         default: return OFF;
     }
 }
-// A mux cell at rest, as it is stored and copied: no charge, its switch
-// on NC (where a control that is off has it).
+// A mux cell at rest, as it is stored and copied: no value, its contact
+// on NC (where a relay at rest has it).
 function restMuxId(id) {
     const d = muxDirOf[id];
     switch (muxKindOf[id]) {
@@ -213,18 +216,6 @@ function restMuxId(id) {
         case MK_NC: return makeMuxNC(d, OFF);
         case MK_M: return makeMuxM(d, OFF, SEL_NC);
         default: return id;
-    }
-}
-// ...and charged, as every wire is from a charged start (see primeCharges):
-// at rest, but each cell that holds charge holding it.
-function chargedMuxId(id) {
-    const d = muxDirOf[id];
-    switch (muxKindOf[id]) {
-        case MK_O: return makeMuxO(d, ON);
-        case MK_NO: return makeMuxNO(d, ON, false);
-        case MK_NC: return makeMuxNC(d, ON);
-        case MK_M: return makeMuxM(d, ON, SEL_NC);
-        default: return restMuxId(id);
     }
 }
 // The same cell turned `turns` quarters clockwise, or mirrored left to
@@ -240,25 +231,32 @@ function withMuxDir(id, d) {
         default: return id;
     }
 }
-function rotateId(id, turns) { return isMuxId(id) ? withMuxDir(id, (muxDirOf[id] + (((turns % 4) + 4) % 4)) & 3) : id; }
+// A source's stubs turn with it, a bit a quarter.
+function turnStubs(s, t) { return ((s << t) | (s >> (4 - t))) & 15; }
+function rotateId(id, turns) {
+    const t = ((turns % 4) + 4) % 4;
+    if (isSource(id)) return makeSource(isPosSource(id), turnStubs(sourceStubs(id), t));
+    return isMuxId(id) ? withMuxDir(id, (muxDirOf[id] + t) & 3) : id;
+}
 // For the editor: what a mux cell is ('sel', 'com', 'body', 'no', 'nc',
 // 'switch', or null), and which way its lead faces (a DIRS index, or -1).
 const MUX_CELL_NAMES = [null, 'sel', 'com', 'body', 'no', 'nc', 'switch'];
 function muxCellKind(id) { return MUX_CELL_NAMES[muxKindOf[id]]; }
 function muxLead(id) { return hasMuxLead(id) ? muxDirOf[id] : -1; }
-function mirrorId(id) { return isMuxId(id) ? withMuxDir(id, MIRROR_DIR[muxDirOf[id]]) : id; }
+function mirrorId(id) {
+    if (isSource(id)) { const s = sourceStubs(id); return makeSource(isPosSource(id), (s & 5) | ((s & 2) << 2) | ((s & 8) >> 2)); }
+    return isMuxId(id) ? withMuxDir(id, MIRROR_DIR[muxDirOf[id]]) : id;
+}
 
 // The four directions as offsets, in the order every face index uses.
 const DIRS = [[0, -1], [1, 0], [0, 1], [-1, 0]]; // N, E, S, W
 
 // ===== Structural form =====
 //
-// Structural form = the cell with simulation-computed charge stripped.
-// Crossovers strip to a plain OFF conductor: their crossover-ness is
-// emergent from neighbors (also captured in the snapshot), so it's
-// re-derived on the next tick. Undo snapshots and clipboard clips both use
-// this, so stepping never creates bogus undo steps and pasting duplicates
-// the drawing, not a frozen instant of mid-flight charge.
+// Structural form = the cell with simulation-computed values stripped (a
+// crossing stays a crossing, both ways 0). Undo snapshots and clipboard
+// clips both use this, so stepping never creates bogus undo steps and
+// pasting duplicates the drawing, not a frozen instant of the run.
 function stripId(id) {
     if (isXover(id)) return makeXover(OFF, OFF);
     if (isConductorId(id)) return makeConductor(OFF);
@@ -276,17 +274,19 @@ function isValidId(id) {
     return id === ID_INSULATOR_PLAIN ||
         (id >= ID_CONDUCTOR_BASE && id <= ID_NEG) ||
         (id >= ID_XOVER_BASE && id <= ID_TOGGLE_ON) ||
+        (id >= ID_SRC_POS && id <= ID_SRC_MAX) ||
         isMuxId(id);
 }
 
 export {
-    OFF, ON, FALLING, nextCharge, ID_INSULATOR_PLAIN, ID_CONDUCTOR_BASE, ID_CONDUCTOR_MAX, ID_POS, ID_NEG,
+    OFF, ON, FALLING, Z, ID_INSULATOR_PLAIN, ID_CONDUCTOR_BASE, ID_CONDUCTOR_MAX, ID_POS, ID_NEG,
+    isSource, isPosSource, sourceStubs, makeSource, withStub, dirIndex,
     ID_XOVER_BASE, ID_XOVER_MAX, ID_LED_BASE, ID_LED_MAX, ID_SWITCH_OFF, ID_SWITCH_ON, ID_TOGGLE_OFF,
     ID_TOGGLE_ON, isInsulatorId, isLed, ledCharge, makeLed, ledIsOn, isSwitch, switchIsPressed, isToggle,
-    toggleIsOn, NEIGHBORS_8, nextChargeN, isConductorId, conductorCharge, makeConductor, isXover, xoverV,
+    toggleIsOn, NEIGHBORS_8, isConductorId, conductorCharge, makeConductor, isXover, xoverV,
     xoverH, makeXover, isWireId, combineCharge, ID_MUX_C, ID_MUX_O, ID_MUX_X, ID_MUX_NO, ID_MUX_NC, ID_MUX_M,
     MK_C, MK_O, MK_X, MK_NO, MK_NC, MK_M, DRAIN, SEL_NO, SEL_NC, muxKindOf, muxDirOf, muxChOf, muxAuxOf,
-    makeMuxC, makeMuxO, makeMuxNO, makeMuxNC, makeMuxM, isMuxId, hasMuxLead, leadInto, armInto, crossingFrom, inferCrossings, muxCharge, restMuxId, chargedMuxId,
+    makeMuxC, makeMuxO, makeMuxNO, makeMuxNC, makeMuxM, isMuxId, hasMuxLead, leadInto, armInto, crossingFrom, inferCrossings, muxCharge, restMuxId,
     MIRROR_DIR, withMuxDir, rotateId, MUX_CELL_NAMES, muxCellKind, muxLead, mirrorId, DIRS, stripId,
     isValidId,
 };

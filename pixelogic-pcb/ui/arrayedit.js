@@ -13,7 +13,7 @@ import {
     availableParts, closeComponents, holdPart, placeClipAt, placingPart, turnPart,
 } from './parts.js';
 import {
-    cellPoint, handAt, refreshStampPreview,
+    cellPoint, handAt, mirrorStamp, refreshStampPreview, turnStamp,
 } from './stamp.js';
 import {
     gameLevel,
@@ -38,12 +38,16 @@ let handApart = null;       // {key, apart}: joined or apart, for the part in ha
 // flip it (M), and — for a part that repeats — how many copies, − and +
 // ([ and ]) or typed. How many is chosen here each time, not kept with the
 // part: only how it repeats is the part's own. (Not while the copies are
-// being set out: their own bar is up then.)
+// being set out: their own bar is up then.) With MUX, the same bar's turn
+// and flip, and nothing else: a tablet had no way to flip a mux at all.
 function updateHandBar() {
-    const on = drawMode === 'part' && !!placingPart && !arrayEdit;
+    const mux = drawMode === 'mux';
+    const on = (mux || (drawMode === 'part' && !!placingPart)) && !arrayEdit;
     handBarEl.classList.toggle('open', on);
     if (!on) return;
-    const repeats = !placingPart.loose && !!G.arraySpec(placingPart.key);
+    for (const id of ['handCount', 'handApartBtn', 'handArrayBtn']) document.getElementById(id).style.display = mux ? 'none' : '';
+    if (mux) { document.getElementById('handName').textContent = 'Mux'; return; }
+    const repeats = !!G.arraySpec(placingPart.key);
     document.getElementById('handName').textContent = placingPart.name;
     document.getElementById('handCount').style.display = repeats ? '' : 'none';
     const apartBtn = document.getElementById('handApartBtn'), apart = apartInHand();
@@ -55,7 +59,6 @@ function updateHandBar() {
     const input = document.getElementById('handCountInput');
     if (document.activeElement !== input) input.value = String(placingPart.array ? placingPart.array.count : 1);
     const arrayBtn = document.getElementById('handArrayBtn');
-    arrayBtn.style.display = placingPart.loose ? 'none' : '';
     arrayBtn.title = repeats ? 'How it repeats — set out on the board' : 'Make it repeat: copies in a row, joined up, as one part';
 }
 // How many copies are in hand: one is the plain part. More than one of a
@@ -64,7 +67,7 @@ function updateHandBar() {
 const apartInHand = () => !!placingPart && !!handApart && handApart.key === placingPart.key && handApart.apart;
 const wayFor = (key, apart) => (apart ? G.apartSpec(key) : G.arraySpec(key));
 function setArrayCount(n) {
-    if (!placingPart || placingPart.loose) return;
+    if (!placingPart) return;
     const part = availableParts().find((q) => q.key === placingPart.key);
     if (!part) return;
     n = Math.max(1, Math.min(MAX_COPIES, n | 0 || 1));
@@ -75,7 +78,7 @@ function setArrayCount(n) {
 }
 // Joined up, or apart: the bar's switch.
 function setHandApart(apart) {
-    if (!placingPart || placingPart.loose) return;
+    if (!placingPart) return;
     const part = availableParts().find((q) => q.key === placingPart.key);
     if (!part) return;
     const was = handApart;
@@ -128,6 +131,9 @@ const ROLE_TITLE = {
 const turnWay = (d, ops) => ops.reduce((w, op) => (op === 'm' ? (4 - w) % 4 : (w + 1) % 4), d);
 const unturnWay = (d, ops) => ops.reduceRight((w, op) => (op === 'm' ? (4 - w) % 4 : (w + 3) % 4), d);
 const along = (part, dir) => (dir % 2 ? part.w : part.h);
+// As close as copies are tried: a part's length, or, one with a shape,
+// whatever its cells allow.
+const least = (part, dir) => (part.clip.shaped ? 1 : along(part, dir));
 // The way being set — the joined copies' spec, or apart, its own {dir,
 // pitch} — and it as arrayPart takes it; the copies it makes.
 const way = () => (arrayEdit.apart ? arrayEdit.spec.apartWay : arrayEdit.spec);
@@ -146,9 +152,10 @@ const tried = () => G.arrayPart(arrayEdit.part.key, wayOpts(), arrayEdit.count);
 const copySpec = (s) => ({ ...s, shared: [...s.shared], taps: [...s.taps], apartWay: s.apartWay && { ...s.apartWay } });
 
 // The copies as they go down, turned and flipped as in hand: {r, clip,
-// boxes, wire} — the array (G.arrayPart), each copy's box in it and the
-// array's own wire; or, while the copies do not go together, no clip, and
-// copy 0 with the others where they would sit.
+// boxes, wire} — the array (G.arrayPart), each copy's box in it (and its
+// `cells`, a part with a shape) and the array's own wire; or, while the
+// copies do not go together, no clip, and copy 0 with the others where they
+// would sit.
 function layout() {
     const { part, count, ops } = arrayEdit, w = way(), r = tried();
     if (!r.error) {
@@ -163,8 +170,9 @@ function layout() {
             const x = i % clip.w, y = (i - x) / clip.w, l = clip.bmap[i];
             if (!l) continue;     // between copies set apart: nobody's
             if (!r.apart && l === 1) { if (M.isConductorId(clip.data[i])) wire.push([x, y]); continue; }
-            const k = copyOf(l), b = byCopy.get(k) || { x0: x, y0: y, x1: x, y1: y };
+            const k = copyOf(l), b = byCopy.get(k) || { x0: x, y0: y, x1: x, y1: y, cells: part.clip.shaped ? [] : null };
             b.x0 = Math.min(b.x0, x); b.y0 = Math.min(b.y0, y); b.x1 = Math.max(b.x1, x); b.y1 = Math.max(b.y1, y);
+            if (b.cells) b.cells.push([x, y]);
             byCopy.set(k, b);
         }
         return { r, clip, boxes: [...byCopy.keys()].sort((a, b) => a - b).map((k) => byCopy.get(k)), wire };
@@ -182,6 +190,12 @@ function layout() {
         boxes = boxes.map((b) => (op === 'm' ? { x0: W - 1 - b.x1, y0: b.y0, x1: W - 1 - b.x0, y1: b.y1 }
             : { x0: H - 1 - b.y1, y0: b.x0, x1: H - 1 - b.y0, y1: b.x1 }));
         if (op !== 'm') [W, H] = [H, W];
+    }
+    if (part.clip.shaped) {
+        let c = part.clip;
+        for (const op of ops) c = op === 'm' ? M.mirrorClipH(c) : M.rotateClipCW(c);
+        const own = M.clipCells(c);
+        boxes = boxes.map((b) => ({ ...b, cells: own.map(([x, y]) => [b.x0 + x, b.y0 + y]) }));
     }
     return { r, clip: null, boxes, wire: [] };
 }
@@ -248,11 +262,15 @@ function render() {
     const n = L.boxes.length, bit0 = joined.reverse ? n - 1 : 0;
     arrayEdit.shown = { L, at, why, pins };
     V.setArrayEdit({
-        copies: L.boxes.map((b, k) => ({
-            x0: at.x + b.x0, y0: at.y + b.y0, x1: at.x + b.x1, y1: at.y + b.y1,
-            label: apart ? part.name : joined.reverse ? n - 1 - k : k,
-            next: k === 1, bad: !L.clip && k > 0, bit0: !apart && k === bit0,
-        })),
+        copies: L.boxes.map((b, k) => {
+            const cells = b.cells && b.cells.map(([x, y]) => [at.x + x, at.y + y]);
+            return {
+                x0: at.x + b.x0, y0: at.y + b.y0, x1: at.x + b.x1, y1: at.y + b.y1,
+                label: apart ? part.name : joined.reverse ? n - 1 - k : k,
+                next: k === 1, bad: !L.clip && k > 0, bit0: !apart && k === bit0,
+                ...(cells ? { cells, outline: M.outlineOf(cells), inner: M.largestRect(cells) } : {}),
+            };
+        }),
         wire: L.wire.map(([x, y]) => [at.x + x, at.y + y]),
         rings, pins, blocked: !L.clip || !!why,
     });
@@ -304,7 +322,7 @@ function fitSpacing() {
     if (!tried().error) return;
     const best = planFor().ways[w.dir];
     if (!best.error && best.pitch > w.pitch) { w.pitch = best.pitch; return; }
-    for (let p = Math.max(w.pitch, along(part, w.dir)), top = w.pitch + 8; p <= top; p++) {
+    for (let p = Math.max(w.pitch, least(part, w.dir)), top = w.pitch + 8; p <= top; p++) {
         w.pitch = p;
         if (!tried().error) return;
     }
@@ -337,7 +355,7 @@ function setArrayDir(d) {
 }
 function setArrayPitch(p) {
     if (!arrayEdit) return;
-    tryChange((w) => { w.pitch = Math.max(along(arrayEdit.part, w.dir), Math.min(99, p)); }, false);
+    tryChange((w) => { w.pitch = Math.max(least(arrayEdit.part, w.dir), Math.min(99, p)); }, false);
 }
 // Which way is being set: joined up, or apart.
 function setArrayApart(apart) {
@@ -390,7 +408,9 @@ function pinClicked(name) {
 // where it goes; on any other copy, moves them all — or, on bit 0 and let
 // go without moving, counts from the other end.
 const hitAt = (sx, sy) => {
-    const hits = V.arrayEditHits || [], on = (h) => sx >= h.x && sx <= h.x + h.w && sy >= h.y && sy <= h.y + h.h;
+    const hits = V.arrayEditHits || [], c = V.screenToCell(sx, sy);
+    // (A copy with a shape, by its cells: their boxes overlap.)
+    const on = (h) => sx >= h.x && sx <= h.x + h.w && sy >= h.y && sy <= h.y + h.h && (!h.cells || h.cells.some(([x, y]) => x === c.x && y === c.y));
     return hits.find((h) => h.kind !== 'copy' && on(h)) || hits.find((h) => h.kind === 'copy' && on(h)) || null;
 };
 function arrayEditGesture(c, sx, sy, erase) {
@@ -403,7 +423,8 @@ function arrayEditGesture(c, sx, sy, erase) {
 }
 // Dragging the next copy: which side of copy 0 the pointer is on is the
 // way the copies go, and how far, the spacing — never closer than the part
-// is long that way. Let go where they do not go together, and the nearest
+// is long that way, unless it has a shape, and its copies may go in each
+// other's notches. Let go where they do not go together, and the nearest
 // spacing that does is taken, or else it goes back.
 function nextGesture() {
     const before = copySpec(arrayEdit.spec);
@@ -415,7 +436,7 @@ function nextGesture() {
             const fy = (p.sy - V.panY) / cs - (anchor.y + (b0.y1 - b0.y0 + 1) / 2);
             const shown = Math.abs(fx) > Math.abs(fy) ? (fx > 0 ? 1 : 3) : (fy > 0 ? 2 : 0);
             const dir = unturnWay(shown, ops), w = way(), len = along(part, dir);
-            const pitch = Math.max(len, Math.min(len + 12, Math.round(Math.abs(shown % 2 ? fx : fy))));
+            const pitch = Math.max(least(part, dir), Math.min(len + 12, Math.round(Math.abs(shown % 2 ? fx : fy))));
             if (dir === w.dir && pitch === w.pitch) return;
             if (dir !== w.dir && !arrayEdit.apart) w.tapSide = undefined;
             w.dir = dir;
@@ -510,7 +531,7 @@ function arrayOnBoard(id) {
         for (const ops of WAYS_ROUND) {
             let c = r.clip;
             for (const op of ops) c = op === 'm' ? M.mirrorClipH(c) : M.rotateClipCW(c);
-            if (c.w === there.w && c.h === there.h && c.data.every((v, i) => sameCell(v, there.data[i])))
+            if (c.w === there.w && c.h === there.h && c.data.every((v, i) => (c.shaped && !c.bmap[i]) || sameCell(v, there.data[i])))
                 return { part, spec, count: kids.length, ops: ops.slice(), had: !!had, anchor: { x: first.x0, y: first.y0 } };
         }
     }
@@ -573,7 +594,7 @@ function openArray(part, apart) {
         const best = G.planArray(part.key, {}).best;
         spec = { dir: best ? best.dir : 1, pitch: best ? best.pitch : part.w + 1, shared: [], taps: [], reverse: false };
     }
-    const inHand = !!placingPart && placingPart.key === part.key && !placingPart.loose;
+    const inHand = !!placingPart && placingPart.key === part.key;
     const ops = inHand ? (placingPart.ops || []).slice() : [];
     const count = Math.max(2, inHand ? countInHand() : 2);
     closeComponents();
@@ -669,8 +690,8 @@ function setupArrayEdit() {
     document.getElementById('arrayCancelBtn').addEventListener('click', closeArray);
 
     // The bar for the part in hand.
-    document.getElementById('handTurnBtn').addEventListener('click', () => turnPart(false));
-    document.getElementById('handFlipBtn').addEventListener('click', () => turnPart(true));
+    document.getElementById('handTurnBtn').addEventListener('click', () => (drawMode === 'mux' ? turnStamp() : turnPart(false)));
+    document.getElementById('handFlipBtn').addEventListener('click', () => (drawMode === 'mux' ? mirrorStamp() : turnPart(true)));
     document.getElementById('handFewerBtn').addEventListener('click', () => setArrayCount(countInHand() - 1));
     document.getElementById('handMoreBtn').addEventListener('click', () => setArrayCount(countInHand() + 1));
     const input = document.getElementById('handCountInput');

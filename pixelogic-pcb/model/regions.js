@@ -15,7 +15,7 @@ import {
     restoreBlockState, ringViolations, topBlockOf,
 } from './blocks.js';
 import {
-    applyClearance, clearanceFor, clipBlockFits, rotateClipCW,
+    applyClearance, clearanceFor, clipBlockFits, rotateClipCW, trimClipStubs,
 } from './clips.js';
 import {
     floodFill, recomputeRoles,
@@ -208,6 +208,7 @@ function copyRegion(x0, y0, x1, y1) {
     for (let y = 0; y < h; y++)
         for (let x = 0; x < w; x++)
             data[y * w + x] = stripId(B.cells[idx(r.x0 + x, r.y0 + y)]);
+    trimClipStubs(data, w, h);
     const clip = { w, h, data };
     const inside = blocksInside(r);
     if (!inside.size) return clip;
@@ -304,7 +305,8 @@ function clearCells(list) {
 //
 // A block in the clip lands whole or not at all: if any cell of it would
 // fall off the board or onto something protected, none of it is written
-// (the count comes back as `skipped`). Pasted blocks get fresh ids.
+// (the count comes back as `skipped`). Pasted blocks get fresh ids. A
+// shaped clip's holes write nothing.
 // `opts.replace`: a part in the clip replaces what is under it
 // (clearanceFor) instead of being left out where it does not fit — a
 // part put down, or pasted, goes where it is put. Left out still where
@@ -338,7 +340,7 @@ function pasteRegion(clip, x0, y0, opts) {
         for (let x = 0; x < clip.w; x++) {
             const gx = x0 + x, k = y * clip.w + x;
             const l = recs.length ? clip.bmap[k] : 0;
-            if (l && !newId.has(l)) continue;
+            if (l ? !newId.has(l) : clip.shaped) continue;
             if (gx < 0 || gx >= B.w || isProtected(gx, gy)) continue;
             const i = idx(gx, gy);
             if (!l && isMuxId(clip.data[k]) && isTerminalCell(gx, gy)) continue;

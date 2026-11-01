@@ -3,8 +3,8 @@
 // stay bare and which are free (classifyRing, ringMask).
 
 import {
-    DIRS, ID_CONDUCTOR_BASE, ID_INSULATOR_PLAIN, ID_NEG, ID_POS, hasMuxLead, isConductorId, isMuxId,
-    isInsulatorId, isLed, isSwitch, isToggle, isWireId, isXover, muxDirOf, stripId,
+    DIRS, ID_CONDUCTOR_BASE, ID_INSULATOR_PLAIN, dirIndex, hasMuxLead, isConductorId, isMuxId,
+    isInsulatorId, isLed, isSource, isSwitch, isToggle, isWireId, isXover, muxDirOf, sourceStubs, stripId,
 } from './cells.js';
 import {
     B, copyBlockRec, idx, inBounds,
@@ -12,6 +12,9 @@ import {
 import {
     recomputeRoles,
 } from './edit.js';
+import {
+    largestRect, outlineOf,
+} from './shape.js';
 
 // ===== Blocks: a part placed whole =====
 //
@@ -42,6 +45,11 @@ import {
 // free for anything — another part's edge included. Edges are not stored:
 // they are worked out from the core, and kept (ringMask) so every edit
 // can respect them.
+//
+// A core need not fill its box: a part may be any shape (see DESIGN.md), its
+// cells whichever ones blockAt says, and whatever else is in its box is
+// no part of it — bare board, another part's cells, anything. Most fill it
+// (`solid`, in blockGeom), and everything here reads the same for those.
 const RING_R = 1, RING_T = 2;
 // A pin's cell value: which pin, and which face of the cell it leaves by
 // (an index into DIRS: north, east, south, west). That is the pin's own
@@ -132,6 +140,7 @@ function computeBlockGeom() {
         }
     }
     for (const id of [...B.blocks.keys()]) if (!B.blockGeom.has(id)) B.blocks.delete(id);
+    for (const g of B.blockGeom.values()) g.solid = g.count === (g.x1 - g.x0 + 1) * (g.y1 - g.y0 + 1);
     // A pin `via` a nested part is wherever that part's pin is — so long as
     // it is a part directly inside this one.
     const resolve = (id, k, depth) => {
@@ -164,7 +173,7 @@ function blockList() {
     for (const [id, rec] of B.blocks) {
         const g = B.blockGeom.get(id);
         if (!g) continue;
-        const ring = ringOfBlock(id), others = terminalsByPin(ring, g, rec.pins.length);
+        const ring = ringOfBlock(id), others = terminalsByPin(ring, rec.pins.length);
         let depth = 0, hidden = false;
         for (let p = rec.parent; p; p = blockParent(p)) {
             depth++;
@@ -184,21 +193,29 @@ function blockList() {
             }),
             ring: [...ring.values()],
             rep: rec.rep || null,
+            ...shapeOf(id, g),
         });
     }
     out.sort((a, b) => a.depth - b.depth);
     blockListKept = { board: B, rev: B.rev, list: out };
     return out;
 }
+// A part that does not fill its box, for the view: its `outline` (loops of
+// grid corners), the `inner` rectangle its name goes in, and its `cells`.
+// {} for one that does.
+function shapeOf(id, g) {
+    if (g.solid) return {};
+    const cells = blockCellIdxs(id).map((i) => [i % B.w, Math.floor(i / B.w)]);
+    return { outline: outlineOf(cells), inner: largestRect(cells), cells };
+}
 function blockInfo(id) { return blockList().find((b) => b.id === id) || null; }
 // Each pin's terminals on an edge, by pin: [{host, face, at}] — `at` the
-// edge cell, `host` the core cell beside it (core: {x0, y0, x1, y1}).
-function terminalsByPin(ring, core, n) {
+// edge cell, `host` the core cell beside it.
+function terminalsByPin(ring, n) {
     const out = Array.from({ length: n }, () => []);
     for (const e of ring.values()) {
         if (e.cls !== 'T' || !(e.pin >= 0 && e.pin < n)) continue;
-        const hx = Math.min(Math.max(e.x, core.x0), core.x1), hy = Math.min(Math.max(e.y, core.y0), core.y1);
-        out[e.pin].push({ host: [hx, hy], face: [e.x - hx, e.y - hy], at: [e.x, e.y] });
+        for (const s of e.sides) if (s.cls === 'T' && s.pin === e.pin) out[e.pin].push({ host: [s.x, s.y], face: [e.x - s.x, e.y - s.y], at: [e.x, e.y] });
     }
     return out;
 }
@@ -222,7 +239,7 @@ function edgeAt(x, y) {
     for (const id of B.blocks.keys()) {
         if (blockParent(id)) continue;
         const r = ringOfBlock(id).get(x + ',' + y);
-        if (r) out.push({ id, cls: r.cls, pin: r.pin });
+        if (r) out.push({ id, cls: r.cls, pin: r.pin, sides: r.sides });
     }
     return out;
 }
@@ -301,55 +318,74 @@ function restoreBlockState(s) {
 //
 // `core`: {x0, y0, x1, y1, id(x, y), nested(x, y) → a block inside it (0
 // for its own cells), ringOf(b) → that block's edge, pins: [{hx, hy, d,
-// k, dir}]}. Returns a Map 'x,y' -> {x, y, cls, pin}.
+// k, dir}], and, for a core that does not fill its box, has(x, y)}. Returns a
+// Map 'x,y' -> {x, y, cls, pin, sides}. `sides`: what the cell is to each
+// core cell beside it, [{x, y, cls, pin}] — one, on a rectangle (none at its
+// corners, which only touch it). In a notch it can be two or three, and it
+// is what the worst of them says: kept bare if any side is, or if two say
+// it is a terminal of two pins, which a wire there would join.
 function classifyRing(core) {
     const key = (x, y) => x + ',' + y;
-    const inCore = (x, y) => x >= core.x0 && x <= core.x1 && y >= core.y0 && y <= core.y1;
+    const inCore = core.has || ((x, y) => x >= core.x0 && x <= core.x1 && y >= core.y0 && y <= core.y1);
     const termOf = new Map();
-    for (const p of core.pins) {
-        const [dx, dy] = DIRS[p.d];
-        termOf.set(key(p.hx + dx, p.hy + dy), p);
-    }
+    for (const p of core.pins) termOf.set(key(p.hx, p.hy) + ':' + p.d, p);
     const wires = pinWires(core, inCore, key);
+    // What the cell (x, y) is to the core cell (nx, ny) beside it, it being
+    // the way `d` from that cell: [cls, pin].
+    const side = (x, y, nx, ny, d) => {
+        const term = termOf.get(key(nx, ny) + ':' + d);
+        if (term) return ['T', term];
+        // Beside a part inside: its edge, a terminal of ours where it
+        // is one of a pin of its that is ours.
+        const child = core.nested(nx, ny);
+        if (child) {
+            const e = core.ringOf(child).get(key(x, y)), p = e && e.cls === 'T' && wires.nested.get(child + ':' + e.pin);
+            return [!e || e.cls === 'X' ? 'X' : p ? 'T' : 'R', p];
+        }
+        const nid = core.id(nx, ny);
+        if (isInsulatorId(nid)) return ['X'];
+        // A source joins only where it is soldered: the cell a stub
+        // faces is kept bare, and its other sides are free.
+        if (isSource(nid)) return [sourceStubs(nid) & (1 << dirIndex([x - nx, y - ny])) ? 'R' : 'X'];
+        if (!isMuxId(nid)) {
+            // Wire, a lamp: anything touching it joins it — a
+            // crossing's one way only, the way the edge cell is from it:
+            // a terminal of the pin whose wire that is, if it is a pin's.
+            const k = isXover(nid) ? key(nx, ny) + (x !== nx ? 'h' : 'v') : key(nx, ny);
+            const p = isWireId(nid) && wires.own.get(k);
+            return [p ? 'T' : 'R', p];
+        }
+        // Mux body: a mux joins what is on its lead and nothing
+        // else, whatever lies round it, so the edge cell a lead faces
+        // is kept bare (a pin's would have been a terminal, above)
+        // and any other is free.
+        const faces = hasMuxLead(nid) && nx + DIRS[muxDirOf[nid]][0] === x && ny + DIRS[muxDirOf[nid]][1] === y;
+        return [faces ? 'R' : 'X'];
+    };
     const ring = new Map();
-    const put = (x, y, cls, pin) => ring.set(key(x, y), { x, y, cls, pin: pin ? pin.k : -1 });
     for (let y = core.y0 - 1; y <= core.y1 + 1; y++)
         for (let x = core.x0 - 1; x <= core.x1 + 1; x++) {
             if (inCore(x, y)) continue;
-            const xin = x >= core.x0 && x <= core.x1, yin = y >= core.y0 && y <= core.y1;
-            if (!xin && !yin) { put(x, y, 'X'); continue; }   // a corner only touches the ring
-            const nx = xin ? x : (x < core.x0 ? core.x0 : core.x1);
-            const ny = yin ? y : (y < core.y0 ? core.y0 : core.y1);
-            const term = termOf.get(key(x, y));
-            if (term) { put(x, y, 'T', term); continue; }
-            // Beside a part inside: its edge, a terminal of ours where it
-            // is one of a pin of its that is ours.
-            const child = core.nested(nx, ny);
-            if (child) {
-                const e = core.ringOf(child).get(key(x, y)), p = e && e.cls === 'T' && wires.nested.get(child + ':' + e.pin);
-                put(x, y, !e || e.cls === 'X' ? 'X' : p ? 'T' : 'R', p);
-                continue;
+            const sides = [];
+            let cls = 'X', pin = null;
+            for (let d = 0; d < 4; d++) {
+                const nx = x - DIRS[d][0], ny = y - DIRS[d][1];
+                if (!inCore(nx, ny)) continue;
+                const [c, p] = side(x, y, nx, ny, d);
+                sides.push({ x: nx, y: ny, cls: c, pin: p ? p.k : -1 });
+                if (c === 'R' || (c === 'T' && cls === 'T' && p !== pin)) { cls = 'R'; pin = null; }
+                else if (c === 'T' && cls === 'X') { cls = 'T'; pin = p; }
             }
-            const nid = core.id(nx, ny);
-            if (isInsulatorId(nid)) { put(x, y, 'X'); continue; }
-            if (!isMuxId(nid)) {
-                // Wire, a source, a lamp: anything touching it joins it — a
-                // crossing's one way only, the way the edge cell is from it:
-                // a terminal of the pin whose wire that is, if it is a pin's.
-                const k = isXover(nid) ? key(nx, ny) + (x !== nx ? 'h' : 'v') : key(nx, ny);
-                const p = isWireId(nid) && wires.own.get(k);
-                put(x, y, p ? 'T' : 'R', p);
-                continue;
-            }
-            // Mux body: a mux joins what is on its lead and nothing
-            // else, whatever lies round it, so the edge cell a lead faces
-            // is kept bare (a pin's would have been a terminal, above)
-            // and any other is free.
-            const faces = hasMuxLead(nid) && nx + DIRS[muxDirOf[nid]][0] === x && ny + DIRS[muxDirOf[nid]][1] === y;
-            put(x, y, faces ? 'R' : 'X');
+            // No side: a corner, which only touches the ring — or, in the
+            // box of a core that does not fill it, not on the edge at all.
+            if (!sides.length && core.has && ![[-1, -1], [1, -1], [1, 1], [-1, 1]].some(([ex, ey]) => inCore(x + ex, y + ey))) continue;
+            ring.set(key(x, y), { x, y, cls, pin: pin ? pin.k : -1, sides });
         }
     return ring;
 }
+// The sides of a kept-bare edge cell that count against what is put there:
+// those that say so; or, kept bare for being two pins' terminals, any.
+const keptSides = (e) => (e.sides.some((s) => s.cls === 'R') ? e.sides.filter((s) => s.cls === 'R') : e.sides);
 // Which pin each of a core's own wires is: followed from each pin's cell,
 // wire to wire (straight on over a crossing), and on through the parts
 // nested in it — a wire on a nested part's terminal is that part's pin,
@@ -429,6 +465,7 @@ function coreOnBoard(r, own, pins, asWire) {
     };
     return {
         x0: r.x0, y0: r.y0, x1: r.x1, y1: r.y1,
+        has: r.has || (own && r.solid === false ? (x, y) => inBounds(x, y) && cellInBlock(idx(x, y), own) : undefined),
         id: (x, y) => (!inBounds(x, y) ? ID_INSULATOR_PLAIN
             : asWire && asWire.has(idx(x, y)) ? ID_CONDUCTOR_BASE : B.cells[idx(x, y)]),
         nested: child,
@@ -441,6 +478,8 @@ function blockSig(id, g) {
     for (let y = g.y0; y <= g.y1; y++)
         for (let x = g.x0; x <= g.x1; x++) {
             const i = idx(x, y);
+            // What is in its box and not in it is nothing to it.
+            if (!g.solid && !cellInBlock(i, id)) { h = Math.imul(h ^ 2, 0x01000193); continue; }
             h = Math.imul(h ^ stripId(B.cells[i]), 0x01000193);
             h = Math.imul(h ^ (B.blockAt[i] === id ? 0 : 1), 0x01000193);
             h = Math.imul(h ^ B.pinAt[i], 0x01000193);
@@ -487,17 +526,13 @@ function ringViolations() {
     const isW = (x, y) => inBounds(x, y) && isWireId(B.cells[idx(x, y)]);
     for (const id of B.blocks.keys()) {
         if (blockParent(id)) continue;
-        const g = B.blockGeom.get(id);
         for (const e of ringOfBlock(id).values()) {
-            if (e.cls === 'X' || !inBounds(e.x, e.y)) continue;
-            const [cx, cy] = edgeHost(g, e.x, e.y);
-            if (e.cls === 'R') { if (cellsJoin(e.x, e.y, cx, cy)) out.push(idx(e.x, e.y)); continue; }
+            if (e.cls !== 'R' || !inBounds(e.x, e.y)) continue;
+            if (keptSides(e).some((s) => cellsJoin(e.x, e.y, s.x, s.y))) out.push(idx(e.x, e.y));
         }
     }
     return out;
 }
-// The core cell an edge cell (x, y) is beside, `core` its box.
-const edgeHost = (core, x, y) => [Math.min(Math.max(x, core.x0), core.x1), Math.min(Math.max(y, core.y0), core.y1)];
 // Do the cells (ax, ay) and (bx, by), side by side, join — each meeting
 // the other on that side?
 function cellsJoin(ax, ay, bx, by) {
@@ -508,10 +543,10 @@ function cellsJoin(ax, ay, bx, by) {
 // joins onto — used to decide which of a wire pixel's four sides should
 // actually be drawn reaching toward that neighbor (see view.js's thin-
 // wire rendering) rather than filling the whole cell regardless of what,
-// if anything, is actually there. Mirrors contribCharge's notion of "does
-// this cell conduct" but direction-agnostic and boolean: a crossover's
-// two axes are kept separate for charge, but both still read as "wire is
-// here" for this shape/connectivity purpose.
+// if anything, is actually there — and what the netlist joins two sites
+// by (netlist.js), each asked toward the other. A crossover's two axes
+// are kept separate for their values, but both read as "wire is here"
+// for this purpose.
 // `out`, when given, is the direction from (x,y) toward whoever is
 // asking. Only a mux cares: its cells connect on one face and are
 // package everywhere else, so a neighbor that asks direction-agnostically
@@ -528,7 +563,8 @@ function cellConnects(x, y, out) {
 function idConnects(id, pinFace, out) {
     if (isInsulatorId(id)) return false;
     if (isConductorId(id) || isXover(id)) return true;
-    if (id === ID_POS || id === ID_NEG) return true;
+    // A source on the sides it is soldered to (its stubs) only.
+    if (isSource(id)) return !out || !!(sourceStubs(id) & (1 << dirIndex(out)));
     if (isLed(id) || isSwitch(id) || isToggle(id)) return true;
     if (isMuxId(id)) {
         // A part's pin on a mux inside it connects on the pin's face,
@@ -551,6 +587,6 @@ export {
     RING_R, RING_T, pinCode, pinIndex, pinFaceOf, turnPinCode, mirrorPinCode, blockParent, isProtected, terminalsByPin,
     isTerminalCell, cellInBlock, topBlockOf, blockCellIdxs, blocksInside, computeBlockGeom, blockList,
     blockInfo, blockAtCell, visibleBlockAt, edgeAt, setBlockOpen, removeBlock, decapBlock, blockState,
-    restoreBlockState, classifyRing, coreOnBoard, blockSig, ringOfBlock, computeRingMask, ringViolations,
-    cellConnects, idConnects, cellsJoin, edgeHost,
+    restoreBlockState, classifyRing, keptSides, coreOnBoard, blockSig, ringOfBlock, computeRingMask, ringViolations,
+    cellConnects, idConnects, cellsJoin,
 };

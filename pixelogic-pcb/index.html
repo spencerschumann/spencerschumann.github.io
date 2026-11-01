@@ -105,6 +105,10 @@
 
             <div id="viewport">
                 <canvas id="grid"></canvas>
+                <!-- Current flowing, drawn over the board a frame at a time
+                     (view.js drawFlow), so the board itself is not redrawn
+                     sixty times a second to animate it. -->
+                <canvas id="flow" aria-hidden="true"></canvas>
 
                 <!-- Canvas overlays: these float over the drawing instead of
                      each taking a permanent slice of the chrome. -->
@@ -158,6 +162,25 @@
                     <button id="arrayForgetBtn" class="tool-btn danger" title="The part goes back to one at a time">Don&rsquo;t repeat</button>
                     <button id="arrayOkBtn" class="tool-btn primary" title="Put them down here, and keep as many in hand (Enter)">Put down</button>
                     <button id="arrayCancelBtn" class="tool-btn" title="Esc">Cancel</button>
+                </div>
+
+                <!-- The part bench: a part being changed on a board of its
+                     own. Its bounds, pads and copies are on the board
+                     itself; this holds the rest. -->
+                <div id="benchBar" class="selection-actions part-bar bench-bar" role="toolbar" aria-label="The part bench">
+                    <span class="hand-name">Part bench</span>
+                    <input id="benchName" type="text" maxlength="24" placeholder="Part name" aria-label="Part name">
+                    <button id="benchInBtn" class="tool-btn" title="A new input: a switch, to wire to the part">+ In</button>
+                    <button id="benchOutBtn" class="tool-btn" title="A new output: a lamp, to wire to the part">+ Out</button>
+                    <button id="benchFitBtn" class="tool-btn" title="Shrink the bounds to the smallest part round what they hold">Fit</button>
+                    <button id="benchOutlineBtn" class="tool-btn" aria-pressed="false"
+                        title="Give the part any outline: drag cells out of it or into it, so its copies can sit in each other's notches (Esc when done)">Outline</button>
+                    <button id="benchHugBtn" class="tool-btn" title="Wrap the outline tight round what the part holds">Hug</button>
+                    <button id="benchCopiesBtn" class="tool-btn" aria-pressed="false"
+                        title="The copy before it and the one after, as it repeats — drag the next one to say which way and how far">Copies</button>
+                    <span id="benchMsg" class="part-msg" aria-live="polite"></span>
+                    <button id="benchSaveBtn" class="tool-btn primary" title="Onto the shelf, and back to the board (Enter in the name)">Save part</button>
+                    <button id="benchCancelBtn" class="tool-btn">Cancel</button>
                 </div>
 
                 <!-- Make part…, drawn on the board: its bounds, terminals
@@ -325,10 +348,11 @@
         <p class="panel-intro">
             A part is a whole circuit under a lid, its terminals named. <b>Place</b> one and wire its
             terminals like anything else; double-click it to look inside. To <b>make</b> one, build the
-            circuit and select round it: Make part&hellip; does the rest. To <b>change</b> one, Decap it where it
-            is (select it with Rearrange) &mdash; or <b>Edit</b> here for a loose copy &mdash; then rework
-            it, select round it, and Make part&hellip; saves it back. A level&rsquo;s part must still pass its
-            level.
+            circuit and select round it: Make part&hellip; does the rest &mdash; or <b>New part&hellip;</b> to build
+            one on a bench of its own. To <b>change</b> one, <b>Edit</b> it here: it goes on the bench, a pad
+            wired to each pin to try it with, and Save part puts it back on the shelf. Or Decap it where it
+            is (select it with Rearrange), rework it, select round it, and Make part&hellip; saves it back.
+            A level&rsquo;s part must still pass its level.
         </p>
         <div id="componentsList" class="components-list"></div>
         <div id="componentsEmpty" class="components-empty"></div>

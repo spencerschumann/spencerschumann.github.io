@@ -79,9 +79,10 @@
         S.setJSON(S.KEYS.parts, out);
     }
     // A part as the UI wants it: name, size, and its pins in clip
-    // coordinates (the outermost block's).
+    // coordinates (the outermost block's) — and, one of the player's own,
+    // the level it was made in.
     function describePart(p) {
-        return { key: p.key, name: p.name, source: p.source, w: p.clip.w, h: p.clip.h, pins: M.clipPins(p.clip), clip: p.clip };
+        return { key: p.key, name: p.name, source: p.source, w: p.clip.w, h: p.clip.h, pins: M.clipPins(p.clip), clip: p.clip, made: p.made };
     }
     function getPart(key) {
         const p = partStore()[key];
@@ -845,6 +846,9 @@
         const seen = new Map([[boardHash(prev), [prev]]]);
         for (let t = 1; t <= maxTicks; t++) {
             M.stepSimulation();
+            // +V and −V met: the breaker tripped, and nothing moves again
+            // until it is reset — which is no settling at all.
+            if (M.tripped()) return { settled: false, ticks: t, short: true };
             const cur = M.copyCells();
             let same = true;
             for (let i = 0; i < cur.length; i++) if (cur[i] !== prev[i]) { same = false; break; }
@@ -897,12 +901,20 @@
         for (const p of g.inputs) M.setToggle(p.x, p.y, !!v[p.name]);
         const s = settle(budget);
         const got = {};
-        for (const p of g.outputs) got[p.name] = M.ledIsOn(M.getCell(p.x, p.y)) ? 1 : 0;
-        return { got, settled: s.settled, ticks: s.ticks };
+        for (const p of g.outputs) got[p.name] = outValue(p);
+        return { got, settled: s.settled, ticks: s.ticks, short: !!s.short };
     }
 
-    // An output a step does not judge (null) matches whatever it is.
+    // An output a step does not judge (null) matches whatever it is. One
+    // floating (Z, 2: its lamp driven by nothing) matches no 0 or 1.
     const matches = (level, got, want) => level.outputs.every((name) => want[name] == null || got[name] === (want[name] & 1));
+    // What an output pad reads: 1, 0, or 2 — floating, driven by nothing.
+    function outValue(p) {
+        const v = M.chargeAt(p.x, p.y);
+        return v === M.ON ? 1 : v === M.OFF ? 0 : 2;
+    }
+    // An output's value as said: 0, 1, or Z.
+    const bitText = (v) => (v === 2 ? 'Z' : String(v & 1));
     // Whether a step judges anything at all.
     const judges = (level, want) => level.outputs.some((name) => want[name] != null);
     // A storage run's step is right if it settles and matches — but until
@@ -910,12 +922,13 @@
     // whatever it woke holding, and still ringing then is part of that: the
     // script's first clock or load is there to settle it. A step after that
     // which never settles is wrong, judged or not. (The player's serial
-    // adder woke from a charged start with a pulse going round the
-    // flip-flop's holding loop, up into the adder and back, every 10 ticks;
-    // the first clock stopped it, and every step after passed — and it was
-    // failed at step 1, which judged nothing.) `judging`: whether this step
-    // or one before it judged something.
-    const stepOk = (level, r, want, judging) => (r.settled || !judging) && matches(level, r.got, want);
+    // adder, when a wire held charge, woke from a charged start with a pulse
+    // going round the flip-flop's holding loop, up into the adder and back,
+    // every 10 ticks; the first clock stopped it, and every step after
+    // passed — and it was failed at step 1, which judged nothing. A loop of
+    // muxes can still buzz as it wakes.) `judging`: whether this step or one
+    // before it judged something.
+    const stepOk = (level, r, want, judging) => !r.short && (r.settled || !judging) && matches(level, r.got, want);
 
     // Runs the level's vectors against a copy of what is on the board —
     // charge, locks and any owed rearrange connections included — so
@@ -956,11 +969,11 @@
                 // before anything is stored is not known — nothing has told
                 // it — so the outputs start unknown (null) and a step that
                 // only holds them is not judged until something has been
-                // stored. It is run from rest, and then, if that passes, from
-                // a charged start (see below), the run that fails taking the
-                // place of the one that passed: from rest, a circuit whose
-                // state was never stored reads 0, and one leaning on that
-                // passed.
+                // stored. It is run woken at rest, every contact on NC, and
+                // then, if that passes, woken the other way, every contact
+                // on NO (M.primeCharges), the run that fails taking the place
+                // of the one that passed: a circuit that only works as it
+                // happens to wake at rest leans on that, and fails there.
                 const run = (primed) => {
                     const out = [];
                     let bad = null;
@@ -977,7 +990,7 @@
                         const entry = {
                             step: i, inputs: v, expected: want, actual: r.got,
                             ok: stepOk(level, r, want, judging),
-                            ticks: r.ticks, settled: r.settled,
+                            ticks: r.ticks, settled: r.settled, ...(r.short ? { short: true } : {}),
                         };
                         if (primed) entry.primed = true;
                         out.push(entry);
@@ -1010,17 +1023,18 @@
                     record({
                         inputs: v, expected: want, actual: r.got,
                         ok: r.settled && matches(level, r.got, want),
-                        ticks: r.ticks, settled: r.settled,
+                        ticks: r.ticks, settled: r.settled, ...(r.short ? { short: true } : {}),
                     });
                 }
-                // Then again, each from a charged start (M.primeCharges):
-                // what is driven comes out the same, and what nothing
-                // drives keeps its charge. A circuit that passes from rest
-                // and not from there leans on a pin left unwired reading 0
-                // — the player's 4-bit adder with its carry in left open —
-                // which works until something charges it. The case it fails
-                // is put in place of the one that passed (`primed`, so that
-                // its replay starts charged too).
+                // Then again, each woken with every contact on NO
+                // (M.primeCharges): what follows only its inputs comes out
+                // the same, so a circuit that passes at rest and not from
+                // there holds something from waking up — a loop it should
+                // not have. The case it fails is put in place of the one
+                // that passed (`primed`, so that its replay wakes so too).
+                // (A pin left unwired once read 0 from rest, and only a
+                // charged start caught it; it floats now, and fails at
+                // once.)
                 if (!failure) {
                     const list = vectorsFor(level);
                     for (let i = 0; i < list.length && !failure; i++) {
@@ -1028,7 +1042,7 @@
                         const r = applyVector(g, level, list[i], budget);
                         const want = level.truth(list[i]);
                         if (r.settled && matches(level, r.got, want)) continue;
-                        cases[i] = { inputs: list[i], expected: want, actual: r.got, ok: false, ticks: r.ticks, settled: r.settled, primed: true };
+                        cases[i] = { inputs: list[i], expected: want, actual: r.got, ok: false, ticks: r.ticks, settled: r.settled, primed: true, ...(r.short ? { short: true } : {}) };
                         failure = cases[i];
                     }
                 }
@@ -1179,7 +1193,7 @@
     // level should look like the circuit doing its job, not like a word
     // appearing. This drives the same vectors through the same board, but one
     // simulation tick at a time under the caller's control, so the UI can let
-    // the charge actually travel and fill in a truth table as it goes.
+    // the contacts actually move and fill in a truth table as it goes.
     //
     // Deliberately NOT a second implementation of the rules: it applies the
     // same vectors in the same order with the same settle condition. The
@@ -1192,18 +1206,19 @@
         return {
             total: vectors.length,
             get index() { return index; },
-            // Cold start — or charged, for a storage level whose verdict
-            // came from there. Sequential levels reset here and only here;
-            // for everything else each vector gets its own in begin().
+            // Woken at rest — or every contact on NO, for a storage level
+            // whose verdict came from there. Sequential levels reset here and
+            // only here; for everything else each vector gets its own in
+            // begin().
             start(primed) {
                 if (primed) M.primeCharges(); else M.resetCharges();
                 // The start comes to rest before the first step, as in
-                // runVectors: a charged board drains where it is driven.
+                // runVectors.
                 if (level.sequential) settle(budget);
                 prevCells = null; quietFor = 0; elapsed = 0; index = -1;
             },
-            // Move to vector n and drive the input pads to it — from a
-            // charged start (`primed`) for a case the verdict ran so.
+            // Move to vector n and drive the input pads to it — woken on NO
+            // (`primed`) for a case the verdict ran so.
             begin(n, primed) {
                 index = n;
                 if (!level.sequential) { if (primed) M.primeCharges(); else M.resetCharges(); }
@@ -1225,7 +1240,7 @@
             },
             outputs() {
                 const got = {};
-                for (const p of g.outputs) got[p.name] = M.ledIsOn(M.getCell(p.x, p.y)) ? 1 : 0;
+                for (const p of g.outputs) got[p.name] = outValue(p);
                 return got;
             },
             vectorAt: (n) => vectors[n],
@@ -1249,8 +1264,8 @@
     //
     // `at(i)`: step i — {step, inputs, cells, got, expected, ok, settled,
     // ticks} — worked out as far as that if need be; -1 is the start, the
-    // board at rest (or charged) with every input off. `known(i)`: whether
-    // it has been.
+    // board at rest (or woken on NO) with every input off. `known(i)`:
+    // whether it has been.
     function stepRun(level, primed) {
         const g = layout(level), budget = settleBudget(level), script = level.script;
         const unknown = () => Object.fromEntries(level.outputs.map((name) => [name, null]));
@@ -1280,7 +1295,7 @@
                     const judging = before.judging || judges(level, want);
                     kept.push({
                         step: i, inputs: v, cells: M.copyCells(), got: r.got, expected: want,
-                        ok: stepOk(level, r, want, judging), settled: r.settled, ticks: r.ticks,
+                        ok: stepOk(level, r, want, judging), settled: r.settled, ticks: r.ticks, short: !!r.short,
                         prev: r.got, was: v, mem, judging,
                     });
                 }
@@ -1401,7 +1416,7 @@
         LEVELS, CHAPTERS,
         getLevel, levelIndex, levelsIn, nextLevel,
         layout, applyBoard, loadBoard, padLabels, coachState,
-        vectorsFor, tableCases, verify, replay, stepRun, settle, settleBudget, loadHoldScript,
+        vectorsFor, tableCases, verify, replay, stepRun, settle, settleBudget, loadHoldScript, outValue, bitText,
         runVectors, runSaved, startVerifier, verifyOff, testPartOff, offThread,
         allParts, partsFor, getPart, makeLevelPart, replaceLevelPart, testPart, saveCustomPart, deletePart, renamePart, clearLevelParts,
         arraySpec, saveArraySpec, clearArraySpec, arrayPart, planArray, apartSpec,

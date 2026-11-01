@@ -2,8 +2,8 @@
 // turned or not — keeping everything it was wired to (moveObjects).
 
 import {
-    DIRS, ID_INSULATOR_PLAIN, ID_NEG, ID_POS, NEIGHBORS_8, OFF, isConductorId, isMuxId, isInsulatorId,
-    isLed, isSwitch, isToggle, isWireId, makeConductor, makeXover, mirrorId, rotateId, stripId,
+    DIRS, ID_INSULATOR_PLAIN, NEIGHBORS_8, OFF, dirIndex, isSource, sourceStubs, withStub, isConductorId, isMuxId, isInsulatorId,
+    isLed, isSwitch, isToggle, isWireId, isXover, makeConductor, makeXover, mirrorId, rotateId, stripId,
 } from './cells.js';
 import {
     B, getCell, idx, inBounds, isCrossoverAt, isLocked,
@@ -13,10 +13,10 @@ import {
     turnPinCode,
 } from './blocks.js';
 import {
-    plainLoneCrossings, recomputeRoles,
+    placedStubs, plainIfLone, plainLoneCrossings, recomputeRoles,
 } from './edit.js';
 import {
-    netReaches, orphanWire, wireNetKey,
+    netReaches, orphanWire, prunePendingLinks, wireNetKey,
 } from './nets.js';
 import {
     muxBlob, muxBodyCells,
@@ -52,8 +52,8 @@ function flood8(x0, y0, memberFn) {
 }
 
 // The mux as one draggable object: its six body cells, plus whatever is
-// soldered straight onto a lead — a +V/-V pad, or the first cell of the
-// wire leaving it.
+// soldered straight onto a lead — a +V/-V pad (its stub facing the lead),
+// or the first cell of the wire leaving it.
 //
 // Carrying one cell per lead means a dragged part arrives wired the way
 // it left, by construction, and only the long haul back to the rest of
@@ -68,8 +68,8 @@ function macroFootprint(macro) {
         const sx = cx + ox, sy = cy + oy;
         if (!inBounds(sx, sy)) continue;
         const id = B.cells[idx(sx, sy)];
-        const takeable = id === ID_POS || id === ID_NEG ||
-            (isConductorId(id) && !isCrossoverAt(sx, sy));
+        const takeable = (isSource(id) && sourceStubs(id) & (1 << dirIndex([-ox, -oy])))
+            || (isConductorId(id) && !isCrossoverAt(sx, sy));
         if (!takeable || leadsFacing(sx, sy) > 1 || B.blockAt[idx(sx, sy)]) continue;
 
         out.push([sx, sy]);
@@ -137,7 +137,7 @@ function objectAt(x, y) {
     if (isInsulatorId(id)) return null;
     const role = B.roles[idx(x, y)];
     if (role && role.macro) return { kind: 'mux', cells: macroFootprint(role.macro) };
-    if (id === ID_POS || id === ID_NEG) return { kind: 'source', cells: [[x, y]] };
+    if (isSource(id)) return { kind: 'source', cells: [[x, y]] };
     if (isWireId(id)) return { kind: 'wire', cells: wireSegmentAt(x, y) };
     if (isMuxId(id)) return { kind: 'blob', cells: muxBlob(x, y) };
     if (isLed(id)) return { kind: 'pad', cells: flood8(x, y, isLed) };
@@ -214,8 +214,20 @@ function moveObject(objCells, dx, dy, quarterTurns, mirror) {
 // without their contracts getting confused.
 // `mirror` flips the group left for right first (transformObjectCells).
 // Returns {ok, objects:[{cells}] in input order, unrouted}.
-function moveObjects(objectList, dx, dy, quarterTurns, mirror) {
-    const mv = { objectList, dx, dy, quarterTurns, mirror: !!mirror };
+// `opts.quick`: a trial, to see whether the move keeps everything — only
+// the first order of routes is tried, and nothing ripped up and laid
+// again. A quick move that keeps everything is the move; one that does
+// not may owe more than the move itself would.
+function moveObjects(objectList, dx, dy, quarterTurns, mirror, opts) {
+    // A move by nothing is nothing: worked out like any other, it could
+    // tidy away a loop of the player's wire that ran through the object.
+    if (!dx && !dy && !(((quarterTurns % 4) + 4) % 4) && !mirror) {
+        const objects = objectList.map((o) => ({ cells: o.cells.map(([x, y]) => [x, y]) }));
+        const seen = new Set(), cells = [];
+        for (const o of objects) for (const [x, y] of o.cells) if (!seen.has(idx(x, y))) { seen.add(idx(x, y)); cells.push([x, y]); }
+        return { ok: true, objects, cells, unrouted: 0, pending: 0, joins: 0 };
+    }
+    const mv = { objectList, dx, dy, quarterTurns, mirror: !!mirror, quick: !!(opts && opts.quick) };
     return pickUp(mv)
         || remember(mv)
         || survey(mv)
@@ -261,17 +273,23 @@ function pickUp(mv) {
     // move both, not report an overlap — and only a cell claimed twice by
     // objects that both really want it is a genuine conflict, which cannot
     // happen once duplicates collapse.
+    // Each object's cells as places in that one list (`objAt`), a shared
+    // cell the place its first claim took — so each object can be handed
+    // back where its own cells went (see finish).
     mv.objCells = [];
     mv.nodeKeys = [];
     mv.objSet = new Set();
-    mv.objectList.forEach((o, oi) => {
+    const placeOf = new Map();
+    mv.objAt = mv.objectList.map((o, oi) => {
         const isMux = o.cells.some(([x, y]) => { const r = B.roles[idx(x, y)]; return r && r.macro; });
-        for (const [x, y] of o.cells) {
-            if (mv.objSet.has(idx(x, y))) continue;
+        return o.cells.map(([x, y]) => {
+            if (placeOf.has(idx(x, y))) return placeOf.get(idx(x, y));
+            placeOf.set(idx(x, y), mv.objCells.length);
             mv.objSet.add(idx(x, y));
             mv.objCells.push([x, y]);
             mv.nodeKeys.push(isMux ? muxNodeKey(x, y) : 'o' + oi);
-        }
+            return mv.objCells.length - 1;
+        });
     });
     // A level's fixed I/O pad is not draggable, and nothing may be dropped
     // onto one. (Re-routing can't hit a locked cell on its own: the router
@@ -292,6 +310,16 @@ function pickUp(mv) {
     }
     const rawIds = mv.objCells.map(([x, y]) => B.cells[idx(x, y)]);
     mv.ids = rawIds.map(stripId);
+    // A source keeps the stubs it has to the rest of the object — a mux's
+    // lead it is soldered to — and lets go of the rest: what it was joined
+    // to outside is re-routed to it where it lands, and soldered there.
+    mv.objCells.forEach(([x, y], k) => {
+        if (!isSource(mv.ids[k])) return;
+        for (let d = 0; d < 4; d++) {
+            const nx = x + DIRS[d][0], ny = y + DIRS[d][1];
+            if (!inBounds(nx, ny) || !mv.objSet.has(idx(nx, ny))) mv.ids[k] = withStub(mv.ids[k], d, false);
+        }
+    });
 }
 
 // moveObjects, 2 of 8. The board as it was, to put back on a refusal, and
@@ -304,6 +332,10 @@ function remember(mv) {
     // bookkeeping.
     mv.savedCells = B.cells.slice();
     const savedBlocks = blockState();
+    // ...and the links owed: the move reads the board again as it goes,
+    // and one whose end it had lifted was dropped as erased — gone for
+    // good when the move was then refused.
+    const savedLinks = B.pendingLinks.map((l) => l.slice());
     // Who is wired to whom, to hold the finished board to (see the end).
     mv.startNetOf = new Map();
     mv.joinedAtStart = terminalGroups((i) => i, mv.startNetOf);
@@ -313,6 +345,7 @@ function remember(mv) {
     mv.reject = (why) => {
         B.cells.set(mv.savedCells);
         restoreBlockState(savedBlocks);
+        B.pendingLinks = savedLinks.map((l) => l.slice());
         recomputeRoles();
         return { ok: false, reason: why || 'blocked' };
     };
@@ -480,7 +513,7 @@ function survey(mv) {
     // terminal on it at either end is the user's business — they may be
     // half-way through drawing it — so the litter sweep at the end has to
     // know which orphans it inherited and which ones it made.
-    mv.preOrphans = orphanWire();
+    mv.preOrphans = orphanWire(true);
 
     // Crossings as they stand before anything moves. A mux carries the
     // stub on each of its leads, so lifting it can take away one arm of
@@ -572,6 +605,19 @@ function survey(mv) {
         for (const [along, across] of [[v, h], [h, v]])
             if (along.every(movedWay) && !across.some(movedWay) && across.every(stillWay) && !along.some(stillWay)) B.cells[mi] = makeXover(OFF, OFF);
     }
+    // A source put down by the drag is soldered, as one put down by hand
+    // is (placedStubs), to what it lands against — a wire coming at it, a
+    // lead — on top of what it brought with it: a join the drop made, as
+    // anything dragged against something is (see place).
+    for (const [x, y] of mv.moved) {
+        const mi = idx(x, y);
+        if (!isSource(B.cells[mi])) continue;
+        const add = placedStubs(x, y);
+        for (let d = 0; d < 4; d++) {
+            const nx = x + DIRS[d][0], ny = y + DIRS[d][1];
+            if (add & (1 << d) && !mv.movedSet.has(idx(nx, ny))) B.cells[mi] = withStub(B.cells[mi], d, true);
+        }
+    }
     recomputeRoles();
 }
 
@@ -598,10 +644,15 @@ function place(mv) {
                 // part's package on a dead face is not on any of its
                 // pins, and trimming it cut nets for nothing — on a
                 // tight board even a move by nothing broke the circuit.
+                // Nor is one against a crossing the move laid across it,
+                // whose way this cell is on runs on past it unmoved: that
+                // way is this net's own, the moved run passing over it.
+                // (Trimmed, it cut every run the drag crossed.)
                 const bad = DIRS.some(([bdx, bdy]) => {
                     const nx = cx2 + bdx, ny = cy2 + bdy;
                     if (!inBounds(nx, ny)) return false;
                     const ni = idx(nx, ny);
+                    if (isCrossoverAt(nx, ny) && !(inBounds(nx + bdx, ny + bdy) && mv.movedSet.has(idx(nx + bdx, ny + bdy)))) return false;
                     return mv.capableMoved.has(ni) && !ok.has(ni) && cellConnects(nx, ny, [-bdx, -bdy]);
                 });
                 if (bad) { B.cells[ci] = ID_INSULATOR_PLAIN; comp.cells.delete(ci); }
@@ -805,6 +856,16 @@ function reroute(mv) {
                 B.cells[idx(px, py)] = makeConductor(OFF);
                 comp.routed.add(idx(px, py));
             }
+            // A route starting or ending at a source is soldered to it there.
+            const solder = ([px, py], ends) => {
+                for (let d = 0; d < 4; d++) {
+                    const sx = px + DIRS[d][0], sy = py + DIRS[d][1];
+                    if (inBounds(sx, sy) && ends.has(idx(sx, sy)) && isSource(B.cells[idx(sx, sy)]))
+                        B.cells[idx(sx, sy)] = withStub(B.cells[idx(sx, sy)], (d + 2) & 3, true);
+                }
+            };
+            solder(path[0], new Set(seeds));
+            solder(path[path.length - 1], targetCells);
             for (const [px, py] of path)
                 for (const [ddx, ddy] of DIRS) {
                     const mx = px + ddx, my = py + ddy, qx = px + 2 * ddx, qy = py + 2 * ddy;
@@ -913,7 +974,7 @@ function reroute(mv) {
         if (cleared && (!usual || laid(cleared) < laid(usual))) { back(cleared); failed = null; }
         else if (usual) { back(usual); failed = null; }
         else { back(start); failed = attemptContract(c); }
-        if (failed) failed = ripAndRelay(c);
+        if (failed && !mv.quick) failed = ripAndRelay(c);
         if (failed) { mv.unrouted++; comp.failed = true; mv.owedPairs.push(failed); }
     };
 
@@ -937,7 +998,7 @@ function reroute(mv) {
         [...contractList].sort((p, q) => approachRoom(p) - approachRoom(q)),
         contractList,
         [...contractList].reverse(),
-    ];
+    ].slice(0, mv.quick ? 1 : 3);
     // Shrink: erase whatever the move left leading nowhere — the tail of
     // a run a component was dragged along, the far end of a wire whose
     // middle got absorbed. Without this a drag "into" a wire strands the
@@ -991,7 +1052,7 @@ function reroute(mv) {
         mv.unrouted = 0;
         mv.owedPairs.length = 0;
         for (const c of order) runContract(c);
-        if (mv.unrouted) {
+        if (mv.unrouted && !mv.quick) {
             // Second chance. Routes are laid before the shrink, so a
             // contract can fail against wire that is only still there
             // because nothing has cleaned it up yet — the run that led to
@@ -1029,14 +1090,23 @@ function check(mv) {
     // Anything the move itself cut adrift goes; anything that was already
     // adrift, and anything the object brought with it, stays.
     {
-        const gone = [];
-        for (const ci of orphanWire())
-            if (!mv.preOrphans.has(ci) && !mv.movedSet.has(ci) && !B.blockAt[ci]) gone.push(ci);
-        if (gone.length) {
+        // Again while it finds any: a crossing the litter either side of
+        // left crossing nothing is plain wire now, and litter itself if it
+        // leads nowhere either way.
+        for (let pass = 0; pass < 3; pass++) {
+            const gone = [];
+            for (const ci of orphanWire())
+                if (!mv.preOrphans.has(ci) && !mv.movedSet.has(ci) && !B.blockAt[ci]) gone.push(ci);
+            if (!gone.length) break;
             for (const ci of gone) B.cells[ci] = ID_INSULATOR_PLAIN;
             plainLoneCrossings(gone);
             recomputeRoles();
         }
+        // And no crossing left crossing nothing, whatever took what it
+        // crossed — a trim, a cut, a route ripped up: plain wire again.
+        let plained = false;
+        for (let i = 0; i < B.cells.length; i++) if (isXover(B.cells[i]) && plainIfLone(i)) plained = true;
+        if (plained) recomputeRoles();
     }
 
     // Nothing here may have reached inside a block that stood still. The
@@ -1071,7 +1141,8 @@ function check(mv) {
     // to it directly: every terminal on it (the moved ones by where they
     // came from) with everything it is wired to, against the board
     // before. Connections may be owed (dashed); never invented.
-    mv.groupsAfter = terminalGroups((i) => (mv.origOfMoved.has(i) ? mv.origOfMoved.get(i) : i));
+    mv.groupsAfter = terminalGroups((i) => (mv.origOfMoved.has(i) ? mv.origOfMoved.get(i) : i), null,
+        mv.quarterTurns & 1 ? (i) => mv.origOfMoved.has(i) : null);
     {
         // ...but for the joins the player made, which merge the groups
         // either side of them: anything else joined is a short.
@@ -1208,14 +1279,18 @@ function oweLinks(mv) {
         }
     }
     for (const link of mv.owed.values()) B.pendingLinks.push(link);
+    // One line per pair of nets, among the links already owed too: one
+    // owed again the other way round was a second line on top of the first
+    // until the next edit read the board again.
+    prunePendingLinks();
 }
 
 // moveObjects, 8 of 8. The result.
+// `joins`: how many connections the drop made, putting something down
+// against what it was not wired to (see place).
 function finish(mv) {
-    const out = [];
-    let at = 0;
-    for (const o of mv.objectList) { out.push({ cells: mv.moved.slice(at, at + o.cells.length) }); at += o.cells.length; }
-    return { ok: true, objects: out, cells: mv.moved, unrouted: mv.unrouted, pending: [...mv.owed.values()].length };
+    const out = mv.objAt.map((places) => ({ cells: places.map((k) => mv.moved[k]) }));
+    return { ok: true, objects: out, cells: mv.moved, unrouted: mv.unrouted, pending: [...mv.owed.values()].length, joins: mv.madeJoins.length };
 }
 
 export {

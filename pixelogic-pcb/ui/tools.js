@@ -13,7 +13,7 @@ import {
     arrange, arrangeSel, commitArrange, setArrangeSel,
 } from './arrange.js';
 import {
-    refreshStampPreview, turnStamp,
+    refreshStampPreview, showHand, turnStamp,
 } from './stamp.js';
 import {
     openComponents, placingPartValid,
@@ -30,6 +30,9 @@ import {
 import {
     gameLevel,
 } from './campaign.js';
+import {
+    benchOpen,
+} from './bench.js';
 
 const V = window.PixelogicView;
 
@@ -98,9 +101,11 @@ function setDrawMode(mode) {
     // finished, and having a tool change quietly stop the board was the
     // single most confusing thing about building in one. Play/pause still
     // works by hand, for when you want to freeze a state and look at it.
-    // Probing is watching it run: Probe runs it too.
-    if (!gameLevel) setRunning(mode === 'interact' || mode === 'probe');
+    // Probing is watching it run: Probe runs it too. The part bench runs
+    // as a level does: its pads are pressed to try the part.
+    if (!gameLevel && !benchOpen()) setRunning(mode === 'interact' || mode === 'probe');
     applyGridVisibleForMode(mode);
+    showHand();
     refreshStampPreview();
     // Rotate's target and the floating action bar both depend on the
     // mode, not just on the selection, so they have to be re-evaluated

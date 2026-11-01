@@ -3,11 +3,12 @@
 // (muxLayout, stampMux).
 
 import {
-    DIRS, ID_INSULATOR_PLAIN, ID_MUX_X, ID_NEG, ID_POS, ID_SWITCH_OFF, ID_SWITCH_ON, ID_TOGGLE_OFF,
+    DIRS, ID_INSULATOR_PLAIN, ID_MUX_X, ID_SWITCH_OFF, ID_SWITCH_ON, ID_TOGGLE_OFF,
     ID_TOGGLE_ON, MK_C, MK_M, MK_NC, MK_NO, MK_O, MK_X, NEIGHBORS_8, OFF, SEL_NC, isConductorId, isMuxId,
     isInsulatorId, isLed, isSwitch, isToggle, isWireId, isXover, makeConductor, makeLed, makeMuxC, makeMuxM,
     makeMuxNC, makeMuxNO, makeMuxO, mirrorId, muxDirOf, muxKindOf, rotateId, toggleIsOn, armInto, combineCharge,
-    conductorCharge, makeXover, xoverH, xoverV,
+    conductorCharge, makeXover, xoverH, xoverV, dirIndex, hasMuxLead, isPosSource, isSource, makeSource,
+    sourceStubs, withStub,
 } from './cells.js';
 import {
     B, idx, inBounds,
@@ -26,8 +27,8 @@ import {
 function idForColor(color) {
     switch (color) {
         case 'conductor': return makeConductor(OFF);
-        case 'pos': return ID_POS;
-        case 'neg': return ID_NEG;
+        case 'pos': return makeSource(true, 0);
+        case 'neg': return makeSource(false, 0);
         case 'led': return makeLed(OFF);
         case 'switch': return ID_SWITCH_OFF;
         case 'toggle': return ID_TOGGLE_OFF;
@@ -43,20 +44,108 @@ function paintCell(x, y, color) { paintCells([[x, y]], color); }
 // five cells that are no mux at all. If a wire has to go where a mux is,
 // the mux is erased (the eraser takes it whole) or moved first. Erasing
 // — painting bare substrate — is the one paint that may touch it.
+//
+// A source put down is soldered to what is there for it (placedStubs); one
+// changed to the other rail keeps its stubs.
 function paintCells(list, color) {
     const id = idForColor(color);
     if (id === null) return false;
-    const painted = [];
+    const painted = [], placed = [];
     for (const [x, y] of list) {
         if (!inBounds(x, y) || isProtected(x, y)) continue;
-        if (!isInsulatorId(id) && isMuxId(B.cells[idx(x, y)])) continue;
-        B.cells[idx(x, y)] = id;
-        painted.push(idx(x, y));
+        const i = idx(x, y), was = B.cells[i];
+        if (!isInsulatorId(id) && isMuxId(was)) continue;
+        B.cells[i] = isSource(id) && isSource(was) ? makeSource(isPosSource(id), sourceStubs(was)) : id;
+        painted.push(i);
+        if (isSource(id) && !isSource(was)) placed.push(i);
     }
     if (!painted.length) return;
+    for (const i of placed) { const x = i % B.w, y = (i - x) / B.w; B.cells[i] = makeSource(isPosSource(id), placedStubs(x, y)); }
     // Wire erased from beside a crossing may leave it crossing nothing.
     plainLoneCrossings(painted);
     recomputeRoles();
+}
+
+// ===== Sources =====
+//
+// A source joins only on the sides it is soldered to (its stubs, see
+// cells.js), so a wire may run past one. A source put down is soldered to
+// what is plainly there for it — a mux's lead facing it, a part's pin it
+// is the terminal of, a wire coming straight at it — and not to a wire
+// running past (placedStubs); a mux put down with a lead facing one
+// is soldered to it (stampMux); a wire drawn onto one is soldered where it
+// comes in and goes on (joinAlong); a click on a side solders it or not
+// (setStub); and a route Rearrange lays to one is soldered where it meets
+// it. A stub with nothing there to join any more is dropped
+// (dropDeadStubs), so a wire drawn there later runs past.
+const isDriver = (id) => isSource(id) || isSwitch(id) || isToggle(id);
+// Whether a source at (x, y) could be soldered way d: what is there
+// connects toward it, and is no driver — a source is a tap on its rail,
+// and so is a pad, and two side by side are never joined.
+function sourceCanJoin(x, y, d) {
+    const nx = x + DIRS[d][0], ny = y + DIRS[d][1];
+    return inBounds(nx, ny) && !isDriver(B.cells[idx(nx, ny)]) && cellConnects(nx, ny, [-DIRS[d][0], -DIRS[d][1]]);
+}
+// The stubs of a source put down at (x, y): toward a mux's lead, a part's
+// pin, a crossing's way, or a wire coming straight at it — one that ends
+// there, or carries on away from it, whatever else meets it there — but
+// not a wire running past, wire carrying on along the source's side. Nor
+// toward a lamp or a pad.
+function placedStubs(x, y) {
+    let s = 0;
+    const wireAt = (wx, wy) => inBounds(wx, wy) && isWireId(B.cells[idx(wx, wy)]);
+    for (let d = 0; d < 4; d++) {
+        if (!sourceCanJoin(x, y, d)) continue;
+        const nx = x + DIRS[d][0], ny = y + DIRS[d][1], nid = B.cells[idx(nx, ny)];
+        const past = [(d + 1) & 3, (d + 3) & 3].some((e) => wireAt(nx + DIRS[e][0], ny + DIRS[e][1]));
+        if (isMuxId(nid) || isXover(nid) || !!B.blockAt[idx(nx, ny)] || (isConductorId(nid) && !past)) s |= 1 << d;
+    }
+    return s;
+}
+// A wire drawn onto a source is soldered to it where it comes in and
+// where it goes on: `path` the stroke's cells in order. The joins it made
+// ([x, y, d] each) — or, `dry`, would make. Not a part's: its insides
+// are its own.
+function joinAlong(path, dry) {
+    const made = [];
+    for (let k = 0; k < path.length; k++) {
+        const [x, y] = path[k];
+        if (!inBounds(x, y) || !isSource(B.cells[idx(x, y)]) || isProtected(x, y)) continue;
+        for (const j of [k - 1, k + 1]) {
+            if (j < 0 || j >= path.length) continue;
+            const dx = path[j][0] - x, dy = path[j][1] - y;
+            if (Math.abs(dx) + Math.abs(dy) !== 1) continue;
+            const d = dirIndex([dx, dy]), id = B.cells[idx(x, y)];
+            if (sourceStubs(id) & (1 << d) || !sourceCanJoin(x, y, d)) continue;
+            if (!dry) B.cells[idx(x, y)] = withStub(id, d, true);
+            made.push([x, y, d]);
+        }
+    }
+    if (made.length && !dry) recomputeRoles();
+    return made;
+}
+// A source at (x, y) soldered way d (on) or not. Whether it changed: a
+// side with nothing there to join is never soldered.
+function setStub(x, y, d, on) {
+    if (!inBounds(x, y) || isProtected(x, y)) return false;
+    const i = idx(x, y), id = B.cells[i];
+    if (!isSource(id) || !!(sourceStubs(id) & (1 << d)) === on || (on && !sourceCanJoin(x, y, d))) return false;
+    B.cells[i] = withStub(id, d, on);
+    recomputeRoles();
+    return true;
+}
+// Every source's stubs, kept to the sides with something there to join:
+// what was there erased, or moved away, its stub goes too. (And an old
+// source, joined to everything — 13 or 14 — is written as the new one.)
+function dropDeadStubs() {
+    for (let i = 0; i < B.cells.length; i++) {
+        const id = B.cells[i];
+        if (!isSource(id)) continue;
+        const x = i % B.w, y = (i - x) / B.w;
+        let s = sourceStubs(id);
+        for (let d = 0; d < 4; d++) if (s & (1 << d) && !sourceCanJoin(x, y, d)) s &= ~(1 << d);
+        B.cells[i] = makeSource(isPosSource(id), s);
+    }
 }
 
 // ===== Crossings =====
@@ -137,8 +226,7 @@ function plainLoneCrossings(list) {
 
 function colorOfCell(id) {
     if (isMuxId(id)) return 'mux';
-    if (id === ID_POS) return 'pos';
-    if (id === ID_NEG) return 'neg';
+    if (isSource(id)) return isPosSource(id) ? 'pos' : 'neg';
     if (isLed(id)) return 'led';
     if (isSwitch(id)) return 'switch';
     if (isToggle(id)) return 'toggle';
@@ -149,6 +237,8 @@ function colorOfCell(id) {
 // Flood the whole 8-connected pad the touched cell belongs to (same-kind
 // cells) to a target id, so a large button/pad acts as one.
 function floodPad(x, y, memberFn, target) {
+    // A pad pressed or turned is a new try: the breaker is reset.
+    B.trip = null;
     const stack = [[x, y]], seen = new Set([idx(x, y)]);
     while (stack.length) {
         const [cx, cy] = stack.pop();
@@ -212,9 +302,11 @@ function floodFill(x0, y0, matchFn, visited) {
 // Every structural edit ends here, so this is also where the board's
 // revision moves on (B.rev): what is worked out from the board once per
 // revision (blockList) is worked out again. Before and after, so nothing
-// read part-way through is kept.
+// read part-way through is kept. And where a source's stub with nothing
+// left to join goes (dropDeadStubs).
 function recomputeRoles() {
     B.rev++;
+    dropDeadStubs();
     computeBlockGeom();
     B.roles.fill(null);
     buildMuxRoles();
@@ -300,14 +392,22 @@ function muxLayout(x0, y0, rot, mirror) {
     return list.map(([x, y, id]) => [x0 + x, y0 + y, id]);
 }
 // Puts a mux's cells down (from muxLayout), over whatever is there —
-// the caller has cleared what it replaces.
+// the caller has cleared what it replaces. A source a lead faces is
+// soldered to it.
 function stampMux(list) {
     for (const [x, y, id] of list) if (inBounds(x, y) && !(B.anyLocked && B.locked[idx(x, y)] === 1)) B.cells[idx(x, y)] = id;
+    for (const [x, y, id] of list) {
+        if (!hasMuxLead(id)) continue;
+        const d = muxDirOf[id], sx = x + DIRS[d][0], sy = y + DIRS[d][1];
+        if (inBounds(sx, sy) && isSource(B.cells[idx(sx, sy)]) && !isProtected(sx, sy))
+            B.cells[idx(sx, sy)] = withStub(B.cells[idx(sx, sy)], (d + 2) & 3, true);
+    }
     recomputeRoles();
 }
 
 export {
     idForColor, paintCell, paintCells, colorOfCell, floodPad, setSwitch, toggleAt, setToggle, floodFill,
     recomputeRoles, typedMuxAt, buildMuxRoles, muxLayout, stampMux, crossable, setCrossing, crossWhereDrawn,
+    sourceCanJoin, placedStubs, joinAlong, setStub,
     plainIfLone, plainLoneCrossings,
 };

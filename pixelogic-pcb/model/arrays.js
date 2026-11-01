@@ -9,11 +9,14 @@ import {
     MAX_CELLS,
 } from './board.js';
 import {
-    edgeHost, idConnects, pinCode, pinFaceOf, pinIndex,
+    idConnects, pinCode, pinFaceOf, pinIndex,
 } from './blocks.js';
 import {
     clipPins, clipRing, clipTops,
 } from './clips.js';
+import {
+    withPockets,
+} from './shape.js';
 
 // ---- Arrays: one part, repeated ----
 // A part laid down n times in a row, like a modelling program's array
@@ -46,7 +49,9 @@ import {
 // A chained output may also be in `taps`: every copy's is the array's
 // too, numbered (a shift register's bits) — a wire from the gap between
 // two copies straight out to the side `tapSide`, which needs a gap clear
-// of both copies' edges to run in.
+// of both copies' edges to run in; or, without one, from a terminal of the
+// pin's own wire on that side (the other side, if the spec does not say and
+// only that one has one).
 // Copies must sit as parts may: nothing of one joining another where
 // that one keeps bare, no two nets touching. Their edges may share cells — the
 // shared row of a tight stack — whatever each says there: such a cell
@@ -69,6 +74,12 @@ import {
 // its own, nothing joined and no lid over them (four latches for a
 // register, wired by hand) — so they need only sit as parts may. Then
 // {clip, origin, pitch, apart: true}, the clip's parts its copies.
+//
+// A part that does not fill its box (`base.shaped`) may repeat closer than
+// its box is long, its copies each other's notches, so long as no two of
+// their cells are one. The array is the shape they make, with the wire it
+// lays, and what those enclose: its terminals are wherever that leaves
+// them, in a notch of its own or not.
 function arrayClip(base, spec, n) {
     const tops = base && base.blocks && base.bmap ? clipTops(base) : [];
     if (tops.length !== 1) return { error: 'Only a single part can be repeated' };
@@ -76,7 +87,7 @@ function arrayClip(base, spec, n) {
     const d = DIRS[spec.dir & 3], pitch = spec.pitch | 0;
     const bit = (k) => (spec.reverse ? n - 1 - k : k);
     const along = Math.abs(d[0]) ? base.w : base.h;
-    if (pitch < along) return { error: 'Copies that close would overlap' };
+    if (pitch < (base.shaped ? 1 : along)) return { error: 'Copies that close would overlap' };
     const off = (k) => [d[0] * pitch * k, d[1] * pitch * k];
     if (spec.apart === true) return apartClip(base, off, n, pitch);
     const pins = clipPins(base);
@@ -125,10 +136,13 @@ function arrayClip(base, spec, n) {
         if (why) return { error: why };
     }
     // One pin running through, with a terminal facing on and one facing
-    // back (in line, if it has such a pair).
+    // back (in line, if it has such a pair) — on the outside of the box:
+    // a part with a shape has others, in its notches, that say nothing
+    // about which way it runs.
+    const outerFace = (t) => t.at[0] < 0 || t.at[1] < 0 || t.at[0] >= base.w || t.at[1] >= base.h;
     for (const p of pins) {
         if (role.has(p.name)) continue;
-        const all = [{ host: p.host, face: p.face, at: p.at }, ...(p.others || [])];
+        const all = [{ host: p.host, face: p.face, at: p.at }, ...(p.others || [])].filter(outerFace);
         let pair = null;
         for (const a of all.filter((t) => faces(t, d)))
             for (const b of all.filter((t) => faces(t, back)))
@@ -141,7 +155,17 @@ function arrayClip(base, spec, n) {
     // Only an output's chain can be tapped: an input passing through is
     // one signal all the way up.
     const tapSet = new Set((spec.taps || []).filter((t) => chains.some(([o]) => o === t) && pins.some((p) => p.name === t && p.dir === 'out')));
-    const side = DIRS[spec.tapSide === undefined ? (d[0] ? 2 : 1) : spec.tapSide & 3];
+    // A terminal of pin `name` facing `f`, on the outside of the box.
+    const terminalFacing = (name, f) => {
+        const p = pins.find((q) => q.name === name);
+        return [{ host: p.host, face: p.face, at: p.at }, ...(p.others || [])].find((t) => faces(t, f) && outerFace(t)) || null;
+    };
+    let sideWay = spec.tapSide === undefined ? (d[0] ? 2 : 1) : spec.tapSide & 3;
+    if (spec.tapSide === undefined) {
+        const reaches = (w) => [...tapSet].every((t) => terminalFacing(t, DIRS[w]));
+        if (!reaches(sideWay) && reaches((sideWay + 2) & 3)) sideWay = (sideWay + 2) & 3;
+    }
+    const side = DIRS[sideWay];
     if (tapSet.size && side[0] * d[0] + side[1] * d[1] !== 0) return { error: 'Taps leave sideways to the row' };
     const sharedSet = new Set(spec.shared || []);
     for (const p of pins) {
@@ -157,9 +181,10 @@ function arrayClip(base, spec, n) {
         }
     }
 
-    // Every cell, and every copy's edge.
-    const meet = new Set(chains.filter(([o]) => direct.has(o)).flatMap(([o, i]) => [o + '|' + i, i + '|' + o]));
-    const laid = layCopies(base, off, n, 1, meet);
+    // Every cell, and every copy's edge. Copies may touch where a chain
+    // joins them anyway: one copy's output, the next one's input.
+    const meets = (a, ka, b, kb) => chains.some(([o, i]) => (a === o && b === i && kb === ka + 1) || (a === i && b === o && ka === kb + 1));
+    const laid = layCopies(base, off, n, 1, meets);
     if (laid.error) return laid;
     const { cells, edge, maxLid } = laid;
     const key = (x, y) => x + ',' + y;
@@ -224,8 +249,18 @@ function arrayClip(base, spec, n) {
     const reach = side[0] > 0 ? base.w : side[1] > 0 ? base.h : -1;
     for (let k = 0; k + 1 < n; k++)
         for (const [o, i] of chains) {
+            // No gap to tap: out of the pin's own wire instead.
+            const tapOwn = () => {
+                const t = terminalFacing(o, side);
+                if (!t) return `Spread them out to tap ${o}: there is no room between them, and it has no terminal that side`;
+                const from = at(t, k), end = side[0] ? [reach, from[1]] : [from[0], reach];
+                const why = run(from, end, `chain:${o}:${k}`, o);
+                if (!why) outPins.push({ name: o + bit(k), dir: 'out', host: end, face: side, base: o, role: 'tap' });
+                return why;
+            };
             if (direct.has(o)) {
-                if (tapSet.has(o)) return { error: `Spread them out to tap ${o}: the copies meet head on there` };
+                const why = tapSet.has(o) && tapOwn();
+                if (why) return { error: why };
                 continue;
             }
             const from = at(through.has(o) ? through.get(o).on : pinNamed(o), k);
@@ -238,7 +273,11 @@ function arrayClip(base, spec, n) {
             if (!tapSet.has(o)) continue;
             // A tap: from a cell of the run clear of both copies' edges.
             const m = cellsOf(corners).find((c) => !edge.has(key(c[0], c[1]))) || null;
-            if (!m) return { error: `Spread them out to tap ${o}: there is no room between them` };
+            if (!m) {
+                const why = tapOwn();
+                if (why) return { error: why };
+                continue;
+            }
             const end = side[0] ? [reach, m[1]] : [m[0], reach];
             const whyT = run([m[0] + side[0], m[1] + side[1]], end, net, o);
             if (whyT) return { error: whyT };
@@ -273,8 +312,9 @@ function arrayClip(base, spec, n) {
         }
         return { x0: bx0, y0: by0, x1: bx1, y1: by1 };
     };
-    const box = boxOf();
-    const outside = (c) => c[0] < box.x0 || c[0] > box.x1 || c[1] < box.y0 || c[1] > box.y1;
+    const box = boxOf(), taken = new Set([...cells.keys(), ...wire.keys()]);
+    const outside = base.shaped ? (c) => !taken.has(key(c[0], c[1]))
+        : (c) => c[0] < box.x0 || c[0] > box.x1 || c[1] < box.y0 || c[1] > box.y1;
     const topRec = base.blocks.find((b) => b.lid === tops[0]);
     // A copy's pin that is the array's — through terminal `t` of copy k —
     // is the copy's own (`via` it: its terminals the array's, the array's
@@ -334,13 +374,20 @@ function arrayClip(base, spec, n) {
         const [x, y] = kk.split(',').map(Number);
         x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y);
     }
+    // Its cells: all of its box, or, of a part with a shape, the shape they
+    // make.
+    const body = base.shaped ? new Set(withPockets([...cells.keys(), ...wire.keys()].map((kk) => kk.split(',').map(Number))).map(([x, y]) => key(x, y))) : null;
+    const within = body ? (x, y) => body.has(key(x, y)) : (x, y) => x >= x0 && x <= x1 && y >= y0 && y <= y1;
     for (const p of outPins) {
-        const tx = p.host[0] + p.face[0], ty = p.host[1] + p.face[1];
-        if (tx >= x0 && tx <= x1 && ty >= y0 && ty <= y1) return { error: `${p.name} would end up inside the array` };
+        if (within(p.host[0] + p.face[0], p.host[1] + p.face[1])) return { error: `${p.name} would end up inside the array` };
     }
     const w = x1 - x0 + 1, h = y1 - y0 + 1;
     if (w * h > MAX_CELLS) return { error: 'Too big' };
-    const data = new Uint8Array(w * h), bmap = new Int32Array(w * h).fill(1), pmap = new Int16Array(w * h);
+    const data = new Uint8Array(w * h), bmap = new Int32Array(w * h).fill(body ? 0 : 1), pmap = new Int16Array(w * h);
+    for (const kk of body || []) {
+        const [x, y] = kk.split(',').map(Number);
+        bmap[(y - y0) * w + (x - x0)] = 1;
+    }
     for (const [kk, c] of cells) {
         const [x, y] = kk.split(',').map(Number), i = (y - y0) * w + (x - x0);
         data[i] = c.id; bmap[i] = c.lid; pmap[i] = c.pin;
@@ -372,7 +419,7 @@ function arrayClip(base, spec, n) {
                 pins: b.pins.map((p) => (p.via ? { ...p, via: 1 + k * maxLid + p.via } : { ...p })),
             });
     return {
-        clip: { w, h, data, blocks: blocksOut, bmap, pmap },
+        clip: { w, h, data, blocks: blocksOut, bmap, pmap, ...(body ? { shaped: true } : {}) },
         origin: [-x0, -y0], pitch, chains,
         shared: pins.filter((p) => role.get(p.name) === 'shared').map((p) => p.name),
         each: pins.filter((p) => role.get(p.name) === 'each').map((p) => p.name),
@@ -410,12 +457,16 @@ function wiredThrough(c, a, b) {
 // board. On a terminal too, though a board would take it as a connection:
 // copies are put down by the array, not by hand, and joining them is not
 // theirs to do by happening to touch — a latch stacked flush would have its
-// E on the Q loop of the one below — but for the pins `meet` names as
-// meeting head on ('out|in', both ways round: a carry out on the next
-// copy's carry in). What joins nothing — a bare cell, a mux's plain side
+// E on the Q loop of the one below — but where `meets(a, ka, b, kb)` says
+// that pin `a` of copy ka and pin `b` of copy kb are joined anyway: a carry
+// out on the next copy's carry in, or a clock running through a stack. Each
+// is known by the wire it is on, which may be a long way from its pin's own
+// cell: a rail running through ends at the far side of the part, where the
+// next copy's begins. What joins nothing — a bare cell, a mux's plain side
 // — is nothing to it. Edge over edge is fine, whatever each says there:
-// it is a bare cell, unless an array has a wire to lay there.
-function layCopies(base, off, n, free, meet) {
+// it is a bare cell, unless an array has a wire to lay there. A shaped
+// part's holes are no cells: another copy may sit in them.
+function layCopies(base, off, n, free, meets) {
     const cells = new Map();     // 'x,y' -> {id, lid, pin, copy}
     const key = (x, y) => x + ',' + y;
     let maxLid = 0;
@@ -425,29 +476,35 @@ function layCopies(base, off, n, free, meet) {
         for (let y = 0; y < base.h; y++)
             for (let x = 0; x < base.w; x++) {
                 const i = y * base.w + x, kk = key(ox + x, oy + y);
+                if (base.shaped && !base.bmap[i]) continue;
                 if (cells.has(kk)) return { error: 'Copies that close would overlap' };
                 cells.set(kk, { id: base.data[i], lid: base.bmap[i] ? 1 + k * maxLid + base.bmap[i] : free, pin: base.pmap[i], copy: k });
             }
     }
-    const ring = clipRing(base), pins = clipPins(base), top = clipTops(base)[0];
-    const box = { x0: 0, y0: 0, x1: base.w - 1, y1: base.h - 1 };
+    const ring = clipRing(base), pins = clipPins(base);
     const faceOf = (c) => (c.pin && isMuxId(c.id) ? pinFaceOf(c.pin) : -1);
-    // The part's own pin a copy's cell is (its top block's), or null.
-    const pinOf = (c) => (c.pin && c.lid === 1 + c.copy * maxLid + top ? pins[pinIndex(c.pin)] : null);
+    const ringAt = new Map(ring.map((e) => [key(e.x, e.y), e]));
+    // The pin of copy j whose wire (or lead) is at board cell (x, y), seen
+    // from the cell (ex, ey) outside it: that copy's edge says, or null.
+    const pinMet = (j, x, y, ex, ey) => {
+        const [jx, jy] = off(j), e = ringAt.get(key(ex - jx, ey - jy));
+        const s = e && e.sides.find((t) => t.x === x - jx && t.y === y - jy);
+        return s && s.cls === 'T' ? pins[s.pin] : null;
+    };
     const edge = new Map();      // 'x,y' -> [{copy, cls, pin}]
     for (let k = 0; k < n; k++) {
         const [ox, oy] = off(k);
         for (const r of ring) {
             const kk = key(ox + r.x, oy + r.y), c = cells.get(kk);
-            if (c && c.copy !== k && r.cls !== 'X') {
-                const [hx, hy] = edgeHost(box, r.x, r.y), own = cells.get(key(ox + hx, oy + hy));
-                if (own && idConnects(c.id, faceOf(c), [hx - r.x, hy - r.y]) && idConnects(own.id, faceOf(own), [r.x - hx, r.y - hy])) {
-                    if (r.cls === 'R') return { error: 'Copies that close would join where one keeps bare' };
-                    const mine = pins[r.pin], theirs = pinOf(c);
-                    if (!(mine && theirs && meet && meet.has(mine.name + '|' + theirs.name)))
+            if (c && c.copy !== k && r.cls !== 'X')
+                for (const s of r.sides) {
+                    const own = cells.get(key(ox + s.x, oy + s.y));
+                    if (s.cls === 'X' || !own || !idConnects(c.id, faceOf(c), [s.x - r.x, s.y - r.y]) || !idConnects(own.id, faceOf(own), [r.x - s.x, r.y - s.y])) continue;
+                    if (s.cls === 'R') return { error: 'Copies that close would join where one keeps bare' };
+                    const mine = pins[s.pin], theirs = pinMet(c.copy, ox + r.x, oy + r.y, ox + s.x, oy + s.y);
+                    if (!(mine && theirs && meets && meets(mine.name, k, theirs.name, c.copy)))
                         return { error: `Copies that close would join: ${mine ? mine.name : 'a pin'} would meet the next copy` };
                 }
-            }
             if (!edge.has(kk)) edge.set(kk, []);
             edge.get(kk).push({ copy: k, cls: r.cls, pin: r.pin });
         }
@@ -478,7 +535,8 @@ function apartClip(base, off, n, pitch) {
                 ...b, lid: 1 + k * maxLid + b.lid, parent: b.parent ? 1 + k * maxLid + b.parent : 0, open: false,
                 pins: b.pins.map((p) => (p.via ? { ...p, via: 1 + k * maxLid + p.via } : { ...p })),
             });
-    return { clip: { w, h, data, blocks, bmap, pmap }, origin: [-x0, -y0], pitch, apart: true, chains: [], shared: [], each: [], taps: [], sources: [] };
+    const clip = { w, h, data, blocks, bmap, pmap, ...(base.shaped ? { shaped: true } : {}) };
+    return { clip, origin: [-x0, -y0], pitch, apart: true, chains: [], shared: [], each: [], taps: [], sources: [] };
 }
 
 // How a part would repeat each way ({dir, pitch, chains, error}, four of
@@ -494,7 +552,8 @@ function arrayPlan(base, opts) {
     const ways = [0, 1, 2, 3].map((dir) => {
         const along = DIRS[dir][0] ? base.w : base.h;
         let last = null;
-        for (let pitch = along; pitch <= along + 6; pitch++) {
+        // (A part with a shape may go closer than its box is long.)
+        for (let pitch = base.shaped ? 1 : along; pitch <= along + 6; pitch++) {
             const r = arrayClip(base, { ...opts, dir, pitch }, 3);
             if (!r.error) return { dir, pitch, chains: r.chains, shared: r.shared, each: r.each, taps: r.taps };
             last = r.error;

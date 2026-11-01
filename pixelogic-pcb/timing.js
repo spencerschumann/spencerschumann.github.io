@@ -17,7 +17,7 @@
     // `off` ticks after the edge (negative: before it) either still gets
     // in (the outcome the script itself gives), misses (the outcome of a
     // change long after), or neither — another answer, or a board that
-    // does not settle, charge circling in a loop for good. The keep-out is
+    // does not settle, a loop of muxes buzzing for good. The keep-out is
     // the stretch between the last offset from which every earlier change
     // gets in and the first from which every later one misses. `setup` is
     // how long before the edge the input must have changed (negative: it
@@ -66,8 +66,8 @@
     // in the scope are played the same way, on the page: what the scope
     // draws for a moved edge is what the board does. `channels` are what
     // to record: [{name, kind, x, y}]. Returns the recording, a character a
-    // tick ('0' off, '1' charged, '2' draining, '-' nothing there), and
-    // whether it comes to rest afterwards (`rests`).
+    // tick ('0', '1', '2' floating — driven by nothing — or '-' nothing
+    // there), and whether it comes to rest afterwards (`rests`).
     function play(stim, channels) {
         return M.withBoard(M.createBoard(1, 1), () => {
             if (!M.deserialize(stim.start)) return null;
@@ -321,22 +321,32 @@
         }
         const keepOf = (x) => { const d = inputs.find((i) => i.name === x); return d && d.cases ? { name: x, from: d.from, to: d.to } : null; };
         const show = sweeps[0];
+        const when = (at) => (at < 0 ? `${ticksIn(-at)} before the edge` : at > 0 ? `${ticksIn(at)} after the edge` : 'as the clock rises');
         if (show) {
             // A change in good time: well before the keep-out.
             traces.push(trace(caseStim(show, Math.max(-show.W, show.lastIn - 10)), { id: 'edge', title: `${show.x} in good time`, keep: keepOf(show.x) }));
-            // A change inside it: one that leaves it ringing, if any does.
-            const bad = sweeps.find((x) => x.rings.length) || show;
-            const at = bad.rings.length ? bad.rings[0] : Math.round((bad.lastIn + bad.firstOut) / 2);
-            traces.push(trace(caseStim(bad, at), {
-                id: 'keepout', title: `${bad.x} changing ${at < 0 ? `${-at} ticks before` : `${at} ticks after`} the edge`, keep: keepOf(bad.x),
-            }));
+            // A change inside it: one that leaves it ringing, if any does,
+            // or lands between getting in and missing. Where none does — each
+            // case caught up to one tick and missed from the next, a keep-out
+            // only where the cases differ — the first change too late in the
+            // strictest of them: missed.
+            const bad = sweeps.find((x) => x.rings.length) || sweeps.find((x) => x.lastIn + 1 < x.firstOut);
+            if (bad) {
+                const at = bad.rings.length ? bad.rings[0] : Math.round((bad.lastIn + bad.firstOut) / 2);
+                traces.push(trace(caseStim(bad, at), { id: 'keepout', title: `${bad.x} changing ${when(at)}`, keep: keepOf(bad.x) }));
+            } else {
+                const strict = sweeps.reduce((m, x) => (x.firstOut < m.firstOut ? x : m), show);
+                traces.push(trace(caseStim(strict, strict.firstOut), {
+                    id: 'late', title: `${strict.x} changing ${when(strict.firstOut)}: missed`, keep: keepOf(strict.x),
+                }));
+            }
         }
         if (minPeriod) {
             const log = [];
             clocked(minPeriod, 4, log);
             const start = from(before[edges[0]], () => M.serialize());
             traces.push(trace({ start, pads: padList, events: log, ticks: log.ticks, rest: runMax },
-                { id: 'fastest', title: `Clocked every ${minPeriod} ticks`, keep: data.length ? keepOf(data[0]) : null }));
+                { id: 'fastest', title: `Clocked every ${ticksIn(minPeriod)}`, keep: data.length ? keepOf(data[0]) : null }));
         }
 
         return { clock, inputs, clockToOut, minHigh, minLow, minPeriod, traces, truncated: over(), ms: Date.now() - started };
@@ -359,23 +369,25 @@
             { limit: DEADLINE_MS + 6000, late: { error: 'Measuring its timing took too long, and was stopped' } });
     }
 
+    // So many ticks, in words: one tick, two ticks.
+    const ticksIn = (n) => `${n} tick${n === 1 ? '' : 's'}`;
     // In words: the summary line a report is shown with.
     function summary(r) {
         if (r.error) return r.error;
         const parts = [];
         // A stretch of ticks around the edge, in words.
-        const span = (a, z) => (a >= 0 ? `from ${a} to ${z} ticks after`
-            : z < 0 ? `from ${-a} to ${-z} ticks before` : `from ${-a} ticks before to ${z} after`);
+        const span = (a, z) => (a >= 0 ? `from ${a} to ${ticksIn(z)} after`
+            : z < 0 ? `from ${-a} to ${ticksIn(-z)} before` : `from ${ticksIn(-a)} before to ${z} after`);
         for (const d of r.inputs) {
             if (!d.cases) continue;
             parts.push(d.from <= d.to
                 ? `keep ${d.name} steady ${span(d.from, d.to)} the clock edge${d.rings ? ' — a change in there can leave it ringing for good' : ''}`
-                : `${d.name} is caught if it changes by ${d.from - 1 < 0 ? `${1 - d.from} ticks before` : `${d.from - 1} ticks after`} the edge, missed after that`);
+                : `${d.name} is caught if it changes by ${d.from - 1 < 0 ? `${ticksIn(1 - d.from)} before the edge` : d.from - 1 > 0 ? `${ticksIn(d.from - 1)} after the edge` : 'the clock edge'}, missed after that`);
         }
-        if (r.clockToOut) parts.push(`outputs follow ${r.clockToOut.max === r.clockToOut.min ? r.clockToOut.max : `${r.clockToOut.min}–${r.clockToOut.max}`} ticks after it`);
-        if (r.minHigh && r.minLow) parts.push(`the clock high for ${r.minHigh} ticks at least and low for ${r.minLow}`);
-        else if (r.minHigh) parts.push(`the clock high for ${r.minHigh} ticks at least`);
-        if (r.minPeriod) parts.push(`fastest clock every ${r.minPeriod} ticks`);
+        if (r.clockToOut) parts.push(`outputs follow ${r.clockToOut.max === r.clockToOut.min ? ticksIn(r.clockToOut.max) : `${r.clockToOut.min}–${r.clockToOut.max} ticks`} after it`);
+        if (r.minHigh && r.minLow) parts.push(`the clock high for ${ticksIn(r.minHigh)} at least and low for ${r.minLow}`);
+        else if (r.minHigh) parts.push(`the clock high for ${ticksIn(r.minHigh)} at least`);
+        if (r.minPeriod) parts.push(`fastest clock every ${ticksIn(r.minPeriod)}`);
         const s = parts.join('; ');
         return s.charAt(0).toUpperCase() + s.slice(1) + '.' + (r.truncated ? ' (It ran out of time before measuring everything.)' : '');
     }

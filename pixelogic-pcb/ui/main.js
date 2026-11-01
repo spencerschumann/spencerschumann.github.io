@@ -6,7 +6,7 @@ import {
     applyGridVisibleForMode, applyPinLabels,
 } from './prefs.js';
 import {
-    loadView,
+    loadView, undoBatchOpen, undoStack,
 } from './history.js';
 import {
     drawMode,
@@ -44,6 +44,9 @@ import {
 import {
     loadProbes, scopeState, setupScope,
 } from './scope.js';
+import {
+    benchState, resumeBench,
+} from './bench.js';
 
 const M = window.PixelogicModel;
 const V = window.PixelogicView;
@@ -74,6 +77,7 @@ function init() {
     else V.clampView();     // a saved sandbox view predates these limits
     updateZoomLabel();
     updateActionButtons();
+    resumeBench();          // a part out on the bench, before a reload
     V.drawGrid();
     requestAnimationFrame(tickLoop);
 }
@@ -109,6 +113,11 @@ window.PixelogicUI = {
     // The scope: its probes, what it has captured, what it shows, and the
     // timing report.
     getScope() { return scopeState(); },
+    // How many steps there are to undo, and whether one is still open.
+    getUndo() { return { depth: undoStack.length, open: undoBatchOpen }; },
+    // The part bench, while one is out: the part, its bounds, its pads and
+    // the pins they make, what is wrong, its copies, where its handles are.
+    getBench() { return benchState(); },
 };
 
 export {

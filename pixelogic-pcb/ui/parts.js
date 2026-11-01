@@ -5,7 +5,7 @@ import {
     componentsBackdrop, componentsEmptyEl, componentsListEl, componentsPanel, flashStatus,
 } from './page.js';
 import {
-    afterEdit, applyExpansion, beginUndoBatch, endUndoBatch, gridOrigin, scheduleSave,
+    afterEdit, applyExpansion, beginUndoBatch, boardGrew, endUndoBatch, scheduleSave,
 } from './history.js';
 import {
     drawMode, setDrawMode,
@@ -14,7 +14,7 @@ import {
     arrangeSel, setArrangeSel,
 } from './arrange.js';
 import {
-    refreshStampPreview,
+    refreshStampPreview, showHand,
 } from './stamp.js';
 import {
     arrayEditing, closeArray, updateHandBar,
@@ -22,6 +22,9 @@ import {
 import {
     rememberEdit, renameMemories,
 } from './makepart.js';
+import {
+    benchOpen, openBench,
+} from './bench.js';
 import {
     ask,
 } from './ask.js';
@@ -54,12 +57,14 @@ const pinsOfClip = (clip) => M.clipPins(clip);
 // ...and, when it is several parts side by side (copies put down apart),
 // each of them, to show each where it will go; else null.
 const partsOfClip = (clip) => { const p = M.clipParts(clip); return p.length > 1 ? p : null; };
+// ...and, when it is one part that does not fill its box, its shape (else {}).
+const shapeOfClip = (clip) => { const p = M.clipParts(clip); return p.length === 1 ? M.clipShape(clip, p[0].lid) : {}; };
 // The part in hand: the shelf's, or — `array` {spec, count} — that many
 // copies of it in a row (G.arrayPart), turned and flipped by `ops` ('t'
 // a quarter turn, 'm' a flip), which are kept so that changing the count
 // keeps the way round. False, and nothing in hand changed, if the copies
 // will not go together that way.
-function holdPart(part, array, ops, loose) {
+function holdPart(part, array, ops) {
     let clip = part.clip, name = part.name;
     if (array) {
         const r = G.arrayPart(part.key, array.spec, array.count);
@@ -70,20 +75,20 @@ function holdPart(part, array, ops, loose) {
     for (const op of ops) clip = op === 'm' ? M.mirrorClipH(clip) : M.rotateClipCW(clip);
     placingPart = {
         key: part.key, name, clip, pins: pinsOfClip(clip), ring: M.clipRing(clip), parts: partsOfClip(clip),
-        loose: !!loose, array: array || null, ops: ops.slice(),
+        shape: shapeOfClip(clip), array: array || null, ops: ops.slice(),
     };
     updateHandBar();
+    showHand();
     refreshStampPreview();
     V.drawGrid();
     return true;
 }
 // Nothing in hand any more (it is gone from the shelf, or the shelf is).
 function dropPart() { placingPart = null; }
-function choosePart(part, loose) {
-    holdPart(part, null, [], loose);
+function choosePart(part) {
+    holdPart(part, null, []);
     closeComponents();
     setDrawMode('part');
-    if (loose) flashStatus(`Put down a copy of ${part.name} to change — it goes down with its lid off for good`);
 }
 // R and M, with a part in hand: turn or flip the one about to go down.
 function turnPart(mirror) {
@@ -92,7 +97,9 @@ function turnPart(mirror) {
     placingPart.pins = pinsOfClip(placingPart.clip);
     placingPart.ring = M.clipRing(placingPart.clip);
     placingPart.parts = partsOfClip(placingPart.clip);
+    placingPart.shape = shapeOfClip(placingPart.clip);
     if (placingPart.ops) placingPart.ops.push(mirror ? 'm' : 't');
+    showHand();
     refreshStampPreview();
     V.drawGrid();
 }
@@ -127,8 +134,10 @@ function renderComponentsList() {
         const editBtn = document.createElement('button');
         editBtn.className = 'tool-btn';
         editBtn.textContent = 'Edit';
-        editBtn.title = `Put down a loose copy of ${part.name} to change; Make part… saves it back`;
-        editBtn.addEventListener('click', () => choosePart(part, true));
+        editBtn.title = `Change ${part.name} on a bench of its own; Save part puts it back on the shelf`;
+        editBtn.addEventListener('click', () => openBench(part));
+        // One bench at a time.
+        if (benchOpen()) { editBtn.disabled = true; editBtn.title = 'Save the part on the bench, or leave it, first'; }
         row.append(label, placeBtn, editBtn);
         if (part.key.startsWith('user:')) {
             // Renamed where its name is: the name becomes a box to type in.
@@ -181,7 +190,7 @@ function startRename(label, part) {
                 renameMemories(part.key, res.key, name);
                 if (placingPart && placingPart.key === part.key) {
                     const now = G.getPart(res.key);
-                    if (now) holdPart(now, placingPart.array, placingPart.ops || [], placingPart.loose);
+                    if (now) holdPart(now, placingPart.array, placingPart.ops || []);
                 }
                 flashStatus(`${part.name} is ${name} now — copies already down keep the old name`);
             }
@@ -208,8 +217,9 @@ function closeComponents() {
     componentsBackdrop.classList.remove('open');
 }
 
-// ---- The Parts tool: a whole part per click ----
-// Centred on the pointer like the mux. It replaces what is under it; in
+// ---- The Parts tool: a whole part at a time ----
+// Centred on the pointer like the mux, and put down where it lets go (on a
+// touchscreen, dragged into place first: see canvas.js placeGesture). It replaces what is under it; in
 // the sandbox, a part reaching past the edge grows the board to take it,
 // as drawing there would.
 function partAnchor(p) {
@@ -232,23 +242,6 @@ function placePartAt(p) {
     if (why) { flashStatus(why); return; }
     beginUndoBatch();
     at = roomFor(placingPart.clip, at);
-    if (placingPart.loose) {
-        // A copy to work on: its circuit loose, remembered as the part it
-        // came from, and the tool put down — one copy is what editing
-        // wants.
-        M.pasteRegion(M.decapClip(placingPart.clip), at.x, at.y, { replace: true });
-        const rect = { x0: at.x, y0: at.y, x1: at.x + placingPart.clip.w - 1, y1: at.y + placingPart.clip.h - 1 };
-        rememberEdit(placingPart.key, placingPart.pins.map((q) => ({ ...q, at: q.at && [at.x + q.at[0], at.y + q.at[1]] })), rect);
-        endUndoBatch();
-        const g = applyExpansion();
-        flashStatus(`A loose ${placingPart.name} to change — it stays selected: Make part… saves it back, its name and pins as they were`);
-        placingPart = null;
-        setDrawMode('select');
-        // Selected, so saving it back is Make part… and nothing more.
-        setSelection({ x0: rect.x0 + g.left, y0: rect.y0 + g.top, x1: rect.x1 + g.left, y1: rect.y1 + g.top });
-        afterEdit();
-        return;
-    }
     M.pasteRegion(placingPart.clip, at.x, at.y, { replace: true });
     endUndoBatch();
     applyExpansion();
@@ -260,9 +253,7 @@ function roomFor(c, at) {
     if (gameLevel) return at;
     const g = M.growBy(1 - at.x, 1 - at.y, at.x + c.w + 1 - M.GRID_W, at.y + c.h + 1 - M.GRID_H);
     if (!g.left && !g.top) return at;
-    V.compensateExpansion(g.left, g.top);
-    gridOrigin.x += g.left;
-    gridOrigin.y += g.top;
+    boardGrew(g.left, g.top);
     return { x: at.x + g.left, y: at.y + g.top };
 }
 // A clip put down with its top-left at `at`, as a part in hand is: what is
@@ -311,7 +302,7 @@ function decapSelected() {
     endUndoBatch();
     setArrangeSel([]);
     if (info) {
-        rememberEdit(info.source ? info.source : 'user:' + info.name, info.pins, { x0: info.x0, y0: info.y0, x1: info.x1, y1: info.y1 });
+        rememberEdit(info.source ? info.source : 'user:' + info.name, info.pins, { x0: info.x0, y0: info.y0, x1: info.x1, y1: info.y1 }, info.cells);
         // Selected (Select shows it), so saving it back is Make part….
         setSelection({ x0: info.x0, y0: info.y0, x1: info.x1, y1: info.y1 });
     }

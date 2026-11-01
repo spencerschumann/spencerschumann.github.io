@@ -83,6 +83,9 @@ function tickLoop(now) {
         lastCoachCheck = now;
         renderStatus();
     }
+    // Current flowing, a frame at a time (drawn over the board, which is
+    // only redrawn when it changes).
+    V.drawFlow(now);
     requestAnimationFrame(tickLoop);
 }
 let lastCoachCheck = 0;

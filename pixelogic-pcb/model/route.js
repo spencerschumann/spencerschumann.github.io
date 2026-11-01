@@ -3,7 +3,7 @@
 // two places (routeNet).
 
 import {
-    DIRS, isMuxId, isInsulatorId, isLed, isSwitch, isToggle, isWireId,
+    DIRS, isMuxId, isInsulatorId, isLed, isSource, isSwitch, isToggle, isWireId,
 } from './cells.js';
 import {
     B, getCell, idx, inBounds, isCrossoverAt,
@@ -30,6 +30,7 @@ import {
 function floodNet(ax, ay, entryDx, entryDy, xo) {
     const crossing = xo || isCrossoverAt;
     const cellsOut = new Set(), terminals = new Set(), seen = new Set();
+    const ways = new Map();      // a terminal that is a crossing (in a part): which of its ways
     const stack = [[ax, ay, entryDx, entryDy]];
     while (stack.length) {
         const [x, y, dx2, dy2] = stack.pop();
@@ -40,7 +41,10 @@ function floodNet(ax, ay, entryDx, entryDy, xo) {
             // Reached from (dx2,dy2), so this cell must connect on the
             // face pointing back that way — a wire lying against a mux's
             // package is not attached to it.
-            if (cellConnects(x, y, [-dx2, -dy2])) terminals.add(i);
+            if (cellConnects(x, y, [-dx2, -dy2])) {
+                terminals.add(i);
+                if (crossing(x, y)) ways.set(i, dx2 !== 0 ? 'h' : 'v');
+            }
             continue;
         }
         if (crossing(x, y)) {
@@ -59,7 +63,7 @@ function floodNet(ax, ay, entryDx, entryDy, xo) {
     for (const i of cellsOut) if (i < min) min = i;
     if (min === Infinity) for (const i of terminals) if (i < min) min = i;
     return {
-        key: 'w' + (min === Infinity ? idx(ax, ay) : min), cells: cellsOut, terminals,
+        key: 'w' + (min === Infinity ? idx(ax, ay) : min), cells: cellsOut, terminals, ways,
         isNet: true, preTouch: new Set(), routed: new Set(), failed: false,
     };
 }
@@ -72,7 +76,14 @@ function floodNet(ax, ay, entryDx, entryDy, xo) {
 // after a move can be compared cell for cell with the board before.
 // `netOf`, if given, is filled in with the terminal standing for each
 // cell's net (a terminal for itself), for asking about a cell later.
-function terminalGroups(mapIdx, netOf) {
+//
+// A part's cells are terminals, one touching the next. A crossing among
+// them is two: each of its ways joins what is along it and nothing else.
+// (As one, it joined two wires that only cross inside a part, so a route
+// that shorted them was no change at all, and nothing refused it.) `turned`,
+// if given, says which cells a quarter turn has moved: its ways have changed
+// places, and are named as they were.
+function terminalGroups(mapIdx, netOf, turned) {
     const parent = new Map();
     const find = (a) => { while (parent.get(a) !== a) { parent.set(a, parent.get(parent.get(a))); a = parent.get(a); } return a; };
     const union = (a, b) => { const ra = find(a), rb = find(b); if (ra !== rb) parent.set(ra, rb); };
@@ -89,6 +100,10 @@ function terminalGroups(mapIdx, netOf) {
         return padKey.get(i);
     };
     const add = (t) => { if (!parent.has(t)) parent.set(t, t); return t; };
+    // A crossing's way, 'h' or 'v', by the name it had before.
+    const wayOf = (i, way) => (turned && turned(i) ? (way === 'h' ? 'v' : 'h') : way);
+    // A terminal, as seen from along (dx, dy).
+    const along = (i, dx) => (isCrossoverAt(i % B.w, (i - i % B.w) / B.w) ? termId(i) + wayOf(i, dx ? 'h' : 'v') : termId(i));
     const isTerm = (i) => !isInsulatorId(B.cells[i]) && (!isWireId(B.cells[i]) || B.blockAt[i]);
     const seenWire = new Set();
     for (let i = 0; i < B.cells.length; i++) {
@@ -101,7 +116,16 @@ function terminalGroups(mapIdx, netOf) {
             for (const [dx, dy] of [[1, 0], [0, 1]]) {
                 const nx = x + dx, ny = y + dy;
                 if (!inBounds(nx, ny) || !isTerm(idx(nx, ny))) continue;
-                if (cellConnects(x, y, [dx, dy]) && cellConnects(nx, ny, [-dx, -dy])) union(t, add(termId(idx(nx, ny))));
+                if (cellConnects(x, y, [dx, dy]) && cellConnects(nx, ny, [-dx, -dy])) union(add(along(i, dx)), add(along(idx(nx, ny), dx)));
+            }
+            // ...or through a crossing's way, and nothing else: a source
+            // one side of it, a lead the other. No wire's flood starts on
+            // a crossing, so that join was never seen.
+            for (const [dx, dy] of DIRS) {
+                let cx = x + dx, cy = y + dy;
+                if (!inBounds(cx, cy) || !isCrossoverAt(cx, cy) || !cellConnects(x, y, [dx, dy])) continue;
+                while (inBounds(cx, cy) && isCrossoverAt(cx, cy)) { cx += dx; cy += dy; }
+                if (inBounds(cx, cy) && isTerm(idx(cx, cy)) && cellConnects(cx, cy, [-dx, -dy])) union(t, add(termId(idx(cx, cy))));
             }
             continue;
         }
@@ -110,7 +134,7 @@ function terminalGroups(mapIdx, netOf) {
         for (const c of net.cells) seenWire.add(c);
         let first = null;
         for (const ti of net.terminals) {
-            const t = add(termId(ti));
+            const t = add(net.ways.has(ti) ? termId(ti) + wayOf(ti, net.ways.get(ti)) : termId(ti));
             if (first === null) first = t; else union(first, t);
         }
         if (netOf && first !== null) for (const c of net.cells) if (!netOf.has(c)) netOf.set(c, first);
@@ -217,12 +241,14 @@ function reduceNet(netSet, requiredSet, keep, nodeId) {
             // Touching a mux is not joining it: it meets wire only
             // through a lead, so a run lying against its package on a
             // dead face holds nothing on — read as attached, it was kept
-            // as a stub hugging the part. (Only a mux: anything else
-            // here is joined all round, or is an object cell lifted for
-            // the move, which reads as empty board.)
+            // as a stub hugging the part. Nor a source, on a side it is
+            // not soldered to. (Only those: anything else here is joined
+            // all round, or is an object cell lifted for the move, which
+            // reads as empty board.)
             if (set.has(idx(nx, ny))) {
-                const deadA = isMuxId(B.cells[ci]) && !cellConnects(x, y, [dx2, dy2]);
-                const deadB = isMuxId(B.cells[idx(nx, ny)]) && !cellConnects(nx, ny, [-dx2, -dy2]);
+                const sided = (id) => isMuxId(id) || isSource(id);
+                const deadA = sided(B.cells[ci]) && !cellConnects(x, y, [dx2, dy2]);
+                const deadB = sided(B.cells[idx(nx, ny)]) && !cellConnects(nx, ny, [-dx2, -dy2]);
                 if (!deadA && !deadB) out.push(idx(nx, ny));
                 continue;
             }
@@ -260,28 +286,47 @@ function reduceNet(netSet, requiredSet, keep, nodeId) {
     // OTHER nodes: one that ties to nothing else needs no wire at all,
     // so "reaches none" and "detached" are the same state — treating
     // them as different left an orphan cell clinging to every pin.
+    //
+    // Worked out from the set's pieces, found once: a node reaches another
+    // when the two touch a piece in common. (Flooding the set from every
+    // anchor in turn, once for every cell it tried, made a move on a busy
+    // board take seconds.)
     const groupsOf = (set) => {
-        const reach = new Map();
-        for (const a of anchors) {
-            const na = idOf(a);
-            if (!reach.has(na)) reach.set(na, new Set());
-            const ns = neighborsIn(a, set);
-            if (!ns.length) continue;
-            const seen = new Set(ns), stack = [...ns];
+        const piece = new Map();
+        let pieces = 0;
+        for (const s of set) {
+            if (piece.has(s)) continue;
+            const stack = [s];
+            piece.set(s, pieces);
             while (stack.length) {
                 const c = stack.pop();
-                for (const n of neighborsIn(c, set)) if (!seen.has(n)) { seen.add(n); stack.push(n); }
+                for (const n of neighborsIn(c, set)) if (!piece.has(n)) { piece.set(n, pieces); stack.push(n); }
             }
-            for (const b of anchors) {
-                const nb = idOf(b);
-                if (nb !== na && neighborsIn(b, seen).length) reach.get(na).add(nb);
+            pieces++;
+        }
+        const touches = new Map(), nodesOf = new Map();
+        for (const a of anchors) {
+            const na = idOf(a);
+            if (!touches.has(na)) touches.set(na, new Set());
+            for (const n of neighborsIn(a, set)) {
+                const p = piece.get(n);
+                touches.get(na).add(p);
+                if (!nodesOf.has(p)) nodesOf.set(p, new Set());
+                nodesOf.get(p).add(na);
             }
         }
-        return [...reach.entries()].map(([k, v]) => k + ':' + [...v].sort().join(','))
-            .sort().join('|');
+        return [...touches.entries()].map(([na, ps]) => {
+            const reach = new Set();
+            for (const p of ps) for (const nb of nodesOf.get(p)) if (nb !== na) reach.add(nb);
+            return na + ':' + [...reach].sort().join(',');
+        }).sort().join('|');
     };
     const baseline = groupsOf(live);
     const holds = (set) => groupsOf(set) === baseline;
+    // A cell (or pair across a crossing) that cannot go now never can:
+    // the net only shrinks, and what it was the only way through it still
+    // is. So each is tried once, not on every pass.
+    const stuck = new Set();
     for (;;) {
         const dist = new Map(), queue = [];
         for (const a of anchors) for (const n of neighborsIn(a, live)) if (!dist.has(n)) { dist.set(n, 1); queue.push(n); }
@@ -310,7 +355,7 @@ function reduceNet(netSet, requiredSet, keep, nodeId) {
             }
             return -1;
         };
-        const cand = [...live].filter((ci) => !held.has(ci) && (!nearCrossing(ci) || across(ci) >= 0))
+        const cand = [...live].filter((ci) => !held.has(ci) && !stuck.has(ci) && (!nearCrossing(ci) || across(ci) >= 0))
             .sort((a, b) => (dist.has(b) ? dist.get(b) : Infinity) - (dist.has(a) ? dist.get(a) : Infinity));
         let did = false;
         for (const ci of cand) {
@@ -321,6 +366,7 @@ function reduceNet(netSet, requiredSet, keep, nodeId) {
             if (holds(live)) { removed.add(ci); if (pair >= 0) removed.add(pair); did = true; break; }
             live.add(ci);
             if (pair >= 0) live.add(pair);
+            stuck.add(ci);
         }
         if (!did) break;
     }
@@ -380,36 +426,31 @@ const ROUTE_SLACK = 3, ROUTE_STRETCH = 1.25;
 function routeNet(seedIdxs, targetSet, netCells, terminalCells, volatileCells) {
     const free = (x, y) => inBounds(x, y) && isInsulatorId(B.cells[idx(x, y)]) && !B.blockAt[idx(x, y)]
         && !(B.ringMask[idx(x, y)] & RING_R);
-    // A mux gets a one-cell berth on EVERY face. All of them say what the
-    // part is: a wire at a long side's middle declares that side COM, at
-    // its end declares a pin, and one on a short side declares SELECT —
-    // which is the end that decides NO from NC. A route grazing any of
-    // them on its way past can spin the part around or swap its pins,
-    // and the short sides are not the harmless case they look like.
+    // A route must not run flush along any terminal it isn't ending on:
+    // a pad or a lamp, whichever face it presents. A mux joins only
+    // through a lead, and a source only where it is soldered, so those it
+    // may pass on any other side. (A mux once had a berth all round: an
+    // old-style one read which way round it was off whatever lay against
+    // it, and a route grazing it could turn it. A typed mux is what its
+    // cells say, and the berth only made re-routes on a tight board fail.)
     //
     // Routes may still END on a terminal: that is the `dOut` direction,
-    // which is never side-checked. Hand-drawing alongside a package stays
-    // legal; this only constrains what the re-router lays down unasked.
-    //
-    // All mux material gets the berth, not only working parts. An unwired
-    // package is read by exactly this — a route past the middle of its
-    // long side would orient it — and unfinished material becomes a part
-    // the moment it is completed, reading whatever was laid beside it.
-    const bumpsPackage = (x, y) => isMuxId(B.cells[idx(x, y)]);
+    // which is never side-checked.
+    const sided = (id) => isMuxId(id) || isSource(id);
     const sidesClear = (x, y, dIn, dOut, allowed) => {
         for (let d = 0; d < 4; d++) {
             if (d === OPP(dIn) || d === dOut) continue; // where the path came from / goes
             const nx = x + DIRS[d][0], ny = y + DIRS[d][1];
             if (!inBounds(nx, ny)) continue;
-            if (bumpsPackage(nx, ny) && !allowed.has(idx(nx, ny))) return false;
-            // Deliberately direction-agnostic: a route must not run
-            // flush along ANY terminal it isn't ending on, whichever
-            // face that terminal happens to present.
-            if (!cellConnects(nx, ny)) continue;
+            if (sided(B.cells[idx(nx, ny)]) ? !cellConnects(nx, ny, [-DIRS[d][0], -DIRS[d][1]]) : !cellConnects(nx, ny)) continue;
             if (!allowed.has(idx(nx, ny))) return false;
         }
         return true;
     };
+    // A mux is met through a lead facing the route, or not at all: a
+    // route starting from one, or ending on one, through its plastic is
+    // no connection.
+    const meets = (x, y, d) => !isMuxId(B.cells[idx(x, y)]) || cellConnects(x, y, DIRS[d]);
     // Note targetSet is deliberately NOT blanket-allowed: the step that
     // reaches the target already excludes the direction it steps in, so
     // the path meets its node at exactly one cell instead of being free
@@ -419,44 +460,49 @@ function routeNet(seedIdxs, targetSet, netCells, terminalCells, volatileCells) {
     const firstAllowed = new Set([...openAllowed, ...netCells]);
     // Dijkstra over (cell, incoming direction) with a bucket queue —
     // costs are small bounded integers, so buckets beat a real heap.
+    // (Flat arrays, a slot per cell and direction: a route that fails
+    // searches everywhere it can reach, and keyed maps made that slow.)
     const skey = (i, d) => i * 4 + d;
-    const dist = new Map(), prev = new Map();
+    const dist = new Int32Array(B.cells.length * 4).fill(-1), prev = new Int32Array(B.cells.length * 4);
     const buckets = [];
     const push = (cost, i, d, from_) => {
         const k = skey(i, d);
-        if (dist.get(k) !== undefined && dist.get(k) <= cost) return;
-        dist.set(k, cost);
-        prev.set(k, from_);
-        (buckets[cost] || (buckets[cost] = [])).push([i, d]);
+        if (dist[k] >= 0 && dist[k] <= cost) return;
+        dist[k] = cost;
+        prev[k] = from_;
+        (buckets[cost] || (buckets[cost] = [])).push(i * 4 + d);
     };
     const rebuild = (k) => {
         const out = [];
-        for (let cur = k; cur !== -1; cur = prev.get(cur)) out.push(Math.floor(cur / 4));
+        for (let cur = k; cur !== -1; cur = prev[cur]) out.push(Math.floor(cur / 4));
         return out.reverse().map((ci) => [ci % B.w, Math.floor(ci / B.w)]);
     };
     for (const si of seedIdxs) {
         const sx = si % B.w, sy = (si - sx) / B.w;
         for (let d = 0; d < 4; d++) {
             const nx = sx + DIRS[d][0], ny = sy + DIRS[d][1];
-            if (free(nx, ny)) push(ROUTE_STEP_COST, idx(nx, ny), d, -1);
+            if (free(nx, ny) && meets(sx, sy, d)) push(ROUTE_STEP_COST, idx(nx, ny), d, -1);
         }
     }
     for (let cost = 0; cost < buckets.length; cost++) {
         const bucket = buckets[cost];
         if (!bucket) continue;
-        for (const [i, d] of bucket) {
-            const k = skey(i, d);
-            if (dist.get(k) !== cost) continue; // superseded by a cheaper entry
+        for (const k of bucket) {
+            const i = k >> 2, d = k & 3;
+            if (dist[k] !== cost) continue; // superseded by a cheaper entry
             const x = i % B.w, y = (i - x) / B.w;
             // Only the path's own first cell may touch the net it leaves.
-            const allowed = prev.get(k) === -1 ? firstAllowed : openAllowed;
+            const allowed = prev[k] === -1 ? firstAllowed : openAllowed;
             for (let nd = 0; nd < 4; nd++) {
                 if (nd === OPP(d)) continue; // no doubling back
                 if (!sidesClear(x, y, d, nd, allowed)) continue;
                 const turn = nd === d ? 0 : 1;
                 const nx = x + DIRS[nd][0], ny = y + DIRS[nd][1];
                 if (!inBounds(nx, ny)) continue;
-                if (targetSet.has(idx(nx, ny))) return rebuild(k);
+                if (targetSet.has(idx(nx, ny))) {
+                    if (meets(nx, ny, OPP(nd))) return rebuild(k);
+                    continue;
+                }
                 if (free(nx, ny)) { push(cost + ROUTE_STEP_COST + turn, idx(nx, ny), nd, k); continue; }
                 // Cross straight through a perpendicular run (-> 4-way
                 // crossover). Both of the crossed cell's side neighbors

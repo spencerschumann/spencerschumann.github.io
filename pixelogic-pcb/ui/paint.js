@@ -1,7 +1,9 @@
 // Painting: a stroke of a material, cell to cell, straight with Shift or
 // the Straight toggle, and what a stroke does over muxes and parts. A wire
 // drawn straight across a wire crosses it; a click with the Conductor on
-// a 4-way makes it a crossing, and on a crossing joins it again.
+// a 4-way makes it a crossing, and on a crossing joins it again. A wire
+// drawn onto a source is soldered to it; a click with the Conductor on a
+// source's side solders it there, or lets go.
 
 import {
     flashStatus, straightBtn,
@@ -55,10 +57,14 @@ function setStraightLock(v) {
 // five cells of material that is no part at all (the model refuses it
 // too). If a wire has to go there, the mux is erased or moved first —
 // see strokeParts for the word that says so.
+//
+// Nor does a wire go over a source: drawn onto one, it is soldered to it
+// (M.joinAlong), which is what drawing a wire to a source means.
 function strokeCells(path, color) {
     const todo = path.filter(([x, y]) =>
         M.inBounds(x, y) && !M.isProtected(x, y) && M.colorOfCell(M.getCell(x, y)) !== color
-        && (color === 'insulator' || !M.isMuxId(M.getCell(x, y))));
+        && (color === 'insulator' || !M.isMuxId(M.getCell(x, y)))
+        && !(color === 'conductor' && M.isSource(M.getCell(x, y))));
     if (color !== 'insulator') return todo;
     const seen = new Set(todo.map(([x, y]) => x + ',' + y));
     for (const [x, y] of todo.slice()) {
@@ -136,6 +142,35 @@ function toggleCrossing(s) {
     return true;
 }
 
+// A click with the Conductor on a source: the side nearest the click is
+// soldered, or let go — or, if nothing is there to join, the one side
+// that has something. Whether it was such a click.
+const SIDE_NAMES = ['north', 'east', 'south', 'west'];
+function toggleStub(s) {
+    const st = s.start;
+    if (s.color !== 'conductor' || s.moved || !st || !st.wasSource || !st.pt || M.isProtected(st.x, st.y)) return false;
+    const { x, y } = st;
+    const ox = st.pt.fx - (x + 0.5), oy = st.pt.fy - (y + 0.5);
+    const near = Math.abs(ox) > Math.abs(oy) ? (ox > 0 ? 1 : 3) : (oy > 0 ? 2 : 0);
+    const stubs = M.sourceStubs(M.getCell(x, y));
+    const can = [0, 1, 2, 3].filter((d) => (stubs & (1 << d)) || M.sourceCanJoin(x, y, d));
+    const d = can.includes(near) ? near : can.length === 1 ? can[0] : -1;
+    if (d < 0) {
+        flashStatus(can.length ? 'Click nearer the side to solder, or to let go'
+            : 'Nothing beside it to join — draw a wire onto it');
+        return true;
+    }
+    const on = !(stubs & (1 << d));
+    beginUndoBatch();
+    M.setStub(x, y, d, on);
+    endUndoBatch();
+    flashStatus(on ? `Soldered on its ${SIDE_NAMES[d]} side` : `Let go on its ${SIDE_NAMES[d]} side: a wire there runs past`);
+    updateActionButtons();
+    scheduleSave();
+    V.drawGrid();
+    return true;
+}
+
 // A paint stroke of `color`, from cell `c`: {color, last, line, warned}.
 // `last` is its previous cell. `line`, for a straight stroke — Shift
 // held, or the Straight toggle (L) on — is {x0, y0, base, end, opened,
@@ -143,11 +178,14 @@ function toggleCrossing(s) {
 // pointer has moved furthest on, and is redrawn from the pre-stroke
 // board (`base`) on every move, so pulling back shortens it rather than
 // leaving the overshoot behind.
-function paintGesture(c, color, straight) {
+// `pt`: where in the cell it began ({fx, fy}, in cells), for a click on a
+// source's side.
+function paintGesture(c, color, straight, pt) {
     const wasWire = M.inBounds(c.x, c.y) && M.isWireId(M.getCell(c.x, c.y));
+    const wasSource = M.inBounds(c.x, c.y) && M.isSource(M.getCell(c.x, c.y));
     const s = {
         color, last: null, warned: false, trail: [], drawn: [], moved: false,
-        start: { x: c.x, y: c.y, wasWire },
+        start: { x: c.x, y: c.y, wasWire, wasSource, pt },
         line: straight && M.inBounds(c.x, c.y)
             ? { x0: c.x, y0: c.y, base: M.getStructuralSnapshot(), end: null, opened: false, painted: false } : null,
     };
@@ -161,7 +199,7 @@ function paintGesture(c, color, straight) {
         end() {
             const l = s.line;
             if (l && !l.painted && l.opened) { endUndoBatch(); undoStack.pop(); updateActionButtons(); l.opened = false; }
-            if (toggleCrossing(s)) return;
+            if (toggleCrossing(s) || toggleStub(s)) return;
             if (!l) return;
             if (l.painted) { applyExpansion(); scheduleSave(); }
             else if (l.opened) { endUndoBatch(); undoStack.pop(); updateActionButtons(); }
@@ -198,7 +236,14 @@ function paintStraight(s, c) {
         s.drawn = todo.map(([x, y]) => [x, y]);
         crossWhereDrawn(s, path);
     }
-    l.painted = todo.length > 0 || erased;
+    // Drawn onto a source, soldered to it.
+    let joined = false;
+    if (s.color === 'conductor' && M.joinAlong(path, true).length) {
+        if (!undoBatchOpen) { beginUndoBatch(); l.opened = true; }
+        M.joinAlong(path);
+        joined = true;
+    }
+    l.painted = todo.length > 0 || erased || joined;
     V.drawGrid();
 }
 
@@ -233,8 +278,14 @@ function paintTo(s, c) {
         const win = s.trail.slice(Math.max(0, s.trail.length - path.length - 2));
         if (crossWhereDrawn(s, win, true).length) { if (!undoBatchOpen) beginUndoBatch(); crossWhereDrawn(s, win); crossed = true; }
     }
+    // A source this move came onto, or went on from, is soldered there.
+    let joined = false;
+    if (s.color === 'conductor' && s.trail.length > 1) {
+        const win = s.trail.slice(Math.max(0, s.trail.length - path.length - 1));
+        if (M.joinAlong(win, true).length) { if (!undoBatchOpen) beginUndoBatch(); M.joinAlong(win); joined = true; }
+    }
     if (!todo.length) {
-        if (erased || crossed) { V.drawGrid(); scheduleSave(); }
+        if (erased || crossed || joined) { V.drawGrid(); scheduleSave(); }
         return;
     }
     const g = applyExpansion();

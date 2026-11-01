@@ -35,6 +35,13 @@ const arrayMsgEl = document.getElementById('arrayMsg');
 const arrayOkBtn = document.getElementById('arrayOkBtn');
 const arrayCountEl = document.getElementById('arrayCountInput');
 const handBarEl = document.getElementById('handBar');
+// The part bench (bench.js): the bar over it while a part is on one.
+const benchBarEl = document.getElementById('benchBar');
+const benchNameEl = document.getElementById('benchName');
+const benchMsgEl = document.getElementById('benchMsg');
+const benchSaveBtn = document.getElementById('benchSaveBtn');
+const benchCopiesBtn = document.getElementById('benchCopiesBtn');
+const benchOutlineBtn = document.getElementById('benchOutlineBtn');
 const selectionActionsEl = document.getElementById('selectionActions');
 const menuBtn = document.getElementById('menuBtn');
 const menuPanel = document.getElementById('menuPanel');
@@ -110,7 +117,7 @@ export {
     rotateBtn, mirrorBtn, deleteBtn, undoBtn, redoBtn, saveComponentBtn, componentsBtn, componentsPanel,
     componentsBackdrop, componentsCloseBtn, componentsListEl, componentsEmptyEl, lidBtn, decapBtn, arrayEditBtn,
     partBarEl, partNameEl, partMsgEl, partOkBtn, arrayBarEl, arrayMsgEl, arrayOkBtn,
-    arrayCountEl, handBarEl, selectionActionsEl, menuBtn, menuPanel, menuBackdrop,
+    arrayCountEl, handBarEl, benchBarEl, benchNameEl, benchMsgEl, benchSaveBtn, benchCopiesBtn, benchOutlineBtn, selectionActionsEl, menuBtn, menuPanel, menuBackdrop,
     fullscreenBtn, gridToggleBtn, pinLabelsBtn, straightBtn, campaignBtn, levelsPanel, levelsBackdrop,
     levelsCloseBtn, levelsListEl, sandboxBtn, resetProgressBtn, levelBar, levelTitleEl, levelBriefEl,
     levelHintEl, levelStatusEl, levelTableEl, levelTableBodyEl, levelTableHintEl, hintBtn, verifyBtn, levelsBtn,

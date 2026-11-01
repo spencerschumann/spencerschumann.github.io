@@ -155,18 +155,14 @@ function wireNetKey(ci) {
     return m < 0 ? ci : m;
 }
 
-// Does this net end on anything — a pad, a pin, a source?
+// Does this net end on anything — a pad, a pin, a source? Whatever the
+// walk reaches and cannot go on through is one. (Asking each cell's four
+// sides took a crossing's for the net's: a source on its other way made
+// a run going nowhere through it look wired, and kept it from the sweep.)
 function netHasTerminal(net) {
     for (const ci of net) {
         if (!isWireId(B.cells[ci])) return true;
-        const cx = ci % B.w, cy = (ci - cx) / B.w;
-        for (const [dx, dy] of DIRS) {
-            const nx = cx + dx, ny = cy + dy;
-            if (!inBounds(nx, ny)) continue;
-            const ni = idx(nx, ny);
-            if (isWireId(B.cells[ni]) && B.blockAt[ni] === B.blockAt[ci]) continue;
-            if (cellConnects(cx, cy, [dx, dy]) && cellConnects(nx, ny, [-dx, -dy])) return true;
-        }
+        if (!isCrossoverAt(ci % B.w, Math.floor(ci / B.w))) return walkNet(ci, (c, through) => !through);
     }
     return false;
 }
@@ -176,14 +172,24 @@ function netHasTerminal(net) {
 // pin on one end and is a perfectly ordinary thing to have drawn; this is
 // the piece a move can cut adrift when it absorbs the middle of a run or
 // gives up half way through re-routing one, and it is pure litter.
-function orphanWire() {
+//
+// A crossing is never litter: it carries two nets, and the one going
+// nowhere may cross one that is wired (erased whole, it cut that run in
+// two). The litter either side goes, which leaves it crossing nothing, a
+// plain wire, which is litter or not on its own (see rearrange's sweep).
+// Nor is a net walked from one: its two ways would be taken for one.
+// `crossings`: count a crossing on a net that leads nowhere as part of it
+// after all — for what was adrift already, which a move leaves be.
+function orphanWire(crossings) {
     const out = new Set(), seen = new Set();
     for (let i = 0; i < B.cells.length; i++) {
         // A block's wiring is its own business: never litter.
         if (!isWireId(B.cells[i]) || seen.has(i) || B.blockAt[i]) continue;
+        const x = i % B.w;
+        if (isCrossoverAt(x, (i - x) / B.w)) continue;
         const net = netCellsOf(i);
         for (const ci of net) seen.add(ci);
-        if (!netHasTerminal(net)) for (const ci of net) out.add(ci);
+        if (!netHasTerminal(net)) for (const ci of net) if (crossings || !isCrossoverAt(ci % B.w, Math.floor(ci / B.w))) out.add(ci);
     }
     return out;
 }

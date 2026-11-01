@@ -71,11 +71,20 @@ function selectInBand(r) {
     setArrangeSel([...seen.values()]);
 }
 // Re-derive the selection from where the cells actually ended up, so a
-// dropped group stays selected (and stays rotatable) at its new spot.
+// dropped group stays selected (and stays rotatable) at its new spot —
+// each object as the board now has it, picked up from its first cell as a
+// click there would: where it lands, a mux may carry a different stub (one
+// it now shares, say), and a wire may run on into another. Kept as the
+// cells it was picked up as, the next turn took stray wire along with it.
 function selFromMoved(objs, g) {
-    return objs.map((o) => ({
-        cells: (g && (g.left || g.top)) ? o.cells.map(([x, y]) => [x + g.left, y + g.top]) : o.cells,
-    }));
+    const seen = new Map();
+    for (const o of objs) {
+        const cells = (g && (g.left || g.top)) ? o.cells.map(([x, y]) => [x + g.left, y + g.top]) : o.cells;
+        const now = cells.length ? M.objectAt(cells[0][0], cells[0][1]) : null;
+        const obj = now ? { cells: now.cells } : { cells };
+        if (!seen.has(objKey(obj))) seen.set(objKey(obj), obj);
+    }
+    return [...seen.values()];
 }
 
 // Rotation usually needs a little room: once turned, the pins face new
@@ -96,12 +105,58 @@ function nudgeOffsets(radius) {
 // Try a move, falling back to nearby offsets when it won't fit. Reports
 // where it actually landed, so a drag can remember that rather than the
 // spot the pointer asked for and did not get.
+//
+// Nearest first, the nearest spot where every connection is kept and
+// nothing is joined: a turn in place means to turn the part, not to weld
+// a lead to the wire it lands against, nor to leave its wires dashed when
+// a cell over they would have routed. (Taking the nearest spot that fit,
+// a turn owed links nine times in ten on the reference boards.) Failing
+// that, the nearest that joins nothing and owes the fewest links; a spot
+// that would join something is no spot at all.
+//
+// Each spot is tried quickly (one order of routes, nothing ripped up and
+// laid again): a quick move that keeps everything is the move itself, and
+// only the spot settled for in the end is worked out in full. Tried in
+// full, a turn on a busy board took seconds.
+// The search has a budget: on a crowded board every spot round about can
+// owe something, and trying them all took seconds. Past it, the best spot
+// found so far will do.
+const NUDGE_BUDGET_MS = 400;
 function moveWithNudge(objs, dx, dy, rot, radius, mirror) {
+    const snap = M.getStructuralSnapshot(), until = performance.now() + NUDGE_BUDGET_MS;
+    let fallback = null;
     for (const [ox, oy] of nudgeOffsets(radius)) {
-        const res = M.moveObjects(objs, dx + ox, dy + oy, rot, mirror);
-        if (res.ok) return { res, nudged: ox !== 0 || oy !== 0, at: { dx: dx + ox, dy: dy + oy, rot, mirror } };
+        if (fallback && performance.now() > until) break;
+        const res = M.moveObjects(objs, dx + ox, dy + oy, rot, mirror, { quick: true });
+        if (!res.ok) continue;
+        const owed = (res.pending || 0) + (res.unrouted || 0);
+        if (!res.joins && !owed) return { res, nudged: ox !== 0 || oy !== 0, at: { dx: dx + ox, dy: dy + oy, rot, mirror } };
+        M.restoreStructuralSnapshot(snap);
+        if (!res.joins && (!fallback || owed < fallback.owed)) fallback = { owed, ox, oy };
     }
-    return { res: { ok: false }, nudged: false, at: null };
+    if (!fallback) return { res: { ok: false }, nudged: false, at: null };
+    const { ox, oy } = fallback;
+    const res = M.moveObjects(objs, dx + ox, dy + oy, rot, mirror);
+    return { res, nudged: ox !== 0 || oy !== 0, at: { dx: dx + ox, dy: dy + oy, rot, mirror } };
+}
+
+// Whether the board is as the last undo step had it: a straight run turned
+// half round, a lone source turned, a pad flipped, is what it was, and an
+// undo step for it undid nothing.
+function unchangedSinceStep() {
+    const a = undoStack[undoStack.length - 1].snap, b = M.getStructuralSnapshot();
+    if (a.w !== b.w || a.h !== b.h) return false;
+    for (let i = 0; i < a.data.length; i++) if (a.data[i] !== b.data[i]) return false;
+    return JSON.stringify(a.links) === JSON.stringify(b.links) && JSON.stringify(a.blocks) === JSON.stringify(b.blocks);
+}
+
+// A turn or flip that left the board as it was: no step to undo, and no
+// edit to grow the grid for.
+function dropNoopTurn(res) {
+    undoStack.pop();
+    updateActionButtons();
+    setArrangeSel(selFromMoved(res.objects));
+    V.drawGrid();
 }
 
 // A connection the move could not keep is not lost — it is drawn as a
@@ -119,6 +174,17 @@ function restampArrange() {
     // shouldn't leave a no-op undo step), and only right after the base
     // restore, so the snapshot it captures is exactly the pre-drag grid.
     if (!a.moved) { beginUndoBatch(); a.moved = true; }
+    // Back where it started, turned and flipped back too: the board as it
+    // was, not a move by nothing worked out afresh.
+    if (!a.dx && !a.dy && !(a.rot % 4) && !a.mirror) {
+        a.last = { dx: 0, dy: 0, rot: 0, mirror: false };
+        a.cur = a.objs;
+        a.unrouted = 0;
+        a.pending = 0;
+        setArrangeSel(a.objs);
+        V.drawGrid();
+        return;
+    }
     // When the exact spot won't take it, look outward for the nearest one
     // that will. `nudgeOffsets` is ordered by ring, so the first hit IS
     // the nearest, which is where the object should sit — following the
@@ -168,7 +234,7 @@ function commitArrange() {
     if (!a.moved) return; // plain click: the object just stays selected
     // a.last is unset when no offset the drag tried would fit: the grid is
     // already back where it started, so this is a no-op like any other.
-    const noop = !a.last || (a.last.dx === 0 && a.last.dy === 0 && a.last.rot % 4 === 0 && !a.last.mirror);
+    const noop = !a.last || (a.last.dx === 0 && a.last.dy === 0 && a.last.rot % 4 === 0 && !a.last.mirror) || unchangedSinceStep();
     endUndoBatch();
     if (noop) { undoStack.pop(); updateActionButtons(); return; } // drag ended back where it started
     const g = applyExpansion(); // dropped on the border: grow to keep the 1-cell margin
@@ -268,9 +334,11 @@ function rotateArrangeSelected() {
         flashStatus('No room to rotate — move things apart');
         return;
     }
+    if (unchangedSinceStep()) { dropNoopTurn(res); return; }
     const g = applyExpansion();
     setArrangeSel(selFromMoved(res.objects, g));
-    if (nudged) flashStatus('Rotated (nudged to fit)');
+    if (res.pending || res.unrouted) flashUnrouted(res.pending || res.unrouted);
+    else if (nudged) flashStatus('Rotated (nudged to fit)');
     afterEdit();
 }
 // M: flip what is picked out left for right, where it stands — or, mid-
@@ -293,9 +361,11 @@ function mirrorArrangeSelected() {
         flashStatus('No room to flip it — move things apart');
         return;
     }
+    if (unchangedSinceStep()) { dropNoopTurn(res); return; }
     const g = applyExpansion();
     setArrangeSel(selFromMoved(res.objects, g));
-    if (nudged) flashStatus('Flipped (nudged to fit)');
+    if (res.pending || res.unrouted) flashUnrouted(res.pending || res.unrouted);
+    else if (nudged) flashStatus('Flipped (nudged to fit)');
     afterEdit();
 }
 

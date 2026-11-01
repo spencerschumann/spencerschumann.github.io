@@ -173,7 +173,8 @@
     // (ordered input vectors) and `step(inputs, prev, was, mem)`: `prev` is
     // the outputs after the previous step (not known — null — before the
     // first: nothing has been stored yet, and the board may wake up holding
-    // anything; the script is run from rest and from a charged start), `was`
+    // anything; the script is run with every contact waking on NC, at rest,
+    // and again with every one on NO), `was`
     // the inputs of the previous step (all off before the first), so a
     // clocked level can see an edge, and `mem` an object of the level's own
     // for the run, for state no lamp shows (a shift register's inner bits).
@@ -239,7 +240,7 @@
                     done: (b) => b.reaches('A', 'Q'),
                 },
                 {
-                    text: 'Click <b>A</b> to switch it on, and watch the charge run down the '
+                    text: 'Click <b>A</b> to switch it on, and watch the current flow down the '
                         + 'wire to <b>Q</b>.',
                     done: (b) => b.lit('Q'),
                 },
@@ -584,8 +585,10 @@
                 + 'was holding — even if D changes afterwards.',
             hint: 'Feed Q back in. A mux picks between the new D and the latch’s own '
                 + 'output, under the control of E: enabled it takes D, disabled it '
-                + 'takes itself, which is what makes it remember. You will want an '
-                + 'inverter in the loop.',
+                + 'takes itself, which is what makes it remember. But a wire holds '
+                + 'nothing on its own — cut off from everything that drives it, it '
+                + 'floats — so the loop needs something to drive it: a second mux, Q on '
+                + 'its SEL and +V and −V on its pins, putting out a copy of Q.',
             sequential: true,
             inputs: ['D', 'E'], outputs: ['Q'], w: 28, h: 20, part: 'D LATCH',
             script: loadHoldScript('D', 1, 'E'),
@@ -648,9 +651,7 @@
                 + 'every bit moves one place down — Q3 to Q2, Q2 to Q1, Q1 to Q0 — and SI comes in '
                 + 'at Q3. Four clocks, and the four bits sent are on Q3..Q0.',
             hint: 'Four flip-flops in a chain on one clock: SI into the first, whose Q is Q3 and the '
-                + 'next one’s D. Each takes what the one before it held, at the same instant. If a '
-                + 'bit runs two places on one clock, the clock is reaching that flip-flop too late: '
-                + 'run CLK to the far end of the chain first.',
+                + 'next one’s D. Each takes what the one before it held, at the same instant.',
             sequential: true, clock: 'CLK', wakes: true,
             inputs: ['SI', 'CLK'], outputs: busNames('Q', 4), w: 56, h: 28, part: 'SIPO4', uses: { dff: 4 },
             script: serialInScript([0b1011, 0b0110, 0b1001]),
@@ -679,9 +680,7 @@
                 + 'CLK is off, S is this place of their sum: A + B + the carry from the place before. '
                 + 'Each time CLK goes ON, keep the carry for the next.',
             hint: 'One full adder and one flip-flop: the flip-flop holds the carry, into the adder’s '
-                + 'Cin, and takes its Cout on each clock. If the carry goes missing when A and B change '
-                + 'together, the adder is draining it back up the wire: feed Cin from a mux with the '
-                + 'flip-flop’s Q on SEL and +V and −V on its pins — a copy that is driven.',
+                + 'Cin, and takes its Cout on each clock.',
             sequential: true, clock: 'CLK',
             inputs: ['A', 'B', 'CLK'], outputs: ['S'], w: 48, h: 28, part: 'SERADD',
             uses: { 'full-adder-tight': 1, dff: 1 },

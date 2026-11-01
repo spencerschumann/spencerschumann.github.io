@@ -153,7 +153,6 @@ function relabel() {
 }
 
 // ---- The status line --------------------------------------------------------
-const bitList = (names, vals) => names.map((n) => `${n}=${vals[n] & 1}`).join(' ');
 // What changed coming into step i: each input that went on (↑) or off (↓).
 function changes(i) {
     const run = steps.run, was = run.inputsAt(i - 1), now = run.inputsAt(i);
@@ -165,10 +164,11 @@ function outcome(c) {
     // Not settling before anything is judged is still waking up (G's stepOk).
     if (!c.settled && c.ok) return 'still changing: it woke up that way, and nothing is judged until something is stored — the clock that stores something should settle it';
     if (!c.settled) return 'it never settles — something keeps changing';
-    const wrong = level.outputs.filter((o) => c.expected[o] != null && (c.expected[o] & 1) !== (c.got[o] & 1));
-    if (wrong.length) return wrong.map((o) => `<b>${o}</b> should be ${c.expected[o] & 1}, got ${c.got[o] & 1} <span class="mark-bad">✗</span>`).join('; ');
+    if (c.short) return 'short circuit — +V and −V meet, and the breaker trips <span class="mark-bad">✗</span>';
+    const wrong = level.outputs.filter((o) => c.expected[o] != null && (c.expected[o] & 1) !== c.got[o]);
+    if (wrong.length) return wrong.map((o) => (c.got[o] === 2 ? `<b>${o}</b> is driven by nothing (Z)` : `<b>${o}</b> should be ${c.expected[o] & 1}, got ${c.got[o]}`) + ' <span class="mark-bad">✗</span>').join('; ');
     const judged = level.outputs.some((o) => c.expected[o] != null);
-    return `<span class="bits">${bitList(level.outputs, c.got)}</span>${judged ? ' <span class="mark-ok">✓</span>' : ' (not judged: nothing stored yet)'}`;
+    return `<span class="bits">${level.outputs.map((o) => `${o}=${G.bitText(c.got[o])}`).join(' ')}</span>${judged ? ' <span class="mark-ok">✓</span>' : ' (not judged: nothing stored yet)'}`;
 }
 function stepsHtml() {
     const s = steps, n = s.run.total, i = s.index;
@@ -179,7 +179,7 @@ function stepsHtml() {
     let text;
     if (i < 0) {
         text = s.run.primed
-            ? 'Every input off, every wire charged — the start of the run Verify failed. ▶ plays step 1.'
+            ? 'Every input off, every contact woken on NO — the start of the run Verify failed. ▶ plays step 1.'
             : 'Every input off, the board at rest. ▶ plays step 1.';
     } else if (s.anim) {
         text = `${changes(i)} → …`;
@@ -190,7 +190,7 @@ function stepsHtml() {
         text = `${changes(i)} → ${outcome(c)}`;
         // The run started charged and this step is wrong: perhaps not the
         // storing, but something read that nothing drives.
-        if (!c.ok && s.run.primed) text += ' — from a charged start: something read that nothing drives keeps its charge (wire every input, even a 0, to −V).';
+        if (!c.ok && s.run.primed) text += ' — woken with every contact on NO: it still shows something from waking up.';
     }
     const marks = [];
     for (let k = 0; k < n; k++) {

@@ -95,7 +95,7 @@ function verifyHtml(s) {
         const c = result.cases[Math.max(0, s.index)];
         const shown = s.shown && s.shown.index === s.index ? s.shown : null;
         const outcome = shown
-            ? ' → ' + level.outputs.map((o) => `<b>${o}=${shown.got[o]}</b>`).join(' ')
+            ? ' → ' + level.outputs.map((o) => `<b>${o}=${G.bitText(shown.got[o])}</b>`).join(' ')
                 + (shown.ok ? ' <span class="mark-ok">✓</span>' : ' <span class="mark-bad">✗</span>')
             : '…';
         row = `<span class="status-text">${level.sequential ? 'Step' : 'Case'} ${s.index + 1} of ${n}: `
@@ -132,18 +132,18 @@ function verifyHtml(s) {
         const where = f.step === undefined
             ? bits(level.inputs, f.inputs)
             : `step ${f.step + 1} of ${n} (${bits(level.inputs, f.inputs)})`;
-        const wrong = level.outputs.filter((o) => f.expected[o] != null && (f.expected[o] & 1) !== (f.actual[o] & 1))
-            .map((o) => `<b>${o}</b> should be ${f.expected[o] & 1}, got ${f.actual[o] & 1}`).join('; ');
-        const why = f.settled ? wrong : 'it never settles — something keeps changing';
-        // Passing from rest and not from a charged start: something it
-        // reads is driven by nothing — or, storing, it leaned on waking up
-        // holding 0 (see G.verify).
+        const wrong = level.outputs.filter((o) => f.expected[o] != null && (f.expected[o] & 1) !== f.actual[o])
+            .map((o) => (f.actual[o] === 2 ? `<b>${o}</b> is driven by nothing (Z)` : `<b>${o}</b> should be ${f.expected[o] & 1}, got ${f.actual[o]}`)).join('; ');
+        const why = f.short ? 'short circuit — +V and −V meet, and the breaker trips'
+            : f.settled ? wrong : 'it never settles — something keeps changing';
+        // Passing woken at rest, every contact on NC, and not woken the
+        // other way, on NO: it leans on how it woke up (see G.verify).
         const primed = !f.primed ? ''
             : f.step !== undefined
-                ? ' — starting from a charged board. What it holds before anything is stored could be anything, and it has to '
-                + 'work from there; or something it reads is not driven: wire every input to something, even one meant to be 0 (−V)'
-                : ' — with every wire starting charged. Something it reads is not driven, and holds whatever charge it last had: '
-                + 'wire every input to something, even one meant to be 0 (−V)';
+                ? ' — woken with every contact the other way, on NO. What it holds before anything is stored could be '
+                + 'anything, and it has to work from there'
+                : ' — woken with every contact the other way, on NO. It still holds something from waking up, where it '
+                + 'should only follow its inputs';
         row = `<span class="result-fail">✗ Not yet</span>`
             + `<span class="status-text">At ${where}: ${why}${primed}.</span>`
             + `<span class="status-actions">${tableBtn}</span>`;
@@ -182,9 +182,9 @@ function labelPads(level, inputs, got, expected) {
     V.setLabels(G.padLabels(level).map((l) => {
         if (inputs && level.inputs.includes(l.text)) return Object.assign(l, { text: `${l.text}=${inputs[l.text] & 1}`, color: COLOR_VALUE });
         if (got && level.outputs.includes(l.text)) {
-            if (!expected || expected[l.text] == null) return Object.assign(l, { text: `${l.text}=${got[l.text]}`, color: COLOR_VALUE });
+            if (!expected || expected[l.text] == null) return Object.assign(l, { text: `${l.text}=${G.bitText(got[l.text])}`, color: COLOR_VALUE });
             const ok = got[l.text] === (expected[l.text] & 1);
-            return Object.assign(l, { text: `${l.text}=${got[l.text]} ${ok ? '✓' : '✗'}`, color: ok ? COLOR_OK : COLOR_BAD });
+            return Object.assign(l, { text: `${l.text}=${G.bitText(got[l.text])} ${ok ? '✓' : '✗'}`, color: ok ? COLOR_OK : COLOR_BAD });
         }
         return l;
     }));
@@ -214,7 +214,7 @@ function probeRow(i) {
 
 function readOutputs(level) {
     const got = {};
-    for (const p of G.layout(level).outputs) got[p.name] = M.ledIsOn(M.getCell(p.x, p.y)) ? 1 : 0;
+    for (const p of G.layout(level).outputs) got[p.name] = G.outValue(p);
     return got;
 }
 

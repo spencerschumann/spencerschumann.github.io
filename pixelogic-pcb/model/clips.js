@@ -3,13 +3,14 @@
 // and over what, a clip's parts may be put down (blockFits, clearance).
 
 import {
-    DIRS, ID_INSULATOR_PLAIN, inferCrossings, isMuxId, isInsulatorId, mirrorId, rotateId, stripId,
+    DIRS, ID_INSULATOR_PLAIN, inferCrossings, isMuxId, isInsulatorId, isPosSource, isSource, isSwitch, isToggle,
+    makeSource, mirrorId, rotateId, sourceStubs, stripId,
 } from './cells.js';
 import {
     readPin, copyPin, B, MAX_CELLS, idx, inBounds, packRuns, unpackRuns, withRep,
 } from './board.js';
 import {
-    blockCellIdxs, cellConnects, classifyRing, edgeAt, edgeHost, idConnects, mirrorPinCode, pinFaceOf, pinIndex,
+    blockCellIdxs, cellConnects, classifyRing, edgeAt, idConnects, keptSides, mirrorPinCode, pinFaceOf, pinIndex,
     terminalsByPin, topBlockOf, turnPinCode,
 } from './blocks.js';
 import {
@@ -18,6 +19,9 @@ import {
 import {
     muxBlob,
 } from './regions.js';
+import {
+    largestRect, outlineOf,
+} from './shape.js';
 
 // ---- Clips that carry blocks ----
 // A clip is {w, h, data} — cell ids, row by row — and, when blocks came
@@ -25,6 +29,10 @@ import {
 // another lid or 0), `bmap` (each cell's innermost lid, 0 = loose) and
 // `pmap` (pin codes, as pinAt). Copy/paste, the parts shelf and a
 // level's solution all use this one form.
+//
+// `shaped`: a part that does not fill its box. Its loose cells are no cells
+// at all: holes, which writing it down leaves as they are on the board —
+// where a loose cell of any other clip replaces what it lands on.
 const clipTops = (c) => (c.blocks || []).filter((b) => !b.parent).map((b) => b.lid);
 // Is lid `l` inside lid `top` (or it)?
 function clipUnder(c, l, top) {
@@ -54,12 +62,13 @@ function clipPinGeom(c, lid, depth = 0) {
 }
 // A block of a clip, at (ox, oy) on the board, as a core for classifyRing.
 function coreInClip(c, lid, ox, oy) {
-    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, count = 0;
     for (let y = 0; y < c.h; y++)
         for (let x = 0; x < c.w; x++) {
             const k = y * c.w + x, l = c.bmap[k];
             if (!l || !clipUnder(c, l, lid)) continue;
             x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y);
+            count++;
         }
     const rec = c.blocks.find((b) => b.lid === lid);
     const pins = [];
@@ -72,8 +81,10 @@ function coreInClip(c, lid, ox, oy) {
         const cx = x - ox, cy = y - oy;
         return cx >= 0 && cy >= 0 && cx < c.w && cy < c.h ? cy * c.w + cx : -1;
     };
+    const has = (x, y) => { const k = at(x, y); return k >= 0 && !!c.bmap[k] && clipUnder(c, c.bmap[k], lid); };
     return {
         x0: ox + x0, y0: oy + y0, x1: ox + x1, y1: oy + y1,
+        has: count === (x1 - x0 + 1) * (y1 - y0 + 1) ? undefined : has,
         id: (x, y) => { const k = at(x, y); return k < 0 ? ID_INSULATOR_PLAIN : c.data[k]; },
         nested: (x, y) => {
             const k = at(x, y);
@@ -94,7 +105,7 @@ function clipRingOf(c, lid, ox, oy) {
     return cache.get(k);
 }
 // A clip with its outermost part's lid taken off — its cells loose, the
-// parts nested in it still parts. What Edit puts down to work on.
+// parts nested in it still parts. What Edit lays out on the part bench.
 function decapClip(c) {
     if (!c.blocks || !c.bmap) return c;
     const tops = new Set(clipTops(c));
@@ -114,8 +125,7 @@ function clipPins(c, lid) {
     if (!tops.length) return [];
     const top = c.blocks.find((b) => b.lid === (lid || tops[0]));
     if (!top) return [];
-    const ring = clipRingOf(c, top.lid, 0, 0);
-    const box = coreInClip(c, top.lid, 0, 0), others = terminalsByPin(ring, box, top.pins.length);
+    const ring = clipRingOf(c, top.lid, 0, 0), others = terminalsByPin(ring, top.pins.length);
     const pins = top.pins.map((p, k) => ({ name: p.name, dir: p.dir, host: null, face: null, at: null, others: others[k] }));
     clipPinGeom(c, top.lid).forEach((g, k) => {
         if (!g || !pins[k]) return;
@@ -130,15 +140,31 @@ function clipRing(c, lid) {
     const tops = c.blocks && c.bmap ? clipTops(c) : [];
     return tops.length ? [...clipRingOf(c, lid || tops[0], 0, 0).values()] : [];
 }
+// The cells of a clip's outermost part `lid` (or all of it, of one with a
+// single part), in the clip's own coordinates.
+function clipCells(c, lid) {
+    const top = lid || clipTops(c)[0], out = [];
+    for (let k = 0; k < c.bmap.length; k++)
+        if (c.bmap[k] && clipUnder(c, c.bmap[k], top)) out.push([k % c.w, Math.floor(k / c.w)]);
+    return out;
+}
+// What a part that does not fill its box needs to be drawn (as blockList has
+// it), from its cells: {} for one that fills it.
+function clipShape(c, lid) {
+    const box = coreInClip(c, lid, 0, 0);
+    if (!box.has) return {};
+    const cells = clipCells(c, lid);
+    return { outline: outlineOf(cells), inner: largestRect(cells), cells };
+}
 // Every outermost part of a clip — one, or several put down together (a
-// row of copies side by side): [{lid, name, x0, y0, x1, y1, pins, ring}],
-// in the clip's own coordinates.
+// row of copies side by side): [{lid, name, x0, y0, x1, y1, pins, ring}, and
+// its shape, if it is not its box], in the clip's own coordinates.
 function clipParts(c) {
     return (c.blocks && c.bmap ? clipTops(c) : []).map((lid) => {
         const box = coreInClip(c, lid, 0, 0);
         return {
             lid, name: c.blocks.find((b) => b.lid === lid).name, x0: box.x0, y0: box.y0, x1: box.x1, y1: box.y1,
-            pins: clipPins(c, lid), ring: clipRing(c, lid),
+            pins: clipPins(c, lid), ring: clipRing(c, lid), ...clipShape(c, lid),
         };
     });
 }
@@ -146,6 +172,24 @@ function clipParts(c) {
 // A clip that came from storage or an import, made safe to paste: right
 // lengths, known ids, parents that exist and do not loop. Returns null
 // if there is no usable clip at all.
+// A clip's sources soldered only to what is in it: a stub out past its
+// edge, or toward a cell of it that would not join, goes — so a copy put
+// down beside a wire does not join it. (An old clip's sources, 13 and 14,
+// joined everything round them: this is them read as the new ones.)
+function trimClipStubs(data, w, h) {
+    for (let y = 0; y < h; y++)
+        for (let x = 0; x < w; x++) {
+            const id = data[y * w + x];
+            if (!isSource(id)) continue;
+            let s = sourceStubs(id);
+            for (let d = 0; d < 4; d++) {
+                const nx = x + DIRS[d][0], ny = y + DIRS[d][1];
+                const nid = nx >= 0 && ny >= 0 && nx < w && ny < h ? data[ny * w + nx] : ID_INSULATOR_PLAIN;
+                if (isSource(nid) || isSwitch(nid) || isToggle(nid) || !idConnects(nid, -1, [-DIRS[d][0], -DIRS[d][1]])) s &= ~(1 << d);
+            }
+            data[y * w + x] = makeSource(isPosSource(id), s);
+        }
+}
 function sanitizeClip(c) {
     if (!c || !Number.isInteger(c.w) || !Number.isInteger(c.h) || c.w <= 0 || c.h <= 0) return null;
     const n = c.w * c.h;
@@ -157,6 +201,7 @@ function sanitizeClip(c) {
     // A clip kept before crossings were cells of their own (no `xo`) is
     // read by the rule it was drawn under.
     if (!c.xo) inferCrossings(data, c.w, c.h);
+    trimClipStubs(data, c.w, c.h);
     const out = { w: c.w, h: c.h, data };
     if (!Array.isArray(c.blocks) || !c.blocks.length || !bmap0 || bmap0.length !== n) return out;
     const recs = [];
@@ -196,6 +241,7 @@ function sanitizeClip(c) {
     out.blocks = recs;
     out.bmap = bmap;
     out.pmap = pmap;
+    if (c.shaped) out.shaped = true;
     return out;
 }
 // Plain arrays, for JSON.
@@ -209,6 +255,7 @@ function clipToJSON(c) {
         }, b));
         o.bmap = packRuns(c.bmap);
         o.pmap = packRuns(c.pmap);
+        if (c.shaped) o.shaped = 1;
     }
     return o;
 }
@@ -226,6 +273,7 @@ function transformClip(c, turn) {
         out.blocks = c.blocks.map((b) => ({ ...b, pins: b.pins.map((p) => ({ ...p })) }));
         out.bmap = new Int32Array(w * h);
         out.pmap = new Int16Array(w * h);
+        if (c.shaped) out.shaped = true;
     }
     for (let y = 0; y < c.h; y++)
         for (let x = 0; x < c.w; x++) {
@@ -271,16 +319,16 @@ function clipBlockFits(c, lid, x0, y0, grow, gone) {
             if (!isInsulatorId(at(i))) return 'It needs empty board to sit on';
             for (const e of edgeAt(x, y)) {
                 if (e.cls !== 'R') continue;
-                const [hx, hy] = edgeHost(B.blockGeom.get(e.id), x, y);
-                if (clipConnects(c, k(x, y), [hx - x, hy - y]) && boardConnects(hx, hy, [x - hx, y - hy]))
-                    return `It would join ${B.blocks.get(e.id).name} where that keeps bare`;
+                for (const s of keptSides(e))
+                    if (clipConnects(c, k(x, y), [s.x - x, s.y - y]) && boardConnects(s.x, s.y, [x - s.x, y - s.y]))
+                        return `It would join ${B.blocks.get(e.id).name} where that keeps bare`;
             }
         }
     for (const r of clipRingOf(c, lid, x0, y0).values()) {
         if (r.cls !== 'R' || !inBounds(r.x, r.y)) continue;
-        const [hx, hy] = edgeHost(core, r.x, r.y);
-        if (boardConnects(r.x, r.y, [hx - r.x, hy - r.y]) && clipConnects(c, k(hx, hy), [r.x - hx, r.y - hy]))
-            return 'Something is in the way of its edge';
+        for (const s of keptSides(r))
+            if (boardConnects(r.x, r.y, [s.x - r.x, s.y - r.y]) && clipConnects(c, k(s.x, s.y), [r.x - s.x, r.y - s.y]))
+                return 'Something is in the way of its edge';
     }
     return null;
 }
@@ -295,11 +343,11 @@ function clipBlockFits(c, lid, x0, y0, grow, gone) {
 // terminals stays — wire, a source, a pad, a mux's lead, another part's
 // pin: that is its connection — and so does whatever beside it joins
 // nothing (a mux's plain side). `cellsOf` is where its body goes,
-// `ringOf` its edge ({x, y, cls}, or none for a lone mux, which has no
-// kept-bare edge), `core` its box, and `connects(i, d)` whether its body
-// at cell i meets what is beside it on side d ([dx, dy]). Returns {why}
-// if a level's pad is in the way, else {gone: cell indexes, parts: ids}.
-function clearance(cellsOf, ringOf, core, connects) {
+// `ringOf` its edge ({x, y, cls, sides}, or none for a lone mux, which has no
+// kept-bare edge), and `connects(i, d)` whether its body at cell i meets
+// what is beside it on side d ([dx, dy]). Returns {why} if a level's pad is
+// in the way, else {gone: cell indexes, parts: ids}.
+function clearance(cellsOf, ringOf, connects) {
     const gone = new Set(), parts = new Set(), body = new Set(cellsOf);
     const xy = (i) => [i % B.w, Math.floor(i / B.w)];
     for (const i of body) {
@@ -310,15 +358,15 @@ function clearance(cellsOf, ringOf, core, connects) {
         const [x, y] = xy(i);
         for (const e of edgeAt(x, y)) {
             if (e.cls !== 'R') continue;
-            const [hx, hy] = edgeHost(B.blockGeom.get(e.id), x, y);
-            if (connects(i, [hx - x, hy - y]) && cellConnects(hx, hy, [x - hx, y - hy])) parts.add(e.id);
+            for (const s of keptSides(e))
+                if (connects(i, [s.x - x, s.y - y]) && cellConnects(s.x, s.y, [x - s.x, y - s.y])) parts.add(e.id);
         }
         if (!isInsulatorId(B.cells[i])) gone.add(i);
     }
     for (const r of ringOf) {
         if (r.cls !== 'R' || !inBounds(r.x, r.y)) continue;
-        const i = idx(r.x, r.y), [hx, hy] = edgeHost(core, r.x, r.y);
-        if (!cellConnects(r.x, r.y, [hx - r.x, hy - r.y]) || !connects(idx(hx, hy), [r.x - hx, r.y - hy])) continue;
+        const i = idx(r.x, r.y);
+        if (!keptSides(r).some((s) => inBounds(s.x, s.y) && cellConnects(r.x, r.y, [s.x - r.x, s.y - r.y]) && connects(idx(s.x, s.y), [r.x - s.x, r.y - s.y]))) continue;
         if (B.blockAt[i]) { parts.add(topBlockOf(B.blockAt[i])); continue; }
         if (B.anyLocked && B.locked[i] === 1) return { why: 'A pad is against its edge' };
         gone.add(i);
@@ -341,15 +389,14 @@ function clearanceFor(c, lid, x0, y0) {
             body.push(idx(x, y));
             kOf.set(idx(x, y), k);
         }
-    return clearance(body, [...clipRingOf(c, lid, x0, y0).values()], core,
-        (i, d) => kOf.has(i) && clipConnects(c, kOf.get(i), d));
+    return clearance(body, [...clipRingOf(c, lid, x0, y0).values()], (i, d) => kOf.has(i) && clipConnects(c, kOf.get(i), d));
 }
 // ...and for a lone mux about to be stamped over `list` ([x, y, id], as
 // muxLayout gives it).
 function muxClearance(list) {
     for (const [x, y] of list) if (!inBounds(x, y)) return { why: 'No room for a mux here' };
     const idAt = new Map(list.map(([x, y, id]) => [idx(x, y), id]));
-    return clearance([...idAt.keys()], [], null, (i, d) => idConnects(idAt.get(i), -1, d));
+    return clearance([...idAt.keys()], [], (i, d) => idConnects(idAt.get(i), -1, d));
 }
 // Clears what a clearance names: those cells, and those parts whole.
 function applyClearance(cl) {
@@ -384,7 +431,7 @@ function blockFits(clip, x0, y0, opts) {
 }
 
 export {
-    clipTops, clipUnder, coreInClip, clipRingOf, decapClip, clipPins, clipRing, clipParts, sanitizeClip,
+    clipTops, clipUnder, coreInClip, clipRingOf, decapClip, clipPins, clipRing, clipCells, clipShape, clipParts, sanitizeClip, trimClipStubs,
     clipToJSON, transformClip, rotateClipCW, mirrorClipH, clipBlockFits, clearance,
     clearanceFor, muxClearance, applyClearance, blockFits,
 };

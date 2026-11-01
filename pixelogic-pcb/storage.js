@@ -19,6 +19,7 @@
         parts: 'pixelogic-pcb.parts.v1',           // the parts shelf, as clips
         arrays: 'pixelogic-pcb.arrays.v1',         // how each part repeats
         probes: 'pixelogic-pcb.probes.v1',         // the scope's probes, each board's
+        bench: 'pixelogic-pcb.bench.v1',           // a part out on the part bench, and the bench
     };
     // Each level's board, and the layout it was made on.
     const circuitKey = (id) => 'pixelogic-pcb.game.circuit.' + id;

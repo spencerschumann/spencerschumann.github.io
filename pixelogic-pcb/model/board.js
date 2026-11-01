@@ -124,6 +124,9 @@ function newBoard(w, h) {
         blockAt: new Int32Array(n), pinAt: new Int16Array(n), blocks: new Map(), nextBlockId: 1,
         blockGeom: new Map(), ringMask: new Uint8Array(n), ringCache: new Map(),
         pendingLinks: [], rev: 0,
+        // The netlist the tick works on (netlist.js), compiled for `rev`;
+        // and the breaker, tripped ({tick, cells}) or not (null).
+        netlist: null, trip: null,
     };
 }
 // Saved, an array is its runs: a long run of one value is most of a board
@@ -193,6 +196,7 @@ function cloneBoard(b) {
         blocks: new Map([...b.blocks].map(([id, r]) => [id, copyBlockRec(r)])), nextBlockId: b.nextBlockId,
         blockGeom: new Map(b.blockGeom), ringMask: b.ringMask.slice(), ringCache: new Map(b.ringCache),
         pendingLinks: b.pendingLinks.map((l) => l.slice()), rev: b.rev,
+        netlist: b.netlist, trip: b.trip,
     };
 }
 

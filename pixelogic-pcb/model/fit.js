@@ -3,7 +3,7 @@
 // where it stands (captureRect, capPart, captureBlock).
 
 import {
-    DIRS, ID_CONDUCTOR_BASE, ID_NEG, ID_POS, OFF, isConductorId, isMuxId, isInsulatorId, isLed, isSwitch,
+    DIRS, ID_CONDUCTOR_BASE, OFF, isSource, isConductorId, isMuxId, isInsulatorId, isLed, isSwitch,
     isToggle, isWireId, makeConductor, stripId,
 } from './cells.js';
 import {
@@ -206,7 +206,7 @@ function fitPart(region, pads) {
         for (let x = r0.x0; x <= r0.x1; x++) {
             const i = idx(x, y), id = B.cells[i];
             if (B.blockAt[i]) { core.add(i); tops.add(topBlockOf(B.blockAt[i])); continue; }
-            if (isMuxId(id) || id === ID_POS || id === ID_NEG) core.add(i);
+            if (isMuxId(id) || isSource(id)) core.add(i);
             else if (pads && isFixture(i) && !padAt.has(i))
                 return fail('Only the level’s own switches and lamps can be on the board', [[x, y]]);
         }
@@ -518,7 +518,7 @@ function fitPart(region, pads) {
 // recorded ([{hx, hy, d, name, dir}]). What is round it stays as it was —
 // the fit has already made sure that suits the new part's edge. Returns
 // the new block's id.
-function capPart(r, pins, name, source) {
+function capPart(r, pins, name, source, shape) {
     const id = B.nextBlockId++;
     B.blocks.set(id, {
         id, name, source: source || '', parent: 0, open: false,
@@ -526,7 +526,7 @@ function capPart(r, pins, name, source) {
     });
     for (let y = r.y0; y <= r.y1; y++)
         for (let x = r.x0; x <= r.x1; x++) {
-            if (!inBounds(x, y)) continue;
+            if (!inBounds(x, y) || (shape && !shape(x, y))) continue;
             const i = idx(x, y);
             if (!B.blockAt[i]) { B.blockAt[i] = id; B.pinAt[i] = 0; continue; }
             const t = topBlockOf(B.blockAt[i]);
@@ -541,8 +541,9 @@ function capPart(r, pins, name, source) {
 // coming along whole, and `pins` ([{hx, hy, d, name, dir}]) as its pins,
 // in order — each a core cell and the face it meets the outside by.
 // `junctions` ([[x, y]], from the fit) are pads it took in, which the
-// part has as plain wire.
-function captureRect(r, pins, name, source, junctions) {
+// part has as plain wire. `shape(x, y)`, for a part that does not fill `r`:
+// which of its cells are the part's, the rest being holes in the clip.
+function captureRect(r, pins, name, source, junctions, shape) {
     const w = r.x1 - r.x0 + 1, h = r.y1 - r.y0 + 1;
     const data = new Uint8Array(w * h), bmap = new Int32Array(w * h).fill(1), pmap = new Int16Array(w * h);
     const lidOf = new Map();
@@ -551,6 +552,7 @@ function captureRect(r, pins, name, source, junctions) {
         for (let x = r.x0; x <= r.x1; x++) {
             if (!inBounds(x, y)) continue;
             const i = idx(x, y), k = (y - r.y0) * w + (x - r.x0);
+            if (shape && !shape(x, y)) { bmap[k] = 0; continue; }
             data[k] = stripId(B.cells[i]);
             if (!B.blockAt[i]) continue;
             for (let b = B.blockAt[i]; b; b = blockParent(b)) if (!lidOf.has(b)) lidOf.set(b, nextLid++);
@@ -573,7 +575,7 @@ function captureRect(r, pins, name, source, junctions) {
         if (x >= r.x0 && x <= r.x1 && y >= r.y0 && y <= r.y1) data[(y - r.y0) * w + (x - r.x0)] = ID_CONDUCTOR_BASE;
     // A pin via a nested part has no cell of its own: that part's pin is it.
     pins.forEach((p, k) => { if (!p.via) pmap[(p.hy - r.y0) * w + (p.hx - r.x0)] = pinCode(k, p.d); });
-    return { w, h, data, blocks: recs, bmap, pmap };
+    return { w, h, data, blocks: recs, bmap, pmap, ...(shape ? { shaped: true } : {}) };
 }
 
 // ===== A part's bounds, as the player draws them =====
@@ -598,19 +600,26 @@ function captureRect(r, pins, name, source, junctions) {
 // outside, a mux's COM inside); `problems` [{x, y, why}]; `pins` [{name,
 // dir, x, y, hx, hy, d, side, via?, viaPin?}] as captureRect and capPart
 // take them, one per name; `edge` the edge those pins give it.
-function partInBounds(rect, terms) {
+//
+// `shape(x, y)`, for bounds that are not the whole of `rect`: which of its
+// cells are the part's. A cell in a notch can meet the part on more than one
+// side, so a terminal then says which (`d`).
+function partInBounds(rect, terms, shape) {
     const r = normalizeRect(rect.x0, rect.y0, rect.x1, rect.y1);
-    const inR = (x, y) => x >= r.x0 && x <= r.x1 && y >= r.y0 && y <= r.y1;
+    const inBox = (x, y) => x >= r.x0 && x <= r.x1 && y >= r.y0 && y <= r.y1;
+    const inR = shape ? (x, y) => inBox(x, y) && shape(x, y) : inBox;
     const xy = (i) => [i % B.w, (i - i % B.w) / B.w];
     const problems = [], seenTop = new Set();
     const problem = (x, y, why) => { if (!problems.some((q) => q.x === x && q.y === y)) problems.push({ x, y, why }); };
     const isFixture = (i) => isToggle(B.cells[i]) || isSwitch(B.cells[i]) || isLed(B.cells[i]);
-    // Inside: something to be a part of, nothing cut in two, no level pad.
+    // Inside: something to be a part of, nothing cut in two, no pad (a
+    // level's, or the part bench's).
     let any = false;
     for (let y = r.y0; y <= r.y1; y++)
         for (let x = r.x0; x <= r.x1; x++) {
+            if (!inR(x, y)) continue;
             const i = idx(x, y), id = B.cells[i];
-            if (B.anyLocked && B.locked[i] === 1) { problem(x, y, 'A level’s switch or lamp cannot be inside a part'); continue; }
+            if (B.anyLocked && B.locked[i] === 1) { problem(x, y, 'A pad cannot be inside a part: it is how you try one out'); continue; }
             if (B.blockAt[i]) {
                 any = true;
                 const top = topBlockOf(B.blockAt[i]);
@@ -627,7 +636,7 @@ function partInBounds(rect, terms) {
                 const role = B.roles[i];
                 if (role && role.macro && muxBodyCells(role.macro).some(([mx, my]) => !inR(mx, my)))
                     problem(x, y, 'The edge cuts a mux in two: take all of it in, or none');
-            } else if (id === ID_POS || id === ID_NEG) any = true;
+            } else if (isSource(id)) any = true;
             else if (isFixture(i)) problem(x, y, 'A switch or lamp cannot be inside a part: it is how you try one out');
         }
     if (!any) problem(r.x0, r.y0, 'There is nothing here to make a part of: a part needs a mux or a part inside it');
@@ -669,8 +678,17 @@ function partInBounds(rect, terms) {
     // Round the edge: where something meets it, where a terminal could go.
     const meetings = [], candidates = [];
     const ring = [];
-    for (let x = r.x0; x <= r.x1; x++) ring.push([x, r.y0 - 1, 0], [x, r.y1 + 1, 2]);
-    for (let y = r.y0; y <= r.y1; y++) ring.push([r.x0 - 1, y, 3], [r.x1 + 1, y, 1]);
+    if (shape) {
+        for (let y = r.y0; y <= r.y1; y++)
+            for (let x = r.x0; x <= r.x1; x++)
+                for (let d = 0; d < 4 && inR(x, y); d++) {
+                    const nx = x + DIRS[d][0], ny = y + DIRS[d][1];
+                    if (!inR(nx, ny)) ring.push([nx, ny, d]);
+                }
+    } else {
+        for (let x = r.x0; x <= r.x1; x++) ring.push([x, r.y0 - 1, 0], [x, r.y1 + 1, 2]);
+        for (let y = r.y0; y <= r.y1; y++) ring.push([r.x0 - 1, y, 3], [r.x1 + 1, y, 1]);
+    }
     for (const [x, y, d] of ring) {
         const hx = x - DIRS[d][0], hy = y - DIRS[d][1], hi = idx(hx, hy);
         const outside = inBounds(x, y) ? idx(x, y) : -1;
@@ -704,11 +722,11 @@ function partInBounds(rect, terms) {
             candidates.push({ x, y, hx, hy, d, side, net, hint: hintOf.get(net), out, ...(via || {}) });
         }
     }
-    const at = (list, x, y) => list.find((m) => m.x === x && m.y === y);
+    const at = (list, t) => list.find((m) => m.x === t.x && m.y === t.y && (t.d === undefined || m.d === t.d));
     // The player's terminals: one pin to a name, on one wire.
     const pins = [], byName = new Map();
     for (const t of terms || []) {
-        const m = at(meetings, t.x, t.y) || at(candidates, t.x, t.y);
+        const m = at(meetings, t) || at(candidates, t);
         if (!m) { problem(t.x, t.y, 'Nothing inside meets this cell: a terminal goes beside a wire, a mux’s lead or a part’s pin'); continue; }
         const name = String(t.name || '').trim();
         if (!name) { problem(t.x, t.y, 'Every terminal needs a name'); continue; }
@@ -722,14 +740,18 @@ function partInBounds(rect, terms) {
         else if (m.via || isMuxId(B.cells[idx(m.hx, m.hy)])) problem(t.x, t.y, `${name} has only the one terminal there`);
     }
     for (const m of meetings)
-        if (!(terms || []).some((t) => t.x === m.x && t.y === m.y)) problem(m.x, m.y, 'Something meets it here: make it a terminal (click it), or move it away');
+        if (!(terms || []).some((t) => t.x === m.x && t.y === m.y && (t.d === undefined || t.d === m.d))) problem(m.x, m.y, 'Something meets it here: make it a terminal (click it), or move it away');
     // The edge those pins give it: the rest of a name's terminals must be
-    // that pin's (not a wire there that would cut it in two).
-    const edge = classifyRing(coreOnBoard(r, 0, pins.map((p, k) => ({ hx: p.hx, hy: p.hy, d: p.d, k, dir: p.dir }))));
+    // that pin's (not a wire there that would cut it in two), and a pin's
+    // own, in a notch, must not meet something else of the part's as well.
+    const core = shape ? { ...r, has: inR } : r;
+    const edge = classifyRing(coreOnBoard(core, 0, pins.map((p, k) => ({ hx: p.hx, hy: p.hy, d: p.d, k, dir: p.dir }))));
     for (const t of terms || []) {
         const k = pins.findIndex((p) => p.name === String(t.name || '').trim()), e = edge.get(t.x + ',' + t.y);
-        if (k >= 0 && !(pins[k].x === t.x && pins[k].y === t.y) && !(e && e.cls === 'T' && e.pin === k))
-            problem(t.x, t.y, `Not ${pins[k].name}’s terminal: a wire here would cut its wire in two`);
+        if (k < 0) continue;
+        if (pins[k].x === t.x && pins[k].y === t.y) {
+            if (e && e.cls === 'R') problem(t.x, t.y, `${pins[k].name}’s terminal is against something else of the part’s: a wire here would join them`);
+        } else if (!(e && e.cls === 'T' && e.pin === k)) problem(t.x, t.y, `Not ${pins[k].name}’s terminal: a wire here would cut its wire in two`);
     }
     return {
         rect: r, meetings, candidates, problems, pins,
@@ -737,6 +759,57 @@ function partInBounds(rect, terms) {
     };
 }
 
+// ===== The part bench =====
+//
+// A part on a board of its own (ui/bench.js), its pins the pads wired to
+// it, as a level's are: an input a switch, an output a lamp, each named.
+// Where something meets the bounds, which pad does it lead to? Followed
+// outward — wire to wire, straight over a crossing, never back into the
+// bounds — to every pad it reaches. One: a terminal of that pad's name
+// and way. None, or two, is wrong. (Whatever else it meets out there — a
+// lamp hung on an output to watch it — is the bench's, not the part's.)
+// `pads`: [{name, dir, x0, y0, x1, y1}]. Returns {terms: [{x, y, d, name,
+// dir, pad}] as partInBounds takes them, problems: [{x, y, why}], wired:
+// how many terminals lead to each pad}. `shape`, as partInBounds.
+function benchTerms(rect, pads, shape) {
+    const r = normalizeRect(rect.x0, rect.y0, rect.x1, rect.y1);
+    const inR = (x, y) => x >= r.x0 && x <= r.x1 && y >= r.y0 && y <= r.y1 && (!shape || shape(x, y));
+    const padOf = new Map();
+    pads.forEach((p, k) => {
+        for (let y = p.y0; y <= p.y1; y++)
+            for (let x = p.x0; x <= p.x1; x++) if (inBounds(x, y)) padOf.set(idx(x, y), k);
+    });
+    const terms = [], problems = [], wired = pads.map(() => 0);
+    for (const m of partInBounds(r, [], shape).meetings) {
+        const reached = new Set(), seen = new Set(), stack = [[m.x, m.y, m.d]];
+        while (stack.length) {
+            const [x, y, d] = stack.pop(), i = idx(x, y);
+            if (padOf.has(i)) { reached.add(padOf.get(i)); continue; }
+            if (!isWireId(B.cells[i])) continue;
+            const cross = isCrossoverAt(x, y), key = cross ? i + (d & 1 ? 'h' : 'v') : String(i);
+            if (seen.has(key)) continue;
+            seen.add(key);
+            for (const w of cross ? [d] : [0, 1, 2, 3]) {
+                const nx = x + DIRS[w][0], ny = y + DIRS[w][1];
+                if (inBounds(nx, ny) && !inR(nx, ny) && cellsJoin(x, y, nx, ny)) stack.push([nx, ny, w]);
+            }
+        }
+        const ks = [...reached];
+        if (ks.length === 1) {
+            const p = pads[ks[0]];
+            terms.push({ x: m.x, y: m.y, d: m.d, name: p.name, dir: p.dir === 'out' ? 'out' : 'in', pad: ks[0] });
+            wired[ks[0]]++;
+        } else if (ks.length) {
+            problems.push({ x: m.x, y: m.y, why: `This leads to ${ks.map((k) => pads[k].name).join(' and ')}: a pin has one pad` });
+        } else {
+            problems.push({ x: m.x, y: m.y, why: isWireId(B.cells[idx(m.x, m.y)])
+                ? 'This wire leads to no pad: wire it to one, or take it away'
+                : 'Something meets the part here: only a wire to a pad may' });
+        }
+    }
+    return { terms, problems, wired };
+}
+
 export {
-    captureBlock, SIDE_OF_FACE, fitPart, partInBounds, capPart, captureRect,
+    captureBlock, SIDE_OF_FACE, fitPart, partInBounds, capPart, captureRect, benchTerms,
 };

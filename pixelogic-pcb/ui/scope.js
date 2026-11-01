@@ -22,7 +22,7 @@ import {
     flashStatus,
 } from './page.js';
 import {
-    gameLevel, reframeAfter,
+    boardKey, gameLevel, reframeAfter,
 } from './campaign.js';
 import {
     renderStatus,
@@ -44,7 +44,6 @@ const MIN_PPT = 0.25, MAX_PPT = 24;
 // Each board has its own — each level's and the sandbox's — kept with the
 // app's other things (S.KEYS.probes): [{x, y, name, c}], `c` its colour.
 let probes = [];
-const boardKey = () => (gameLevel ? 'level:' + gameLevel.id : 'sandbox');
 function keepProbes() {
     const all = S.getJSON(S.KEYS.probes, {}) || {};
     if (probes.length) all[boardKey()] = probes.map(({ x, y, name, c }) => ({ x, y, name, c }));
@@ -59,6 +58,12 @@ function loadProbes() {
     showing = 'live';
     resetCapture();
     probesChanged(false);
+}
+// This board's, gone: a part bench put away takes its probes with it.
+function forgetProbes() {
+    probes = [];
+    keepProbes();
+    loadProbes();
 }
 // The board grown at its top or left: they move with it.
 function shiftProbes(dx, dy) {
@@ -122,8 +127,8 @@ function probesChanged(keep) {
 // ---- Capture ---------------------------------------------------------------
 //
 // Every tick of the board being worked on (M.watchTicks: running, Step, a
-// Verify replay), each probe's reading goes into its ring: 1 charged, 0
-// not, 2 draining, -1 nothing there to read. `total` counts ticks since
+// Verify replay), each probe's reading goes into its ring: 1, 0, 2 floating
+// (Z: driven by nothing), -1 nothing there to read. `total` counts ticks since
 // the capture began. Stopped, nothing is taken. Single waits for the
 // trigger — a probe's edge — and stops once the strip holds as much after
 // it as fits, the trigger a third of the way in.
@@ -252,21 +257,28 @@ function draw() {
         ctx.lineWidth = 1.5;
         ctx.beginPath();
         let pen = false, py = 0;
-        const drains = [];
+        const floats = [];
         for (let t = t0; t <= r; t++) {
             const v = row.at(t);
             if (v === null || v < 0) { pen = false; continue; }
-            const y = v === 1 ? hi : v === 2 ? mid : lo;
-            if (v === 2) drains.push(t);
+            if (v === 2) { floats.push(t); pen = false; continue; }
+            const y = v === 1 ? hi : lo;
             if (!pen) { ctx.moveTo(x(t), y); pen = true; } else if (y !== py) ctx.lineTo(x(t), y);
             ctx.lineTo(x(t + 1), y);
             py = y;
         }
         ctx.stroke();
-        // Draining, a tick at a time: marked in red, as on the board.
-        ctx.strokeStyle = '#ff6b6b';
-        ctx.lineWidth = 3;
-        for (const t of drains) { ctx.beginPath(); ctx.moveTo(x(t), mid); ctx.lineTo(x(t + 1), mid); ctx.stroke(); }
+        // Floating (Z), a tick at a time: halfway up and dashed, as a logic
+        // analyzer draws a line driven by nothing.
+        if (floats.length) {
+            ctx.save();
+            ctx.globalAlpha = 0.75;
+            ctx.setLineDash([3, 3]);
+            ctx.beginPath();
+            for (const t of floats) { ctx.moveTo(x(t), mid); ctx.lineTo(x(t + 1), mid); }
+            ctx.stroke();
+            ctx.restore();
+        }
         ctx.lineWidth = 1;
     });
     // An input's edges, in a report, are handles to drag.
@@ -331,7 +343,7 @@ function renderRead(s) {
             : `Drag an input’s edge to move it${rest}`;
         return;
     }
-    const vals = s.rows.map((row) => { const v = row.at(hover); return `${row.name} ${v === null || v < 0 ? '–' : v === 2 ? '↓' : v}`; });
+    const vals = s.rows.map((row) => { const v = row.at(hover); return `${row.name} ${v === null || v < 0 ? '–' : v === 2 ? 'Z' : v}`; });
     const dt = marker === null ? '' : ` · from A ${hover - marker >= 0 ? '+' : ''}${hover - marker}`;
     scopeReadEl.textContent = `t ${hover - s.zero}${dt} · ${vals.join(' · ')}`;
 }
@@ -739,6 +751,6 @@ function scopeState() {
 }
 
 export {
-    loadProbes, shiftProbes, toggleProbeAt, probeAt, addProbe, removeProbe, renameProbe, probePads, scopeHeight,
+    loadProbes, forgetProbes, shiftProbes, toggleProbeAt, probeAt, addProbe, removeProbe, renameProbe, probePads, scopeHeight,
     setupScope, startTiming, forgetTiming, timingButton, openReport, scopeState,
 };

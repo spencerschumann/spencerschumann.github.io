@@ -56,6 +56,9 @@ import {
 import {
     exitSteps, stepBack, stepOn, steps,
 } from './steps.js';
+import {
+    benchOpen, benchOutlining, openBench, setOutlining, setupBench,
+} from './bench.js';
 
 const M = window.PixelogicModel;
 const V = window.PixelogicView;
@@ -87,8 +90,9 @@ function updateActionButtons() {
     rotateBtn.disabled = drawMode === 'rearrange' ? !arrangeSel.length : !selection;
     mirrorBtn.disabled = drawMode === 'rearrange' ? !arrangeSel.length : !selection;
     pasteBtn.disabled = !clipboard;
-    // Make part… works on the region you can see, in a level or not.
-    saveComponentBtn.disabled = !(drawMode === 'select' && selection);
+    // Make part… works on the region you can see, in a level or not — not
+    // on the part bench, whose part is made from the bench.
+    saveComponentBtn.disabled = !(drawMode === 'select' && selection) || benchOpen();
     const part = selectedPart();
     lidBtn.style.display = part ? '' : 'none';
     decapBtn.style.display = part ? '' : 'none';
@@ -199,10 +203,11 @@ function setupToolbar() {
     redoBtn.addEventListener('click', redo);
     saveComponentBtn.addEventListener('click', doSaveComponent);
     componentsBtn.addEventListener('click', openComponents);
+    // A new part is built on a bench of its own (or, from a circuit on
+    // the board, Make part… round it).
     document.getElementById('newPartBtn').addEventListener('click', () => {
-        closeComponents();
-        setDrawMode('select');
-        flashStatus('Select the part’s bounds — the rectangle that will be its edge — then Make part…');
+        if (benchOpen()) { flashStatus('Save the part on the bench, or leave it, first'); return; }
+        openBench(null);
     });
     partAsEl.addEventListener('change', () => { partEditChose(); makePartAsChanged(); });
     lidBtn.addEventListener('click', () => { const id = selectedPart(); if (id) toggleLid(id); });
@@ -218,6 +223,7 @@ function setupToolbar() {
     componentsCloseBtn.addEventListener('click', closeComponents);
     componentsBackdrop.addEventListener('click', closeComponents);
     setupArrayEdit();
+    setupBench();
 
     intervalSlider.value = String(sliderPosForTps(DEFAULT_TPS));
     intervalSlider.addEventListener('input', updateIntervalFromSlider);
@@ -274,6 +280,7 @@ function setupToolbar() {
         window.location.reload();
     });
     document.getElementById('importBtn').addEventListener('click', async () => {
+        if (benchOpen()) { flashStatus('Import onto a board: save the part on the bench, or leave it, first'); return; }
         let text = await askText('Paste exported circuit text:', { ok: 'Import' });
         if (!text) return;
         text = text.trim();
@@ -313,6 +320,7 @@ document.addEventListener('keydown', (e) => {
         if (componentsPanel.classList.contains('open')) { closeComponents(); return; }
         if (partEditing()) { closeMakePart(true); return; }
         if (arrayEditing()) { closeArray(); return; }
+        if (benchOutlining()) { setOutlining(false); return; }
         if (floatBase) { cancelPasteFloat(); return; } // a paste not yet placed: never mind
         // Stepping through a run, with nothing picked up or picked out.
         if (steps && !arrange && !arrangeSel.length && !selection) { exitSteps(); return; }

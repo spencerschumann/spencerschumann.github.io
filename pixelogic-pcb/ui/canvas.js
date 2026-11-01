@@ -27,7 +27,7 @@ import {
     paintGesture, straightLock,
 } from './paint.js';
 import {
-    cellPoint, refreshStampPreview, stampAt,
+    cellPoint, handCovers, handPoint, holdHand, refreshStampPreview, showHand, stampAt,
 } from './stamp.js';
 import {
     placePartAt, toggleLid,
@@ -41,6 +41,9 @@ import {
 import {
     probeAt, toggleProbeAt,
 } from './scope.js';
+import {
+    benchGesture, benchHover, benchOpen,
+} from './bench.js';
 
 const M = window.PixelogicModel;
 const V = window.PixelogicView;
@@ -100,6 +103,58 @@ function pressGesture(c, sx, sy, held, flipped) {
     };
 }
 
+// MUX and Parts: the thing in hand goes down where the pointer lets go,
+// its preview following the pointer there. With a mouse the preview is
+// there already, on hover. A touchscreen has no hover, so the next one
+// waits on the board (stamp.js `hand`), turned and flipped where it can be
+// seen: a finger on it drags it from where it is, a finger anywhere else
+// brings it there, and lifting puts it down. A press that does not move
+// puts it down where it is, as a click or a tap always has. A second
+// finger landing (a pinch) puts nothing down.
+function placeGesture(sx, sy, touch, put) {
+    const redraw = () => { if (refreshStampPreview()) V.drawGrid(); };
+    if (!touch) {
+        let at = { sx, sy };
+        mousePos = at;
+        redraw();
+        return {
+            move({ sx: x, sy: y }) { at = { sx: x, sy: y }; mousePos = at; redraw(); },
+            end() { put(cellPoint(at.sx, at.sy)); },
+            abort() { },
+        };
+    }
+    const p0 = cellPoint(sx, sy), was = handPoint();
+    const from = was && handCovers(p0) ? was : p0;
+    let at = from;
+    holdHand(at, true);
+    redraw();
+    return {
+        move({ sx: x, sy: y }) {
+            // A whole number of cells from where it was: what it is
+            // centred on keeps its fraction, so it lands as it was shown.
+            const p = cellPoint(x, y);
+            at = { fx: from.fx + Math.round(p.fx - p0.fx), fy: from.fy + Math.round(p.fy - p0.fy) };
+            holdHand(at, true);
+            redraw();
+        },
+        end() {
+            holdHand(at, false);
+            put(at);
+            redraw();
+        },
+        abort() {
+            holdHand(was, false);
+            redraw();
+        },
+    };
+}
+
+// Whether the last thing to press anything was a finger: the board then
+// has no hover to show what is in hand with (see placeGesture). A mouse
+// moving over the board, or pressing anything, says it is not.
+let lastPointer = 'mouse';
+const touching = () => lastPointer === 'touch';
+
 // Select: a region from where the press began to the pointer.
 function selectGesture(c) {
     setSelection({ x0: c.x, y0: c.y, x1: c.x, y1: c.y });
@@ -135,9 +190,14 @@ function startGesture(sx, sy, erase, o) {
     // out a part's copies, likewise (arrayedit.js).
     if (partEditing()) return partEditGesture(c, sx, sy, erase);
     if (arrayEditing()) return arrayEditGesture(c, sx, sy, erase);
+    // The part bench's own handles, tags and tabs, whatever the tool (see
+    // bench.js); anywhere else, the tool in hand.
+    const onBench = benchGesture(c, sx, sy, erase);
+    if (onBench !== undefined) return onBench;
     // A probe goes on (or comes off) anything, a level's pads included.
     if (drawMode === 'probe') { toggleProbeAt(c.x, c.y); return null; }
-    if (gameLevel && !erase && M.isLocked(c.x, c.y) && drawMode !== 'interact') {
+    // ...and so are the bench's.
+    if ((gameLevel || benchOpen()) && !erase && M.isLocked(c.x, c.y) && drawMode !== 'interact') {
         if (M.setSwitch(c.x, c.y, true)) { V.drawGrid(); return pressGesture(c, sx, sy, true, false); }
         if (M.toggleAt(c.x, c.y)) { V.drawGrid(); return null; }
     }
@@ -178,17 +238,24 @@ function startGesture(sx, sy, erase, o) {
         setDrawMode('select');
         return null;
     }
-    if (drawMode === 'mux' && !erase) { stampAt(cellPoint(sx, sy)); return null; }
-    if (drawMode === 'part' && !erase) { placePartAt(cellPoint(sx, sy)); return null; }
+    if (drawMode === 'mux' && !erase) return placeGesture(sx, sy, o.isTouch, stampAt);
+    if (drawMode === 'part' && !erase) return placeGesture(sx, sy, o.isTouch, placePartAt);
     // Right-click with a part in hand erases, as right-drag does with
     // any tool; otherwise the material in hand. Right button (mouse)
     // always erases.
     if (drawMode === 'part') return paintGesture(c, 'insulator', false);
-    return paintGesture(c, erase ? 'insulator' : drawMode, o.shift || straightLock);
+    return paintGesture(c, erase ? 'insulator' : drawMode, o.shift || straightLock, cellPoint(sx, sy));
 }
 
 function setupCanvasEvents() {
     const canvas = V.canvas;
+    // Before anything handles the press: a tap on a tool button counts too,
+    // so picking MUX on a tablet shows the next one waiting on the board.
+    window.addEventListener('pointerdown', (e) => {
+        const was = lastPointer;
+        lastPointer = e.pointerType;
+        if (was !== lastPointer && touching()) showHand();
+    }, true);
 
     // Pointer Events unify mouse, pen and touch. Touch adds two things
     // the mouse path can't do on a phone: a single finger draws/selects/
@@ -287,8 +354,10 @@ function setupCanvasEvents() {
             if (gesture.pans) return;
         }
         if (e.pointerType !== 'touch') {
+            lastPointer = e.pointerType;
             if (partEditing()) partEditHover(sx, sy, V.screenToCell(sx, sy));
             if (arrayEditing()) arrayEditHover(sx, sy);
+            else if (!partEditing()) benchHover(sx, sy, V.screenToCell(sx, sy));
             updateCellInfo(sx, sy);
             // Show where the MUX tool would put its part.
             mousePos = { sx, sy };
@@ -403,8 +472,11 @@ function describeLooseCell(x, y) {
     if (M.isXover(id)) return 'wire crossing — its two wires pass over each other; a click with Conductor (1) joins them';
     if (M.crossable(x, y)) return 'wire joined four ways — a click with Conductor (1) makes it a crossing';
     if (M.isConductorId(id)) return 'wire';
-    if (id === M.ID_POS) return '+V source';
-    if (id === M.ID_NEG) return '−V source';
+    if (M.isSource(id)) {
+        const st = M.sourceStubs(id), sides = ['north', 'east', 'south', 'west'].filter((_, d) => st & (1 << d));
+        return `${M.isPosSource(id) ? '+V' : '−V'} source, ${sides.length ? `soldered ${sides.join(', ')}` : 'soldered to nothing'}`
+            + ' — draw a wire onto it, or click a side with Conductor (1), to join it';
+    }
     if (M.isLed(id)) return M.ledIsOn(id) ? 'LED, lit' : 'LED';
     if (M.isSwitch(id)) return M.switchIsPressed(id) ? 'switch, held' : 'switch';
     if (M.isToggle(id)) return M.toggleIsOn(id) ? 'toggle, on' : 'toggle, off';
@@ -441,7 +513,7 @@ function updateZoomLabel() {
 }
 
 export {
-    INTERACT_PAN_THRESHOLD, lastHoveredCell, mousePos, panGesture, pressGesture, selectGesture, startGesture,
+    INTERACT_PAN_THRESHOLD, lastHoveredCell, mousePos, touching, panGesture, pressGesture, selectGesture, startGesture,
     setupCanvasEvents, zoomAt, zoomAtCenter, describeCell, describeLooseCell, updateCellInfo,
     updateZoomLabel,
 };
