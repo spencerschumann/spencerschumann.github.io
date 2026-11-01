@@ -897,9 +897,17 @@
     // oscillation, exactly as real logic has a maximum clock rate, so "hold
     // each step until the board is quiet" is also the contract the levels are
     // written against.
+    //
+    // A level judged by the tick (`ticks`) reads the outputs after one tick,
+    // quiet or not: a pulse is over by the time anything has settled, and a
+    // tick out of step never shows at all.
     function applyVector(g, level, v, budget) {
         for (const p of g.inputs) M.setToggle(p.x, p.y, !!v[p.name]);
-        const s = settle(budget);
+        let s;
+        if (level.ticks) {
+            M.stepSimulation();
+            s = { settled: true, ticks: 1, short: !!M.tripped() };
+        } else s = settle(budget);
         const got = {};
         for (const p of g.outputs) got[p.name] = outValue(p);
         return { got, settled: s.settled, ticks: s.ticks, short: !!s.short };
@@ -1231,6 +1239,7 @@
             tick() {
                 M.stepSimulation();
                 elapsed++;
+                if (level.ticks) return true;       // its one tick is the step
                 const cur = M.copyCells();
                 let same = prevCells !== null;
                 if (same) for (let i = 0; i < cur.length; i++) if (cur[i] !== prevCells[i]) { same = false; break; }

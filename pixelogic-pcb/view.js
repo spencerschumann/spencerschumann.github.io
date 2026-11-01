@@ -1550,7 +1550,8 @@
     // does not fill its box: the line round its cells (`outline`), and, its
     // outline being drawn (`outlining`), what is out of the part in its box
     // shaded.
-    // {rect, outline, cells, outlining, problems: [{x, y}], edge, bad, fixed,
+    // `touch`: drawn for a finger, its handles and grips bigger.
+    // {rect, outline, cells, outlining, touch, problems: [{x, y}], edge, bad, fixed,
     //  pads: [{name, dir, x0, y0, x1, y1, unwired, editing}],
     //  copies: [{dx, dy, next}] | null, copiesBad,
     //  preview: {x0, y0, x1, y1, bad} | null}
@@ -1646,7 +1647,7 @@
         if (o.outline) ctx.stroke(outlinePath(o.outline, cs, 0, 0));
         else ctx.strokeRect(bx, by, bw, bh);
         ctx.setLineDash([]);
-        const hs = Math.max(8, Math.min(14, cs * 0.36));
+        const hs = o.touch ? 18 : Math.max(8, Math.min(14, cs * 0.36));
         for (const [side, hx, hy] of [['n', bx + bw / 2, by], ['s', bx + bw / 2, by + bh], ['w', bx, by + bh / 2], ['e', bx + bw, by + bh / 2],
             ['nw', bx, by], ['ne', bx + bw, by], ['sw', bx, by + bh], ['se', bx + bw, by + bh]]) {
             ctx.fillStyle = '#000';
@@ -1701,7 +1702,7 @@
             benchHits.push({ kind: 'tag', pad: k, x: tx, y: ty, w: nw, h: th });
             benchHits.push({ kind: 'arrow', pad: k, x: tx + nw, y: ty, w: aw, h: th });
             // The grip, at its bottom right corner.
-            const gs = Math.max(7, Math.min(11, cs * 0.3)), gx = px + pw, gy = py + ph;
+            const gs = o.touch ? 14 : Math.max(7, Math.min(11, cs * 0.3)), gx = px + pw, gy = py + ph;
             ctx.fillStyle = '#000';
             ctx.fillRect(gx - gs / 2 - 1, gy - gs / 2 - 1, gs + 2, gs + 2);
             ctx.fillStyle = color;

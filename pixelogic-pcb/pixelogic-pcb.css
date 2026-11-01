@@ -927,8 +927,10 @@ html, body {
 .hand-bar { align-items: center; }
 /* As wide as what they hold: centred on the board, a floating bar would
    otherwise get only the half of it right of its left edge to lay out in,
-   and wrap its message into a column. */
-.part-bar { align-items: center; width: max-content; max-width: calc(100% - 16px); box-sizing: border-box; }
+   and wrap its message into a column. Wider than the board, they wrap rather
+   than scroll: a tablet held upright lost Save off the end, with nothing to
+   say it was there. */
+.part-bar { align-items: center; justify-content: center; flex-wrap: wrap; width: max-content; max-width: calc(100% - 16px); box-sizing: border-box; }
 .part-bar select, .part-bar input {
     font: 13px system-ui, sans-serif; color: inherit; background: var(--panel-bg, #1e1f22);
     border: 1px solid var(--panel-border); border-radius: 6px; padding: 4px 6px; max-width: 14em;

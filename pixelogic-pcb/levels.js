@@ -77,6 +77,21 @@
         }
         return out;
     }
+    // The same for four bits together, all of D changing at once: the number
+    // the clock takes, and then its opposite while the clock is high.
+    function edgeBusScript(words) {
+        const d = (n) => busBits('D', 4, n);
+        const out = [{ ...d(0), CLK: 1 }];
+        let was = 0;
+        for (const w of words) {
+            out.push({ ...d(was), CLK: 0 }, { ...d(w), CLK: 0 }, { ...d(w), CLK: 1 });
+            was = ~w & 15;
+            out.push({ ...d(was), CLK: 1 });
+        }
+        return out;
+    }
+    // One input's values, a tick each, for a level judged by the tick.
+    const tickRows = (name, bits) => [...bits].map((b) => ({ [name]: Number(b) }));
     // A counter has nothing but its clock. It starts from wherever it woke
     // up (see `wakes`) and is clocked round past 15 and back.
     function countScript(edges) {
@@ -641,8 +656,8 @@
             step: (v, prev, was) => busBits('Q', 4, busVal(prev, 'Q', 4) + (rose(v, was) ? 1 : 0)),
         },
 
-        // Serial. A signal crosses the board a cell a tick and a wire carries
-        // one bit, so a wide bus is costly and a narrow one cheap. These send
+        // Serial. A wire carries one bit and every wire is room taken on the
+        // board, so a wide bus is costly and a narrow one cheap. These send
         // a number down one wire, a bit a clock, least significant first, and
         // turn it back into a bus. The order is the adder's: a carry goes up.
         {
@@ -693,6 +708,64 @@
                 return { S: v.CLK || mem.c === undefined ? null : v.A ^ v.B ^ mem.c };
             },
         },
+
+        // Time. A contact moves a tick after its SEL, and until now that was
+        // something to wait for: every test above lets the board settle
+        // first. These use it, so the first and last are judged a tick at
+        // a time (`ticks`: each step of the script is one tick, read as it
+        // ends, settled or not), which is the only way to see a pulse. They
+        // come after the master and slave on purpose: the flip-flop here is
+        // a surprise only to someone who has built that one.
+        {
+            id: 'edge', chapter: 'time', title: 'The edge', subtitle: 'one mux',
+            brief: 'P goes ON for exactly one tick each time CLK goes ON, and is OFF the rest of the '
+                + 'time: however long CLK stays on, and when it goes off. It can be done with one mux. '
+                + 'This one is checked by the tick, each row of the table one tick.',
+            hint: 'A contact moves a tick after its SEL, and a wire fills at once. So for one tick after '
+                + 'CLK rises, a mux with CLK on SEL still shows the pin it was resting on. Put CLK on that '
+                + 'pin as well. Then what should the other pin be, for the tick after?',
+            sequential: true, ticks: true, maxMuxes: 1,
+            inputs: ['CLK'], outputs: ['P'], w: 12, h: 9, part: 'EDGE',
+            script: tickRows('CLK', '00111100101100'),
+            step: (v, prev, was) => ({ P: v.CLK && !was.CLK ? 1 : 0 }),
+        },
+        {
+            id: 'pulse-ff', chapter: 'time', title: 'Three muxes', subtitle: 'no master, no slave',
+            brief: 'The D flip-flop again: Q takes D at the moment CLK goes ON, and holds it until the '
+                + 'next time. Yours took two latches and a NOT. This one takes three muxes.',
+            hint: 'A latch only ever went wrong by being open too long, so one open for a single tick has '
+                + 'nothing to hold it to the edge but that tick. You have just made something that lasts '
+                + 'exactly one tick. Put it on a D latch’s E.',
+            sequential: true, clock: 'CLK', maxMuxes: 3,
+            inputs: ['D', 'CLK'], outputs: ['Q'], w: 20, h: 13, part: 'FF3', uses: { edge: 1, 'd-latch': 1 },
+            script: edgeScript([1, 1, 0, 0, 1, 0]),
+            step: (v, prev, was) => ({ Q: rose(v, was) ? v.D : prev.Q }),
+        },
+        {
+            id: 'edge-reg', chapter: 'time', title: 'One detector', subtitle: 'every bit on one pulse',
+            brief: 'Each time CLK goes ON, Q takes the number on D, and holds it until the next time. '
+                + 'Four of those flip-flops would be twelve muxes. It can be done with nine.',
+            hint: 'The pulse is only a wire, and a wire is the same everywhere at once. You already have '
+                + 'four latches on one enable.',
+            sequential: true, clock: 'CLK', maxMuxes: 9,
+            inputs: [...busNames('D', 4), 'CLK'], outputs: busNames('Q', 4), w: 36, h: 34, part: 'REG4E',
+            uses: { edge: 1, register4: 1 },
+            script: edgeBusScript([0b1011, 0b0110, 0b1101, 0b0010]),
+            step: (v, prev, was) => (rose(v, was) ? busBits('Q', 4, busVal(v, 'D', 4)) : { ...prev }),
+        },
+        {
+            id: 'in-step', chapter: 'time', title: 'In step', subtitle: 'slow the fast one',
+            brief: 'Q follows A, and N is its opposite, and they change on the same tick: at no tick may '
+                + 'they agree. Each is one tick behind A. Checked by the tick, each row of the table '
+                + 'one tick.',
+            hint: 'Time through a circuit is counted in SELs: a wire takes none, and a mux’s COM moves '
+                + 'a tick after its SEL. N has to go through one to be inverted, so Q has to go through '
+                + 'one too. A mux with the rails on its pins and A on its SEL changes nothing but when.',
+            sequential: true, ticks: true, maxMuxes: 2,
+            inputs: ['A'], outputs: ['Q', 'N'], w: 14, h: 11,
+            script: tickRows('A', '0011100101100'),
+            step: (v, prev, was) => ({ Q: was.A ? 1 : 0, N: was.A ? 0 : 1 }),
+        },
     ];
 
     // Chapters group the ladder in the level browser. `roadmap` chapters have
@@ -724,8 +797,13 @@
         },
         {
             id: 'serial', title: 'Serial',
-            blurb: 'A signal crosses the board a cell a tick, and a wire carries one bit. So send a '
+            blurb: 'A wire carries one bit, and every wire is room taken on the board. So send a '
                 + 'number down one wire, a bit per clock, and turn it back into a bus at the far end.',
+        },
+        {
+            id: 'time', title: 'Time',
+            blurb: 'A contact takes a tick to move. Until now that was something to wait for. '
+                + 'It is also the most useful thing on the board.',
         },
         {
             id: 'machine', title: 'The machine', roadmap: [
